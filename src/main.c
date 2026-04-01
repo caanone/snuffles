@@ -50,6 +50,7 @@ static void print_usage(const char *prog) {
            "  -b <ring_size>    Ring buffer size (default: 10000)\n"
            "  -o <file>         Auto-export on exit (.pcap or .json)\n"
            "  --no-ui           Headless mode (print to stdout)\n"
+           "  -q, --quiet       Silent mode (no terminal output, use with --syslog)\n"
            "  --syslog <h:p>   Send packet CSV to syslog server (UDP)\n"
            "  --syslog-iface <ip|dev>  Source interface/IP for syslog\n"
            "  --list-ifaces     List available interfaces and exit\n"
@@ -70,7 +71,21 @@ static void print_version(void) {
 
 /* ── Headless mode ───────────────────────────────────────────── */
 
-static void run_headless(ringbuf_t *rb, capture_ctx_t *cap) {
+static void run_headless(ringbuf_t *rb, capture_ctx_t *cap, int quiet) {
+    if (quiet) {
+        /* silent mode: capture thread handles syslog, we just wait */
+        while (!g_stop) {
+#ifndef _WIN32
+            struct timeval tv = { .tv_sec = 0, .tv_usec = 200000 };
+            select(0, NULL, NULL, NULL, &tv);
+#else
+            Sleep(200);
+#endif
+            if (!capture_is_running(cap)) break;
+        }
+        return;
+    }
+
     uint64_t last = 0;
     int notify_fd = ringbuf_get_notify_fd(rb);
 
@@ -99,7 +114,6 @@ static void run_headless(ringbuf_t *rb, capture_ctx_t *cap) {
             last = total - count;
 
         while (last < total) {
-            /* convert absolute seq to ring index */
             uint64_t oldest_seq = (total > count) ? total - count : 0;
             uint32_t idx = (uint32_t)(last - oldest_seq);
 
@@ -118,7 +132,6 @@ static void run_headless(ringbuf_t *rb, capture_ctx_t *cap) {
             last++;
         }
 
-        /* only exit after capture thread finishes AND we've printed everything */
         if (!capture_is_running(cap) && ringbuf_total(rb) <= last)
             break;
     }
@@ -139,6 +152,7 @@ int main(int argc, char *argv[]) {
         {"ring-size",   required_argument, 0, 'b'},
         {"output",      required_argument, 0, 'o'},
         {"no-ui",       no_argument,       0, 'N'},
+        {"quiet",       no_argument,       0, 'q'},
         {"list-ifaces", no_argument,       0, 'L'},
         {"syslog",       required_argument, 0, 'Y'},
         {"syslog-iface", required_argument, 0, 'Z'},
@@ -148,7 +162,7 @@ int main(int argc, char *argv[]) {
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "i:r:f:c:s:b:o:vh", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "i:r:f:c:s:b:o:qvh", long_opts, NULL)) != -1) {
         switch (opt) {
             case 'i': snprintf(cfg.iface,      sizeof(cfg.iface),      "%s", optarg); break;
             case 'r': snprintf(cfg.pcap_file,   sizeof(cfg.pcap_file),  "%s", optarg); break;
@@ -158,6 +172,7 @@ int main(int argc, char *argv[]) {
             case 's': cfg.snaplen   = atoi(optarg); break;
             case 'b': cfg.ring_size = atoi(optarg); break;
             case 'N': cfg.no_ui       = 1; break;
+            case 'q': cfg.quiet      = 1; cfg.no_ui = 1; break;
             case 'L': cfg.list_ifaces = 1; break;
             case 'Y': snprintf(cfg.syslog_target, sizeof(cfg.syslog_target), "%s", optarg); break;
             case 'Z': snprintf(cfg.syslog_iface, sizeof(cfg.syslog_iface), "%s", optarg); break;
@@ -222,7 +237,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (cfg.no_ui) {
-        run_headless(rb, cap);
+        run_headless(rb, cap, cfg.quiet);
     } else {
         ui_ctx_t *ui = ui_create(rb, cap, &cfg, sessions);
         if (!ui) {

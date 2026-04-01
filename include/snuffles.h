@@ -225,6 +225,7 @@ typedef struct {
     int         ring_size;
     int         count;
     int         no_ui;
+    int         quiet;          /* -q / --quiet: no terminal output at all */
     int         list_ifaces;
     int         verbose;
     char        syslog_target[256];
