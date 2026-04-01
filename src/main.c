@@ -178,6 +178,15 @@ int main(int argc, char *argv[]) {
     if (cfg.ring_size > 1000000) cfg.ring_size = 1000000;
     if (cfg.count < 0) cfg.count = 0;
 
+    /* in headless mode, minimize memory: tiny ring buffer, skip session table
+       if no export is needed (syslog sends directly from capture thread) */
+    int headless_minimal = (cfg.no_ui && !cfg.output_file[0]);
+    if (headless_minimal) {
+        cfg.ring_size = 64;    /* tiny scratch buffer */
+        if (cfg.syslog_target[0] && cfg.snaplen > 256)
+            cfg.snaplen = 256; /* syslog only needs headers, not payload */
+    }
+
     /* create ring buffer */
     ringbuf_t *rb = ringbuf_create((uint32_t)cfg.ring_size, (uint32_t)cfg.snaplen);
     if (!rb) {
@@ -186,8 +195,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* create session table */
-    session_table_t *sessions = session_table_create(4096);
+    /* create session table (skip in headless-minimal mode to save memory) */
+    session_table_t *sessions = headless_minimal ? NULL : session_table_create(4096);
 
     /* create capture context */
     capture_ctx_t *cap = capture_create(&cfg, rb, sessions);
