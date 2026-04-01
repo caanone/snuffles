@@ -1,8 +1,8 @@
 # Snuffles
 
-A lightweight, cross-platform network packet analyzer written in C. Terminal UI, two-level filtering, session tracking, syslog forwarding, and PCAP/JSON export. Two build modes: libpcap (full-featured) or raw sockets (zero dependencies on Windows).
+A lightweight, cross-platform network packet analyzer written in C. Terminal UI, two-level filtering, session tracking, syslog forwarding, and PCAP/JSON export.
 
-~4,800 lines of C across 23 source files. Zero external dependencies beyond libpcap (optional).
+~4,900 lines of C. Zero external dependencies beyond libpcap (optional).
 
 ---
 
@@ -12,34 +12,16 @@ A lightweight, cross-platform network packet analyzer written in C. Terminal UI,
 - Protocol dissection: Ethernet, VLAN, ARP, IPv4, IPv6, ICMPv4/v6, TCP, UDP, SCTP, DNS, HTTP/1.x, TLS (SNI)
 - Two-level filtering:
   - **BPF capture filter** `[B]` — kernel-level, standard pcap syntax
-  - **Display filter** `[F]` — application-level, Wireshark-like expressions with CIDR, port ranges, substring match
+  - **Display filter** `[F]` — Wireshark-like expressions with CIDR, port ranges, substring match
 - Session/stream tracking `[S]` — bidirectional 5-tuple aggregation with TCP state machine
-- Syslog forwarding `--syslog` — real-time UDP CSV output with full header details and feedback loop prevention
+- Syslog forwarding `--syslog` — real-time UDP CSV with full header details, feedback loop prevention
+- Silent mode `-q` — zero terminal output, minimal memory (~16KB), pure syslog forwarder
 - ANSI terminal UI with color-coded protocols, scrollable list, detail panel, hex dump, help overlay
 - Export to PCAP and JSON `[E]`
-- Security hardened: privilege dropping, bounds-checked parsing, memory-capped buffers, LRU session eviction
+- Security hardened: privilege dropping, bounds-checked parsing, memory-capped buffers
 - Two build backends:
   - **libpcap** (default) — full features on Linux/macOS/Windows
   - **Raw sockets** (`make nopcap`) — zero dependencies, works on Windows without Npcap
-
----
-
-## Table of Contents
-
-- [Build](#build)
-- [Usage](#usage)
-- [TUI Keyboard Shortcuts](#tui-keyboard-shortcuts)
-- [Display Filter](#display-filter)
-- [BPF Capture Filter](#bpf-capture-filter)
-- [Session Tracking](#session-tracking)
-- [Syslog Forwarding](#syslog-forwarding)
-- [Export](#export)
-- [Protocols](#protocols)
-- [Architecture](#architecture)
-- [Project Structure](#project-structure)
-- [Security Hardening](#security-hardening)
-- [Permissions](#permissions)
-- [Build Comparison](#build-comparison)
 
 ---
 
@@ -54,7 +36,7 @@ A lightweight, cross-platform network packet analyzer written in C. Terminal UI,
 | Windows  | [Npcap SDK](https://npcap.com/#download) + [Npcap runtime](https://npcap.com/) |
 
 ```bash
-make                 # auto-detects platform, finds libpcap
+make
 ```
 
 CMake:
@@ -68,7 +50,7 @@ make
 ### Raw Sockets (no libpcap / no Npcap)
 
 ```bash
-make nopcap          # Linux or Windows (MinGW)
+make nopcap
 ```
 
 CMake:
@@ -111,18 +93,20 @@ make clean           # Remove artifacts
 snuffles [OPTIONS]
 
 Options:
-  -i <iface>          Interface to capture on (default: auto-detect)
+  -i <iface>          Capture interface (default: auto-detect)
   -r <file.pcap>      Read from pcap file (libpcap build only)
   -f <bpf_filter>     BPF capture filter (e.g. "tcp port 80")
   -c <count>          Stop after N packets
-  -s <snaplen>        Snapshot length (default: 65535, max: 65535)
-  -b <ring_size>      Ring buffer size (default: 10000, max: 1000000)
-  -o <file>           Auto-export on exit (.pcap or .json by extension)
-  --syslog <host:port> Forward packet summaries via UDP syslog
+  -s <snaplen>        Snapshot length (default: 65535)
+  -b <ring_size>      Ring buffer size (default: 10000)
+  -o <file>           Export on exit (.pcap or .json)
   --no-ui             Headless mode (print to stdout)
-  --list-ifaces       List available interfaces and exit
-  -v                  Print version and build info
-  -h, --help          Show help
+  -q, --quiet         Silent mode (no output, use with --syslog)
+  --syslog <host:port> Forward packets via UDP syslog
+  --syslog-iface <ip|dev>  Source interface/IP for syslog
+  --list-ifaces       List interfaces and exit
+  -v                  Version info
+  -h, --help          Help
 ```
 
 ### Examples
@@ -131,16 +115,22 @@ Options:
 # Live capture with TUI
 sudo ./snuffles -i en0
 
-# Capture only HTTPS, export on exit
+# Capture HTTPS only, export on exit
 sudo ./snuffles -i eth0 -f "tcp port 443" -o capture.pcap
 
-# Read a pcap file
+# Read pcap file
 ./snuffles -r traffic.pcap
 
-# Headless with syslog forwarding
+# Headless with syslog
 sudo ./snuffles -i en0 --no-ui --syslog 10.0.0.100:514
 
-# Headless, 100 packets, export JSON
+# Silent syslog forwarder (minimal memory, no output)
+sudo ./snuffles -i en0 -q --syslog 10.0.0.100:514
+
+# Syslog via specific interface
+sudo ./snuffles -i en0 -q --syslog 10.0.0.100:514 --syslog-iface 192.168.1.5
+
+# Headless, 100 packets, JSON export
 sudo ./snuffles -i en0 -c 100 --no-ui -o output.json
 
 # Pipe through grep
@@ -152,66 +142,78 @@ sudo ./snuffles -i en0 --no-ui | grep DNS
 
 ---
 
+## Operating Modes
+
+| Mode | Flags | Memory | Output |
+|------|-------|--------|--------|
+| **TUI** | (default) | ~640MB ring + sessions | Interactive terminal UI |
+| **Headless** | `--no-ui` | ~640MB ring + sessions | Packets to stdout |
+| **Headless + export** | `--no-ui -o file` | ~640MB ring + sessions | Stdout + file on exit |
+| **Headless + syslog** | `--no-ui --syslog h:p` | ~16KB ring, no sessions | Stdout + UDP syslog |
+| **Silent syslog** | `-q --syslog h:p` | ~16KB ring, no sessions | UDP syslog only |
+
+---
+
 ## TUI Keyboard Shortcuts
 
 Press `H` or `?` for the built-in help overlay.
 
-| Key            | Action |
-|----------------|--------|
-| Up / Down      | Scroll list |
-| PgUp / PgDn   | Scroll by page |
-| Home / End     | Jump to first / last |
-| Enter          | Detail panel (packets) / Drill into session (sessions) |
-| S              | Toggle Packets / Sessions view |
-| T              | Cycle session sort: bytes / packets / recent / duration |
-| F              | Display filter (post-capture) |
-| B              | BPF capture filter (kernel-level) |
-| E              | Export to file (.pcap or .json) |
-| C              | Clear all packets and sessions |
-| P              | Pause / Resume |
-| H / ?          | Help overlay |
-| Q              | Quit |
-| Escape         | Cancel input |
+| Key | Action |
+|-----|--------|
+| Up / Down | Scroll list |
+| PgUp / PgDn | Scroll by page |
+| Home / End | Jump to first / last |
+| Enter | Detail panel (packets) / Drill into session (sessions) |
+| S | Toggle Packets / Sessions view |
+| T | Cycle session sort: bytes / packets / recent / duration |
+| F | Display filter (post-capture) |
+| B | BPF capture filter (kernel-level) |
+| E | Export to file (.pcap or .json) |
+| C | Clear all packets and sessions |
+| P | Pause / Resume |
+| H / ? | Help overlay |
+| Q | Quit |
+| Escape | Cancel input |
 
 ---
 
 ## Display Filter
 
-Press `F` in the TUI. Filters are post-capture — they hide packets from view but keep them in the ring buffer. Live preview shows match count while typing.
+Press `F` in the TUI. Post-capture filtering with live preview.
 
 ### Quick Filters
 
 ```
-tcp                         udp                         dns
-arp                         icmp                        tls
-http                        sctp                        10.0.0.1
-192.168.1.0/24              port 443                    port 80-8080
+tcp           udp           dns           arp
+icmp          tls           http          sctp
+10.0.0.1      192.168.1.0/24             port 443
+port 80-8080
 ```
 
 ### Full Syntax
 
-`field operator value`, combined with `and` `or` `not` `&&` `||` `!` `()`
+`field operator value` combined with `and or not && || ! ()`
 
-| Field                    | Description |
-|--------------------------|-------------|
-| `src_ip` / `src`         | Source IP |
-| `dst_ip` / `dst`         | Destination IP |
-| `ip`                     | Either src or dst IP |
-| `src_port` / `dst_port`  | Source / destination port |
-| `port`                   | Either src or dst port |
-| `proto`                  | Protocol name (TCP, UDP, DNS, etc.) |
-| `length`                 | Packet length in bytes |
-| `src_mac` / `dst_mac`    | MAC address |
-| `vlan`                   | VLAN ID |
-| `info`                   | Info string (substring) |
-| `session` / `stream`     | Session ID |
+| Field | Description |
+|-------|-------------|
+| `src_ip` / `src` | Source IP |
+| `dst_ip` / `dst` | Destination IP |
+| `ip` | Either src or dst IP |
+| `src_port` / `dst_port` | Source / destination port |
+| `port` | Either port |
+| `proto` | Protocol name |
+| `length` | Packet bytes |
+| `src_mac` / `dst_mac` | MAC address |
+| `vlan` | VLAN ID |
+| `info` | Info string (substring) |
+| `session` / `stream` | Session ID |
 
-| Operator           | Meaning |
-|---------------------|---------|
-| `==` `=`           | Equal |
-| `!=`               | Not equal |
-| `>` `<` `>=` `<=`  | Numeric |
-| `contains` `~`     | Substring (case-insensitive) |
+| Operator | Meaning |
+|----------|---------|
+| `==` `=` | Equal |
+| `!=` | Not equal |
+| `>` `<` `>=` `<=` | Numeric |
+| `contains` `~` | Substring (case-insensitive) |
 
 ### Examples
 
@@ -222,7 +224,6 @@ not arp
 info contains "ClientHello"
 (tcp or udp) && port 53
 session == 5
-length > 1400
 !icmp && ip == 192.168.1.0/24
 ```
 
@@ -230,39 +231,35 @@ length > 1400
 
 ## BPF Capture Filter
 
-Press `B` in the TUI. Uses standard pcap/BPF syntax. Drops non-matching packets at the kernel level before they reach the application.
+Press `B` in the TUI. Standard pcap/BPF syntax. Drops non-matching packets at kernel level.
 
 ```
 tcp port 443
 host 192.168.1.1 and not icmp
 udp portrange 5000-6000
-net 10.0.0.0/8
 ```
 
-Empty string clears the filter. Only available in libpcap build.
+Empty string clears filter. Only available in libpcap build.
 
 ---
 
 ## Session Tracking
 
-Press `S` to switch to Sessions view. Packets are aggregated into bidirectional flows by normalized 5-tuple (src IP, dst IP, src port, dst port, protocol).
+Press `S` to switch view. Bidirectional flow aggregation by normalized 5-tuple.
 
-| Column     | Description |
-|------------|-------------|
-| #          | Session ID |
-| Proto      | TCP, UDP, etc. |
-| Side A     | First endpoint (IP:port) |
-| Side B     | Second endpoint (IP:port) |
-| Pkts up/dn | Per-direction packet count |
-| Bytes      | Total bytes both directions |
-| State      | TCP: NEW / SYN / EST / FIN / CLOSED / RST |
-| Duration   | First to last packet |
+| Column | Description |
+|--------|-------------|
+| # | Session ID |
+| Proto | TCP, UDP, etc. |
+| Side A / B | Endpoints (IP:port) |
+| Pkts up/dn | Per-direction count |
+| Bytes | Total both directions |
+| State | TCP: NEW / SYN / EST / FIN / CLOSED / RST |
+| Duration | First to last packet |
 
-Color-coded: green = ESTABLISHED, yellow = SYN, red = RST, dim = CLOSED.
+Color-coded: green = EST, yellow = SYN, red = RST, dim = CLOSED.
 
-Press `T` to cycle sort. Press `Enter` on a session to drill into its packets (auto-applies `session == <id>` filter). Press `S` to go back.
-
-Capped at 100,000 sessions with LRU eviction of the oldest inactive session.
+Press `T` to cycle sort. Press `Enter` to drill into a session's packets. Capped at 100,000 entries with LRU eviction.
 
 ---
 
@@ -270,96 +267,71 @@ Capped at 100,000 sessions with LRU eviction of the oldest inactive session.
 
 ```bash
 sudo ./snuffles -i en0 --syslog 10.0.0.100:514
+sudo ./snuffles -i en0 -q --syslog 10.0.0.100:514              # silent
+sudo ./snuffles -i en0 -q --syslog 10.0.0.100:514 --syslog-iface 192.168.1.5  # source bind
 ```
 
-Sends a UDP datagram per packet in real-time from the capture thread. Default port 514 if omitted.
-
-### Format
-
-Always 16 fields per line (consistent CSV columns). Non-TCP packets have empty values for TCP-specific fields.
+### CSV Format (always 16 fields)
 
 ```
 src_ip,src_port,dst_ip,dst_port,epoch,length,protocol,ttl,ip_id,ip_checksum,frag,flags,seq,ack,window,tcp_checksum
 ```
 
-Examples:
+TCP example:
 
 ```
 10.0.0.1,55555,93.184.216.34,443,1774973651,54,TCP,64,1,0x0000,0x0000,S,100,0,65535,0x0000
-192.168.1.100,54321,8.8.8.8,53,1774973652,54,DNS,64,1,0x0000,0x0000,,,,
-10.0.0.1,0,8.8.8.8,0,1774973653,42,ICMP,64,1,0x0000,0x0000,,,,
 ```
 
-### Field Reference
+Non-TCP (empty TCP fields):
 
-| Field          | Description |
-|----------------|-------------|
-| `src_ip`       | Source IP address |
-| `src_port`     | Source port (0 for ICMP/ARP) |
-| `dst_ip`       | Destination IP address |
-| `dst_port`     | Destination port (0 for ICMP/ARP) |
-| `epoch`        | Unix timestamp (seconds) |
-| `length`       | Packet length on wire (bytes) |
-| `protocol`     | Highest detected protocol (TCP, DNS, TLS, etc.) |
-| `ttl`          | IP Time To Live / Hop Limit |
-| `ip_id`        | IP Identification field |
-| `ip_checksum`  | IP header checksum (hex) |
-| `frag`         | IP fragment offset + flags (hex) |
-| `flags`        | TCP flags: S=SYN A=ACK F=FIN R=RST P=PSH U=URG |
-| `seq`          | TCP sequence number |
-| `ack`          | TCP acknowledgment number |
-| `window`       | TCP window size |
-| `tcp_checksum` | TCP checksum (hex) |
+```
+192.168.1.100,54321,8.8.8.8,53,1774973652,54,DNS,64,1,0x0000,0x0000,,,,,
+```
+
+### Fields
+
+| # | Field | Description |
+|---|-------|-------------|
+| 1 | src_ip | Source IP |
+| 2 | src_port | Source port |
+| 3 | dst_ip | Destination IP |
+| 4 | dst_port | Destination port |
+| 5 | epoch | Unix timestamp |
+| 6 | length | Packet size (bytes) |
+| 7 | protocol | Highest detected protocol |
+| 8 | ttl | IP TTL / Hop Limit |
+| 9 | ip_id | IP Identification |
+| 10 | ip_checksum | IP header checksum (hex) |
+| 11 | frag | Fragment offset + flags (hex) |
+| 12 | flags | TCP flags: S A F R P U |
+| 13 | seq | TCP sequence number |
+| 14 | ack | TCP acknowledgment |
+| 15 | window | TCP window size |
+| 16 | tcp_checksum | TCP checksum (hex) |
 
 ### Feedback Loop Prevention
 
-Packets destined to or from the syslog server IP:port over UDP are automatically excluded from syslog output to prevent infinite feedback loops.
+Packets to/from the syslog destination are automatically excluded.
 
 ### Memory
 
-- UDP socket opened once at startup
-- Per-packet formatting uses a 512-byte stack buffer
-- `sendto()` is fire-and-forget (no retries, no queue)
-- Zero heap allocations in the syslog hot path
+| Mode | Memory |
+|------|--------|
+| `-q --syslog` | ~16KB (64 slots x 256 bytes, no sessions) |
+| `--no-ui --syslog` | ~16KB + stdout buffering |
+| TUI + syslog | Full ring buffer + sessions |
 
 ---
 
 ## Export
 
-Press `E` in the TUI. Default path: `$HOME/capture.pcap` (or `/tmp/capture.pcap` under sudo). Change extension to `.json` for JSON output.
+Press `E` in the TUI. Default path: `$HOME/capture.pcap`.
 
-- Respects active display filter: only matching packets are exported
-- Status bar shows green success or red error with reason
-
-### PCAP
-
-Standard libpcap format: magic `0xa1b2c3d4`, version 2.4, LINKTYPE_ETHERNET. Written via raw file I/O (no libpcap write API dependency).
-
-### JSON
-
-```json
-{
-  "capture_info": {
-    "interface": "en0",
-    "start_time": "2024-01-01T12:00:00Z",
-    "packet_count": 42,
-    "filter": "tcp port 443"
-  },
-  "packets": [
-    {
-      "no": 1,
-      "timestamp": "1711900800.123456",
-      "src_ip": "10.0.0.1", "src_port": 54321,
-      "dst_ip": "1.1.1.1",  "dst_port": 443,
-      "protocol": "TLS", "length": 517,
-      "info": "TLS ClientHello SNI=example.com",
-      "hex": "45 00 02 05 ..."
-    }
-  ]
-}
-```
-
-### CLI Export
+- `.pcap`: standard libpcap format (magic `0xa1b2c3d4`, v2.4)
+- `.json`: structured JSON with metadata and hex dump
+- Respects active display filter
+- Status bar shows success/failure
 
 ```bash
 sudo ./snuffles -i en0 -c 100 -o capture.pcap
@@ -370,21 +342,21 @@ sudo ./snuffles -i en0 -c 100 -o capture.json
 
 ## Protocols
 
-| Layer | Protocol   | Extracted Fields |
-|-------|------------|------------------|
-| L2    | Ethernet   | src/dst MAC, EtherType |
-| L2    | 802.1Q     | VLAN ID |
-| L2    | ARP        | Operation, sender/target IP+MAC |
-| L3    | IPv4       | src/dst IP, TTL, ID, checksum, fragment offset, protocol number |
-| L3    | IPv6       | src/dst IP, hop limit, next header |
-| L3    | ICMPv4     | Type, code, echo ID/sequence |
-| L3    | ICMPv6     | Type, code, neighbor discovery types |
-| L4    | TCP        | Ports, flags (SYN/ACK/FIN/RST/PSH/URG), seq, ack, window, checksum |
-| L4    | UDP        | Ports, length |
-| L4    | SCTP       | Ports |
-| L7    | DNS        | Query/response, QNAME, type (A/AAAA/CNAME/MX/NS/PTR/SOA/TXT/SRV) |
-| L7    | HTTP/1.x   | Method + path or status line |
-| L7    | TLS        | Handshake type, SNI from ClientHello |
+| Layer | Protocol | Extracted Fields |
+|-------|----------|------------------|
+| L2 | Ethernet | src/dst MAC, EtherType |
+| L2 | 802.1Q | VLAN ID |
+| L2 | ARP | Operation, sender/target IP+MAC |
+| L3 | IPv4 | src/dst IP, TTL, ID, checksum, fragment, protocol |
+| L3 | IPv6 | src/dst IP, hop limit, next header |
+| L3 | ICMPv4 | Type, code, echo ID/seq |
+| L3 | ICMPv6 | Type, code, neighbor discovery |
+| L4 | TCP | Ports, flags, seq, ack, window, checksum |
+| L4 | UDP | Ports, length |
+| L4 | SCTP | Ports |
+| L7 | DNS | Query/response, QNAME, type |
+| L7 | HTTP/1.x | Method + path or status |
+| L7 | TLS | Handshake type, SNI |
 
 ---
 
@@ -398,29 +370,24 @@ sudo ./snuffles -i en0 -c 100 -o capture.json
                               |
                        capture thread
                               |
-                      +-------v---------+
-                      |  Ring Buffer    |  pre-allocated, atomic fast path
-                      | (10K packets)   |  pipe notification for select()
-                      +-------+---------+
-                              |
-   +----------+-------+------+------+-----------+
-   |          |        |             |           |
-   v          v        v             v           v
-Dissect   Session   Syslog       Stats      UI Thread
-(L2-L7)   Table     (UDP CSV)   (rolling    (select on
-          (FNV-1a   per-packet   window)     stdin+pipe)
-           hash,    with loop               /          \
-           TCP SM,  exclusion)        Packet View  Session View
-           LRU                       (list+detail  (sorted table,
-           evict)                     +hex dump)    drill-in)
+              +---------------+---------------+
+              |               |               |
+              v               v               v
+         Ring Buffer     Syslog Out     Session Table
+         (pre-alloc)    (UDP sendto)    (FNV-1a hash)
+              |                               |
+              +---------- UI Thread ----------+
+                          (select)
+                         /        \
+                  Packet View   Session View
 ```
 
 - **Two threads**: capture (producer) + UI (consumer)
-- **Ring buffer**: pre-allocated `capacity * snaplen` data pool, no malloc in hot path
-- **Self-pipe trick**: `select()` on both stdin and pipe fd for unified event loop
-- **Session table**: FNV-1a hash, normalized 5-tuple, 100K cap, LRU eviction
-- **Display filter**: recursive descent parser, fixed 48-node AST pool, no heap
-- **Syslog**: single UDP socket, stack-formatted CSV, feedback loop guard
+- **Ring buffer**: pre-allocated, no malloc in hot path
+- **Silent mode**: capture thread only, main thread sleeps
+- **Session table**: normalized 5-tuple, 100K cap, LRU eviction
+- **Display filter**: recursive descent, 48-node fixed AST
+- **Syslog**: single UDP socket, stack buffer, loop guard
 
 ---
 
@@ -428,29 +395,30 @@ Dissect   Session   Syslog       Stats      UI Thread
 
 ```
 snuffles/
-+-- CMakeLists.txt                # CMake build (-DNO_PCAP supported)
-+-- Makefile                      # targets: all, nopcap, debug, clean
++-- CMakeLists.txt                # CMake (-DNO_PCAP supported)
++-- Makefile                      # all, nopcap, debug, clean
++-- LICENSE                       # MIT
 +-- README.md
 +-- cmake/
-|   +-- FindPCAP.cmake            # libpcap/Npcap finder
+|   +-- FindPCAP.cmake
 |   +-- toolchain-linux-aarch64.cmake
 |   +-- toolchain-macos-arm64.cmake
 |   +-- toolchain-windows-x64.cmake
 +-- include/
-|   +-- snuffles.h                # Shared types, platform thread wrappers
+|   +-- snuffles.h                # Shared types, platform wrappers
 +-- src/
     +-- main.c                    # CLI, signals, orchestration
     +-- capture.c / .h            # libpcap backend
     +-- capture_raw.c             # Raw socket backend (NO_PCAP)
     +-- dissect.c / .h            # Protocol dissectors (L2-L7)
     +-- filter.c / .h             # Display filter parser + evaluator
-    +-- ringbuf.c / .h            # Ring buffer with pipe notification
+    +-- ringbuf.c / .h            # Ring buffer + pipe notification
     +-- session.c / .h            # Session tracking hash table
     +-- syslog_out.c / .h         # UDP syslog forwarder
-    +-- ui.c / .h                 # ANSI TUI (packets, sessions, help)
-    +-- export_pcap.c / .h        # Raw PCAP writer
+    +-- ui.c / .h                 # ANSI TUI
+    +-- export_pcap.c / .h        # PCAP writer
     +-- export_json.c / .h        # JSON writer
-    +-- stats.c / .h              # pps/bps rolling window
+    +-- stats.c / .h              # pps/bps statistics
 ```
 
 ---
@@ -459,63 +427,62 @@ snuffles/
 
 ### Privilege Dropping
 
-After opening the capture device, the process drops from root to the original user (`sudo` case) or `nobody`. All packet processing runs unprivileged.
+Drops from root to original user (sudo) or `nobody` after opening capture device.
 
 ### Memory Limits
 
-| Resource           | Limit |
-|--------------------|-------|
-| CLI snaplen        | 64 - 65,535 bytes |
-| CLI ring_size      | 16 - 1,000,000 packets |
-| Session table      | 100,000 entries (LRU eviction) |
-| UI render buffer   | 4 MB cap |
-| Filter preview     | 2,000 packet scan limit |
-
-All `malloc`/`calloc` return values are checked.
+| Resource | Limit |
+|----------|-------|
+| snaplen | 64 - 65,535 bytes |
+| ring_size | 16 - 1,000,000 packets |
+| Session table | 100,000 (LRU eviction) |
+| UI render buffer | 4 MB |
+| Filter preview | 2,000 packet scan |
+| Quiet + syslog mode | ~16 KB total |
 
 ### Parser Hardening
 
-| Check | Details |
-|-------|---------|
-| IPv4 IHL | Validated `>= 20` and `<= caplen` |
-| TCP data offset | Validated `>= 20` and `<= segment length` |
-| DNS labels | Capped at 63 bytes (RFC 1035), max 128 labels |
-| TLS SNI | 256-byte buffer with explicit bounds |
-| Field reads | Safe `memcpy`-based (no pointer casting, ARM-safe) |
+| Check | Rule |
+|-------|------|
+| IPv4 IHL | >= 20, <= caplen |
+| TCP data offset | >= 20, <= segment length |
+| DNS labels | <= 63 bytes, max 128 labels |
+| TLS SNI | 256-byte buffer, bounds checked |
+| Field reads | memcpy-based (ARM-safe) |
 
 ### Signal Safety
 
-`SIGINT`/`SIGTERM` handler only sets `volatile sig_atomic_t` flags. No async-signal-unsafe calls.
+Handler only sets `volatile sig_atomic_t`. No async-unsafe calls.
 
-### Syslog Loop Prevention
+### Syslog Loop Guard
 
-Packets to/from the syslog destination IP:port over UDP are excluded from forwarding.
+Packets to/from syslog destination excluded automatically.
 
 ---
 
 ## Permissions
 
-| Platform              | Requirement |
-|-----------------------|-------------|
-| Linux                 | `sudo ./snuffles` or `sudo setcap cap_net_raw+ep ./snuffles` |
-| macOS                 | `sudo ./snuffles` |
-| Windows (Npcap)       | Run as Administrator |
-| Windows (raw socket)  | Run as Administrator |
+| Platform | Requirement |
+|----------|-------------|
+| Linux | `sudo ./snuffles` or `sudo setcap cap_net_raw+ep ./snuffles` |
+| macOS | `sudo ./snuffles` |
+| Windows | Run as Administrator |
 
 ---
 
 ## Build Comparison
 
-| Feature                | libpcap (`make`)   | Raw socket (`make nopcap`) |
-|------------------------|--------------------|----------------------------|
-| Dependencies           | libpcap / Npcap    | None                       |
-| BPF kernel filter      | Yes                | No (use display filter)    |
-| Offline pcap reading   | Yes (`-r`)         | No                         |
-| Ethernet/ARP capture   | Yes                | Linux only                 |
-| Syslog forwarding      | Yes                | Yes                        |
-| Session tracking       | Yes                | Yes                        |
-| Windows without Npcap  | No                 | Yes                        |
-| macOS                  | Yes                | No                         |
+| Feature | `make` (libpcap) | `make nopcap` (raw) |
+|---------|-------------------|---------------------|
+| Dependencies | libpcap / Npcap | None |
+| BPF kernel filter | Yes | No |
+| Offline pcap | Yes | No |
+| Ethernet/ARP | Yes | Linux only |
+| Syslog | Yes | Yes |
+| Sessions | Yes | Yes |
+| Silent mode | Yes | Yes |
+| Windows w/o Npcap | No | Yes |
+| macOS | Yes | No |
 
 ---
 
