@@ -1,0 +1,19 @@
+# Build artifacts
+*.o
+*.obj
+*.exe
+snuffles
+build/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Debug
+*.dSYM/
