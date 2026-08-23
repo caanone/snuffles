@@ -21,3 +21,6 @@ build/
 # CMake
 build-*/
 compile_commands.json
+
+# Windows test artifacts
+build-win/

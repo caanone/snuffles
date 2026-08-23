@@ -61,7 +61,7 @@ static void format_bytes(uint64_t bytes, char *buf, size_t len) {
     else if (bytes >= 1024ULL)
         snprintf(buf, len, "%.1f KB", (double)bytes / 1024.0);
     else
-        snprintf(buf, len, "%lu B", (unsigned long)bytes);
+        snprintf(buf, len, "%llu B", (unsigned long long)bytes);
 }
 
 static void format_rate(double bps, char *buf, size_t len) {
@@ -80,6 +80,6 @@ void stats_format(const stats_t *s, char *buf, size_t len) {
     format_bytes(s->total_bytes, bytes_str, sizeof(bytes_str));
     format_rate(s->bps, rate_str, sizeof(rate_str));
 
-    snprintf(buf, len, "Pkts: %lu  %s  PPS: %.1f  %s",
-             (unsigned long)s->total_packets, bytes_str, s->pps, rate_str);
+    snprintf(buf, len, "Pkts: %llu  %s  PPS: %.1f  %s",
+             (unsigned long long)s->total_packets, bytes_str, s->pps, rate_str);
 }

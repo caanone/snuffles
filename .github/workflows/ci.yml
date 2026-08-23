@@ -94,15 +94,12 @@ jobs:
       - name: Fuzz filter compiler
         run: ./fuzz_filter -runs=100000 -max_len=256 -print_final_stats=1
 
-  windows-cross:
-    name: Windows cross-build (MinGW, NO_PCAP)
+  windows-wine:
+    name: Windows tests (MinGW + Wine)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
-      - name: Build snuffles.exe
-        run: |
-          x86_64-w64-mingw32-gcc -std=c11 -Wall -Wextra -O2 -DNO_PCAP -D_WIN32_WINNT=0x0601 -Iinclude \
-            src/main.c src/capture_raw.c src/dissect.c src/filter.c src/ringbuf.c \
-            src/ui.c src/export_pcap.c src/export_json.c src/stats.c src/session.c \
-            src/syslog_out.c -o snuffles.exe -lws2_32 -liphlpapi
+      - name: Install MinGW and Wine
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 wine wine64
+      - name: Cross-compile and run tests under Wine
+        run: ./scripts/test-windows.sh --inner

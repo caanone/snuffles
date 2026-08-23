@@ -133,6 +133,95 @@ int main(void) {
             dissect_packet(pkt, len, 228, &out);
     }
 
+    /* ── IPv4 non-first fragment: no L4 parse ───────────────── */
+    {
+        size_t o = eth_hdr(pkt, 0x0800);
+        o = ipv4_hdr(pkt, o, 6, 20);
+        o = tcp_hdr(pkt, o, 40000, 443, 0x02);
+        pkt[14 + 6] = 0x00; pkt[14 + 7] = 0xB9;   /* frag offset 185 */
+        dissect_packet(pkt, (uint32_t)o, 1, &out);
+        CHECK(out.l4_proto == PROTO_UNKNOWN);
+        CHECK(out.src_port == 0);
+        CHECK(strstr(out.info, "fragment") != NULL);
+    }
+
+    /* ── IPv6 with hop-by-hop extension header, then TCP ────── */
+    {
+        uint8_t v6[40] = {0x60};
+        v6[6] = 0;      /* next: hop-by-hop */
+        v6[7] = 64;
+        v6[9] = 1;      /* src ::1-ish */
+        v6[39] = 2;
+        size_t o = eth_hdr(pkt, 0x86DD);
+        o = put(pkt, o, v6, 40);
+        uint8_t hbh[8] = { 6, 0 };   /* next: TCP, len 0 => 8 bytes */
+        o = put(pkt, o, hbh, 8);
+        o = tcp_hdr(pkt, o, 1234, 443, 0x02);
+        dissect_packet(pkt, (uint32_t)o, 1, &out);
+        CHECK(out.l4_proto == PROTO_TCP);
+        CHECK(out.src_port == 1234 && out.dst_port == 443);
+        for (uint32_t len = 0; len <= (uint32_t)o; len++) {
+            dissect_packet(pkt, len, 1, &out);
+            CHECK(info_is_clean(&out));
+        }
+    }
+
+    /* ── IPv6 non-first fragment stops before L4 ────────────── */
+    {
+        uint8_t v6[40] = {0x60};
+        v6[6] = 44;     /* next: fragment header */
+        v6[7] = 64;
+        size_t o = eth_hdr(pkt, 0x86DD);
+        o = put(pkt, o, v6, 40);
+        uint8_t frag[8] = { 6, 0, 0x05, 0xA8 };   /* offset != 0 */
+        o = put(pkt, o, frag, 8);
+        o = tcp_hdr(pkt, o, 999, 999, 0);         /* garbage beyond */
+        dissect_packet(pkt, (uint32_t)o, 1, &out);
+        CHECK(out.l4_proto == PROTO_UNKNOWN);
+        CHECK(out.src_port == 0);
+        CHECK(strstr(out.info, "fragment") != NULL);
+    }
+
+    /* ── Linux cooked capture (DLT_LINUX_SLL / SLL2) ────────── */
+    {
+        uint8_t sll[16] = {0};
+        sll[14] = 0x08; sll[15] = 0x00;           /* EtherType IPv4 */
+        size_t o = put(pkt, 0, sll, 16);
+        o = ipv4_hdr(pkt, o, 6, 20);
+        o = tcp_hdr(pkt, o, 5555, 80, 0x02);
+        dissect_packet(pkt, (uint32_t)o, 113, &out);
+        CHECK(out.l4_proto == PROTO_TCP);
+        CHECK(out.src_port == 5555);
+        for (uint32_t len = 0; len <= (uint32_t)o; len++)
+            dissect_packet(pkt, len, 113, &out);
+
+        uint8_t sll2[20] = {0x08, 0x00};          /* EtherType first */
+        o = put(pkt, 0, sll2, 20);
+        o = ipv4_hdr(pkt, o, 17, 8);
+        o = udp_hdr(pkt, o, 68, 67, 0);
+        dissect_packet(pkt, (uint32_t)o, 276, &out);
+        CHECK(out.l4_proto == PROTO_UDP);
+        CHECK(out.src_port == 68);
+    }
+
+    /* ── DLT_NULL loopback framing (both byte orders) ───────── */
+    {
+        uint8_t nullhdr[4] = { 2, 0, 0, 0 };      /* AF_INET little-endian */
+        size_t o = put(pkt, 0, nullhdr, 4);
+        o = ipv4_hdr(pkt, o, 6, 20);
+        o = tcp_hdr(pkt, o, 4242, 22, 0x10);
+        dissect_packet(pkt, (uint32_t)o, 0, &out);
+        CHECK(out.l4_proto == PROTO_TCP);
+        CHECK(out.src_port == 4242);
+
+        uint8_t swapped[4] = { 0, 0, 0, 2 };      /* big-endian host / LOOP */
+        put(pkt, 0, swapped, 4);
+        dissect_packet(pkt, (uint32_t)o, 0, &out);
+        CHECK(out.l4_proto == PROTO_TCP);
+        for (uint32_t len = 0; len <= (uint32_t)o; len++)
+            dissect_packet(pkt, len, 0, &out);
+    }
+
     /* ── random garbage sweep (mini-fuzz, deterministic) ────── */
     {
         unsigned seed = 42;
