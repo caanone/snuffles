@@ -1,4 +1,4 @@
-<h1 align="center">🐽 Snuffles</h1>
+<h1 align="center">🐶 Snuffles</h1>
 
 <p align="center"><b>A lightweight terminal packet analyzer that sniffs everything out.</b></p>
 
