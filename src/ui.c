@@ -90,8 +90,12 @@ struct ui_ctx {
     int                 sess_scroll;
     int                 sess_selected;
     session_sort_t      sess_sort;
-    session_entry_t   **sess_snap;
+    session_entry_t    *sess_snap;      /* value copies (see session.h) */
     uint32_t            sess_snap_count;
+
+    /* scratch for copy-out ring reads */
+    pkt_record_t        peek_rec;
+    uint8_t            *peek_data;      /* snaplen bytes */
 
     uint64_t            last_total;
     int                 cur_row;
@@ -226,25 +230,35 @@ static uint32_t filtered_count(ui_ctx_t *ctx) {
         return total;
 
     uint32_t c = 0;
+    pkt_record_t rec;
     for (uint32_t i = 0; i < total; i++) {
-        const pkt_record_t *rec = ringbuf_peek(ctx->rb, i);
-        if (rec && filter_eval(&ctx->dfilter, &rec->summary))
+        if (ringbuf_read(ctx->rb, i, &rec, NULL) &&
+            filter_eval(&ctx->dfilter, &rec.summary))
             c++;
     }
     return c;
 }
 
+/* Copies the record into ctx->peek_rec/peek_data; the pointer is only
+ * valid until the next filtered_peek call. */
 static const pkt_record_t *filtered_peek(ui_ctx_t *ctx, uint32_t idx) {
     uint32_t total = ringbuf_count(ctx->rb);
-    if (!ctx->dfilter.valid || ctx->dfilter.root < 0)
-        return ringbuf_peek(ctx->rb, idx);
+    if (!ctx->dfilter.valid || ctx->dfilter.root < 0) {
+        if (ringbuf_read(ctx->rb, idx, &ctx->peek_rec, ctx->peek_data))
+            return &ctx->peek_rec;
+        return NULL;
+    }
 
     uint32_t c = 0;
+    pkt_record_t rec;
     for (uint32_t i = 0; i < total; i++) {
-        const pkt_record_t *rec = ringbuf_peek(ctx->rb, i);
-        if (!rec) continue;
-        if (filter_eval(&ctx->dfilter, &rec->summary)) {
-            if (c == idx) return rec;
+        if (!ringbuf_read(ctx->rb, i, &rec, NULL)) continue;
+        if (filter_eval(&ctx->dfilter, &rec.summary)) {
+            if (c == idx) {
+                if (ringbuf_read(ctx->rb, i, &ctx->peek_rec, ctx->peek_data))
+                    return &ctx->peek_rec;
+                return NULL;
+            }
             c++;
         }
     }
@@ -372,7 +386,7 @@ static void render_frame(ui_ctx_t *ctx) {
             ob_moveto(ctx, row++);
             uint32_t si = (uint32_t)(ctx->sess_scroll + i);
             if (si < stotal && ctx->sess_snap) {
-                const session_entry_t *se = ctx->sess_snap[si];
+                const session_entry_t *se = &ctx->sess_snap[si];
                 int is_sel = ((int)si == ctx->sess_selected);
 
                 /* color by state */
@@ -590,9 +604,10 @@ static void render_frame(ui_ctx_t *ctx) {
                 uint32_t matches = 0;
                 uint32_t rb_count = ringbuf_count(ctx->rb);
                 uint32_t scan_limit = rb_count < 2000 ? rb_count : 2000;
+                pkt_record_t prec;
                 for (uint32_t fi = 0; fi < scan_limit; fi++) {
-                    const pkt_record_t *r = ringbuf_peek(ctx->rb, fi);
-                    if (r && filter_eval(&preview, &r->summary)) matches++;
+                    if (ringbuf_read(ctx->rb, fi, &prec, NULL) &&
+                        filter_eval(&preview, &prec.summary)) matches++;
                 }
                 if (scan_limit < rb_count)
                     ob_printf(ctx, ESC_DIM "  (~%u/%u sampled)" ESC_RESET,
@@ -668,15 +683,16 @@ static void render_frame(ui_ctx_t *ctx) {
 
 static void sync_stats(ui_ctx_t *ctx) {
     uint64_t total = ringbuf_total(ctx->rb);
+    /* Skip records that already fell out of the ring; this also bounds
+     * the catch-up after a long pause to at most one ring's worth. */
+    uint64_t oldest = ringbuf_oldest(ctx->rb);
+    if (ctx->last_total < oldest) ctx->last_total = oldest;
+
+    pkt_record_t rec;
     while (ctx->last_total < total) {
-        uint32_t count = ringbuf_count(ctx->rb);
-        uint32_t idx;
-        if (total <= count)
-            idx = (uint32_t)ctx->last_total;
-        else
-            idx = (uint32_t)(ctx->last_total - (total - count));
-        const pkt_record_t *rec = ringbuf_peek(ctx->rb, idx);
-        if (rec) stats_update(&ctx->stats, &rec->summary);
+        uint32_t idx = (uint32_t)(ctx->last_total - oldest);
+        if (ringbuf_read(ctx->rb, idx, &rec, NULL))
+            stats_update(&ctx->stats, &rec.summary);
         ctx->last_total++;
     }
 }
@@ -824,7 +840,7 @@ static void handle_input(ui_ctx_t *ctx) {
         ringbuf_clear(ctx->rb);
         if (ctx->sessions) session_table_clear(ctx->sessions);
         stats_init(&ctx->stats);
-        ctx->last_total = 0;
+        ctx->last_total = ringbuf_total(ctx->rb);
         ctx->selected = 0;
         ctx->scroll_off = 0;
     } else if (c == 'p' || c == 'P') {
@@ -836,7 +852,7 @@ static void handle_input(ui_ctx_t *ctx) {
             /* drill into selected session: switch to packet view with filter */
             if (ctx->sess_snap && ctx->sess_selected >= 0 &&
                 (uint32_t)ctx->sess_selected < ctx->sess_snap_count) {
-                uint32_t sid = ctx->sess_snap[ctx->sess_selected]->id;
+                uint32_t sid = ctx->sess_snap[ctx->sess_selected].id;
                 char expr[32];
                 snprintf(expr, sizeof(expr), "session == %u", sid);
                 filter_compile(expr, &ctx->dfilter);
@@ -896,6 +912,8 @@ ui_ctx_t *ui_create(ringbuf_t *rb, capture_ctx_t *cap,
     ctx->outbuf_size = 65536;
     ctx->outbuf = malloc(ctx->outbuf_size);
     if (!ctx->outbuf) { free(ctx); return NULL; }
+    ctx->peek_data = malloc(rb->snaplen);
+    if (!ctx->peek_data) { free(ctx->outbuf); free(ctx); return NULL; }
 
     stats_init(&ctx->stats);
     memset(&ctx->dfilter, 0, sizeof(ctx->dfilter));
@@ -908,6 +926,7 @@ ui_ctx_t *ui_create(ringbuf_t *rb, capture_ctx_t *cap,
 void ui_destroy(ui_ctx_t *ctx) {
     if (!ctx) return;
     free(ctx->sess_snap);
+    free(ctx->peek_data);
     free(ctx->outbuf);
     free(ctx);
 }

@@ -21,6 +21,12 @@ ringbuf_t *ringbuf_create(uint32_t capacity, uint32_t snaplen) {
     rb->data_pool = calloc(capacity, (size_t)snaplen);
     if (!rb->data_pool) { free(rb->records); free(rb); return NULL; }
 
+    rb->slot_gen = calloc(capacity, sizeof(atomic_uint_fast64_t));
+    if (!rb->slot_gen) {
+        free(rb->data_pool); free(rb->records); free(rb);
+        return NULL;
+    }
+
     /* point each record's raw_data into the flat pool */
     for (uint32_t i = 0; i < capacity; i++) {
         rb->records[i].raw_data = rb->data_pool + (size_t)i * snaplen;
@@ -28,6 +34,7 @@ ringbuf_t *ringbuf_create(uint32_t capacity, uint32_t snaplen) {
 
     atomic_store(&rb->write_seq, 0);
     atomic_store(&rb->commit_seq, 0);
+    atomic_store(&rb->clear_seq, 0);
     ns_mutex_init(&rb->mtx);
     ns_cond_init(&rb->cond);
 
@@ -58,6 +65,7 @@ void ringbuf_destroy(ringbuf_t *rb) {
 #endif
     ns_mutex_destroy(&rb->mtx);
     ns_cond_destroy(&rb->cond);
+    free(rb->slot_gen);
     free(rb->data_pool);
     free(rb->records);
     free(rb);
@@ -66,12 +74,16 @@ void ringbuf_destroy(ringbuf_t *rb) {
 pkt_record_t *ringbuf_producer_next(ringbuf_t *rb) {
     uint64_t seq = atomic_load(&rb->write_seq);
     uint32_t idx = (uint32_t)(seq % rb->capacity);
+    atomic_fetch_add(&rb->slot_gen[idx], 1);   /* even -> odd: write begins */
     return &rb->records[idx];
 }
 
 void ringbuf_producer_commit(ringbuf_t *rb) {
-    uint64_t seq = atomic_fetch_add(&rb->write_seq, 1);
-    rb->records[seq % rb->capacity].seq_num = seq;
+    uint64_t seq = atomic_load(&rb->write_seq);
+    uint32_t idx = (uint32_t)(seq % rb->capacity);
+    rb->records[idx].seq_num = seq;
+    atomic_fetch_add(&rb->slot_gen[idx], 1);   /* odd -> even: slot stable */
+    atomic_store(&rb->write_seq, seq + 1);
     atomic_fetch_add(&rb->commit_seq, 1);
 
     /* wake consumer */
@@ -87,37 +99,55 @@ void ringbuf_producer_commit(ringbuf_t *rb) {
 #endif
 }
 
+uint64_t ringbuf_oldest(const ringbuf_t *rb) {
+    uint64_t total = atomic_load(&rb->commit_seq);
+    uint64_t clear = atomic_load(&rb->clear_seq);
+    uint64_t oldest = (total > rb->capacity) ? total - rb->capacity : 0;
+    return (clear > oldest) ? clear : oldest;
+}
+
 uint32_t ringbuf_count(const ringbuf_t *rb) {
     uint64_t total = atomic_load(&rb->commit_seq);
-    if (total > rb->capacity) return rb->capacity;
-    return (uint32_t)total;
+    return (uint32_t)(total - ringbuf_oldest(rb));
 }
 
 uint64_t ringbuf_total(const ringbuf_t *rb) {
     return atomic_load(&rb->commit_seq);
 }
 
-const pkt_record_t *ringbuf_peek(ringbuf_t *rb, uint32_t idx) {
-    uint64_t total   = atomic_load(&rb->commit_seq);
-    uint32_t count   = ringbuf_count(rb);
+int ringbuf_read(ringbuf_t *rb, uint32_t idx, pkt_record_t *out, uint8_t *data) {
+    for (int attempt = 0; attempt < 4; attempt++) {
+        uint64_t total  = atomic_load(&rb->commit_seq);
+        uint64_t oldest = ringbuf_oldest(rb);
+        if (idx >= (uint32_t)(total - oldest)) return 0;
 
-    if (idx >= count) return NULL;
+        uint64_t target = oldest + idx;
+        uint32_t slot   = (uint32_t)(target % rb->capacity);
 
-    uint64_t oldest_seq;
-    if (total <= rb->capacity) {
-        oldest_seq = 0;
-    } else {
-        oldest_seq = total - rb->capacity;
+        uint64_t g1 = atomic_load(&rb->slot_gen[slot]);
+        if (g1 & 1) continue;   /* producer mid-write, retry */
+
+        *out = rb->records[slot];
+        uint32_t rl = out->raw_len;
+        if (rl > rb->snaplen) rl = rb->snaplen;   /* torn read paranoia */
+        out->raw_len = rl;
+        if (data) {
+            memcpy(data, rb->data_pool + (size_t)slot * rb->snaplen, rl);
+            out->raw_data = data;
+        } else {
+            out->raw_data = NULL;
+        }
+
+        if (atomic_load(&rb->slot_gen[slot]) == g1 && out->seq_num == target)
+            return 1;
     }
-
-    uint64_t target_seq = oldest_seq + idx;
-    uint32_t slot = (uint32_t)(target_seq % rb->capacity);
-    return &rb->records[slot];
+    return 0;
 }
 
 void ringbuf_clear(ringbuf_t *rb) {
-    atomic_store(&rb->write_seq, 0);
-    atomic_store(&rb->commit_seq, 0);
+    /* Never reset the producer counters (the capture thread may be between
+     * its write_seq/commit_seq updates); just raise the visibility floor. */
+    atomic_store(&rb->clear_seq, atomic_load(&rb->commit_seq));
 }
 
 int ringbuf_get_notify_fd(ringbuf_t *rb) {

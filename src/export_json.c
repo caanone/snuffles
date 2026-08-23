@@ -1,5 +1,6 @@
 #include "export_json.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -64,14 +65,14 @@ int export_json(const char *path, ringbuf_t *rb,
     if (!f) return -1;
 
     uint32_t count = ringbuf_count(rb);
+    pkt_record_t rec;
 
     /* count matching packets */
     uint32_t match_count = 0;
     for (uint32_t i = 0; i < count; i++) {
-        const pkt_record_t *rec = ringbuf_peek(rb, i);
-        if (!rec) continue;
+        if (!ringbuf_read(rb, i, &rec, NULL)) continue;
         if (filt && filt->valid && filt->root >= 0) {
-            if (!filter_eval(filt, &rec->summary)) continue;
+            if (!filter_eval(filt, &rec.summary)) continue;
         }
         match_count++;
     }
@@ -87,9 +88,8 @@ int export_json(const char *path, ringbuf_t *rb,
     /* start time from first packet */
     char time_str[64] = "N/A";
     if (count > 0) {
-        const pkt_record_t *first = ringbuf_peek(rb, 0);
-        if (first) {
-            time_t t = first->summary.ts.tv_sec;
+        if (ringbuf_read(rb, 0, &rec, NULL)) {
+            time_t t = rec.summary.ts.tv_sec;
             struct tm *tm = gmtime(&t);
             if (tm)
                 strftime(time_str, sizeof(time_str), "%Y-%m-%dT%H:%M:%SZ", tm);
@@ -113,12 +113,14 @@ int export_json(const char *path, ringbuf_t *rb,
     int first_pkt = 1;
     int pkt_no = 0;
 
+    uint8_t *data = malloc(rb->snaplen);
+    if (!data) { fclose(f); return -1; }
+
     for (uint32_t i = 0; i < count; i++) {
-        const pkt_record_t *rec = ringbuf_peek(rb, i);
-        if (!rec) continue;
+        if (!ringbuf_read(rb, i, &rec, data)) continue;
 
         if (filt && filt->valid && filt->root >= 0) {
-            if (!filter_eval(filt, &rec->summary)) continue;
+            if (!filter_eval(filt, &rec.summary)) continue;
         }
 
         if (!first_pkt) fputs(",\n", f);
@@ -127,7 +129,7 @@ int export_json(const char *path, ringbuf_t *rb,
 
         fputs("    {\n", f);
 
-        const pkt_summary_t *s = &rec->summary;
+        const pkt_summary_t *s = &rec.summary;
 
         char ts_str[32];
         snprintf(ts_str, sizeof(ts_str), "%ld.%06ld",
@@ -142,7 +144,7 @@ int export_json(const char *path, ringbuf_t *rb,
         json_kv_str(f, "protocol",  s->protocol,  1);
         json_kv_int(f, "length",    s->length,    1);
         json_kv_str(f, "info",      s->info,      1);
-        json_kv_hex(f, "hex", rec->raw_data, rec->raw_len, 1);
+        json_kv_hex(f, "hex", rec.raw_data, rec.raw_len, 1);
 
         fputs("\n    }", f);
     }
@@ -150,6 +152,7 @@ int export_json(const char *path, ringbuf_t *rb,
     fputs("\n  ]\n", f);
     fputs("}\n", f);
 
+    free(data);
     fclose(f);
     return pkt_no;
 }

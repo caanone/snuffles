@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <stdatomic.h>
 
 #ifndef _WIN32
   #include <unistd.h>
@@ -19,15 +20,23 @@ struct capture_ctx {
     session_table_t    *st;
     capture_cfg_t       cfg;
     ns_thread_t         thread;
-    volatile int        running;
-    volatile int        stop_req;
+    atomic_int          running;
+    atomic_int          stop_req;
     int                 datalink;
     int                 offline;
-    uint64_t            pkt_count;
+    uint64_t            pkt_count;      /* capture thread only */
+    atomic_uint_fast64_t drops;         /* published by capture thread */
     char                errbuf[PCAP_ERRBUF_SIZE];
     char                iface_name[64];
-    char                bpf_active[512];
+    char                bpf_active[512]; /* UI thread only (after create) */
     syslog_out_t       *syslog;
+
+    /* BPF changes are queued here by the UI thread and applied by the
+     * capture thread between dispatch calls: the pcap_t handle must only
+     * be used from the capture thread (pcap_breakloop excepted). */
+    ns_mutex_t          bpf_mtx;
+    char                bpf_pending[512];
+    atomic_int          bpf_req;
 };
 
 /* ── Capture callback ────────────────────────────────────────── */
@@ -36,7 +45,7 @@ static void capture_callback(u_char *user, const struct pcap_pkthdr *hdr,
                              const u_char *data) {
     capture_ctx_t *ctx = (capture_ctx_t *)user;
 
-    if (ctx->stop_req) {
+    if (atomic_load(&ctx->stop_req)) {
         pcap_breakloop(ctx->handle);
         return;
     }
@@ -57,8 +66,8 @@ static void capture_callback(u_char *user, const struct pcap_pkthdr *hdr,
 
     /* update session table */
     if (ctx->st) {
-        session_entry_t *se = session_table_update(ctx->st, &rec->summary);
-        if (se) rec->summary.session_id = se->id;
+        uint32_t sid = session_table_update(ctx->st, &rec->summary);
+        if (sid) rec->summary.session_id = sid;
     }
 
     /* syslog output (skip our own syslog traffic to prevent feedback loop) */
@@ -75,15 +84,42 @@ static void capture_callback(u_char *user, const struct pcap_pkthdr *hdr,
 
 /* ── Capture thread ──────────────────────────────────────────── */
 
+/* Runs on the capture thread between dispatch calls. */
+static void apply_pending_bpf(capture_ctx_t *ctx) {
+    char expr[sizeof(ctx->bpf_pending)];
+    ns_mutex_lock(&ctx->bpf_mtx);
+    memcpy(expr, ctx->bpf_pending, sizeof(expr));
+    ns_mutex_unlock(&ctx->bpf_mtx);
+
+    struct bpf_program fp;
+    if (pcap_compile(ctx->handle, &fp, expr, 1, PCAP_NETMASK_UNKNOWN) != 0) {
+        fprintf(stderr, "BPF compile error: %s\n", pcap_geterr(ctx->handle));
+        return;
+    }
+    if (pcap_setfilter(ctx->handle, &fp) != 0)
+        fprintf(stderr, "BPF setfilter error: %s\n", pcap_geterr(ctx->handle));
+    pcap_freecode(&fp);
+}
+
 static void *capture_thread_fn(void *arg) {
     capture_ctx_t *ctx = (capture_ctx_t *)arg;
-    ctx->running = 1;
+    atomic_store(&ctx->running, 1);
 
-    while (!ctx->stop_req) {
+    while (!atomic_load(&ctx->stop_req)) {
+        if (atomic_exchange(&ctx->bpf_req, 0))
+            apply_pending_bpf(ctx);
+
         int ret = pcap_dispatch(ctx->handle, 64, capture_callback, (u_char *)ctx);
+
+        if (!ctx->offline) {
+            struct pcap_stat ps;
+            if (pcap_stats(ctx->handle, &ps) == 0)
+                atomic_store(&ctx->drops, (uint64_t)ps.ps_drop);
+        }
+
         if (ret == PCAP_ERROR_BREAK || ret == 0) {
             if (ctx->offline) break;
-            if (ctx->stop_req) break;
+            if (atomic_load(&ctx->stop_req)) break;
         }
         if (ret == PCAP_ERROR) {
             fprintf(stderr, "pcap error: %s\n", pcap_geterr(ctx->handle));
@@ -91,7 +127,7 @@ static void *capture_thread_fn(void *arg) {
         }
     }
 
-    ctx->running = 0;
+    atomic_store(&ctx->running, 0);
     return NULL;
 }
 
@@ -133,6 +169,7 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
     ctx->rb  = rb;
     ctx->st  = st;
     ctx->cfg = *cfg;
+    ns_mutex_init(&ctx->bpf_mtx);
 
     if (cfg->pcap_file[0]) {
         /* offline mode */
@@ -250,10 +287,10 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
 }
 
 int capture_start(capture_ctx_t *ctx) {
-    ctx->stop_req = 0;
-    ctx->running  = 1; /* set before thread starts to avoid race */
+    atomic_store(&ctx->stop_req, 0);
+    atomic_store(&ctx->running, 1); /* set before thread starts to avoid race */
     if (ns_thread_create(&ctx->thread, capture_thread_fn, ctx) != 0) {
-        ctx->running = 0;
+        atomic_store(&ctx->running, 0);
         fprintf(stderr, "Failed to create capture thread\n");
         return -1;
     }
@@ -262,9 +299,9 @@ int capture_start(capture_ctx_t *ctx) {
 
 void capture_stop(capture_ctx_t *ctx) {
     if (!ctx) return;
-    ctx->stop_req = 1;
+    atomic_store(&ctx->stop_req, 1);
     if (ctx->handle)
-        pcap_breakloop(ctx->handle);
+        pcap_breakloop(ctx->handle);   /* documented as thread-safe */
     ns_thread_join(ctx->thread);
 }
 
@@ -273,11 +310,12 @@ void capture_destroy(capture_ctx_t *ctx) {
     syslog_out_destroy(ctx->syslog);
     if (ctx->handle)
         pcap_close(ctx->handle);
+    ns_mutex_destroy(&ctx->bpf_mtx);
     free(ctx);
 }
 
 int capture_is_running(const capture_ctx_t *ctx) {
-    return ctx ? ctx->running : 0;
+    return ctx ? atomic_load(&ctx->running) : 0;
 }
 
 int capture_is_offline(const capture_ctx_t *ctx) {
@@ -286,14 +324,12 @@ int capture_is_offline(const capture_ctx_t *ctx) {
 
 void capture_get_stats(capture_ctx_t *ctx, capture_stats_raw_t *out) {
     memset(out, 0, sizeof(*out));
-    if (!ctx || !ctx->handle) return;
+    if (!ctx) return;
 
+    /* No pcap calls here: this runs on the UI thread. The capture thread
+     * publishes drop counts into ctx->drops. */
     out->pkts_recv = ringbuf_total(ctx->rb);
-
-    struct pcap_stat ps;
-    if (pcap_stats(ctx->handle, &ps) == 0) {
-        out->pkts_drop = ps.ps_drop;
-    }
+    out->pkts_drop = atomic_load(&ctx->drops);
 }
 
 const char *capture_get_iface(const capture_ctx_t *ctx) {
@@ -311,30 +347,32 @@ int capture_set_bpf(capture_ctx_t *ctx, const char *expr,
         snprintf(errbuf, errlen, "No capture handle");
         return -1;
     }
+    if (!expr) expr = "";
 
-    struct bpf_program fp;
-
-    if (!expr || !expr[0]) {
-        /* clear filter — install empty program to accept all */
-        if (pcap_compile(ctx->handle, &fp, "", 1, PCAP_NETMASK_UNKNOWN) != 0) {
-            snprintf(errbuf, errlen, "%s", pcap_geterr(ctx->handle));
-            return -1;
-        }
-    } else {
-        if (pcap_compile(ctx->handle, &fp, expr, 1, PCAP_NETMASK_UNKNOWN) != 0) {
-            snprintf(errbuf, errlen, "%s", pcap_geterr(ctx->handle));
-            return -1;
-        }
-    }
-
-    if (pcap_setfilter(ctx->handle, &fp) != 0) {
-        snprintf(errbuf, errlen, "%s", pcap_geterr(ctx->handle));
-        pcap_freecode(&fp);
+    /* Called from the UI thread. Validate the expression on a throwaway
+     * dead handle (same datalink/snaplen) so syntax errors are reported
+     * immediately, then queue it for the capture thread to apply — the
+     * live pcap_t must not be touched from this thread. */
+    pcap_t *dead = pcap_open_dead(ctx->datalink, ctx->cfg.snaplen);
+    if (!dead) {
+        snprintf(errbuf, errlen, "pcap_open_dead failed");
         return -1;
     }
-
+    struct bpf_program fp;
+    if (pcap_compile(dead, &fp, expr, 1, PCAP_NETMASK_UNKNOWN) != 0) {
+        snprintf(errbuf, errlen, "%s", pcap_geterr(dead));
+        pcap_close(dead);
+        return -1;
+    }
     pcap_freecode(&fp);
-    snprintf(ctx->bpf_active, sizeof(ctx->bpf_active), "%s", expr ? expr : "");
+    pcap_close(dead);
+
+    ns_mutex_lock(&ctx->bpf_mtx);
+    snprintf(ctx->bpf_pending, sizeof(ctx->bpf_pending), "%s", expr);
+    ns_mutex_unlock(&ctx->bpf_mtx);
+    atomic_store(&ctx->bpf_req, 1);
+
+    snprintf(ctx->bpf_active, sizeof(ctx->bpf_active), "%s", expr);
     return 0;
 }
 
