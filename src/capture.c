@@ -259,21 +259,9 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
 
     /* drop root privileges after capture device is opened */
 #ifndef _WIN32
-    if (geteuid() == 0) {
-        uid_t orig_uid = getuid();
-        if (orig_uid != 0) {
-            /* started via sudo: drop back to the real user */
-            if (setgid(getgid()) == 0)
-                setuid(orig_uid);
-        } else {
-            /* truly running as root: try to drop to nobody */
-            struct passwd *pw = getpwnam("nobody");
-            if (pw) {
-                setgid(pw->pw_gid);
-                setuid(pw->pw_uid);
-            }
-        }
-    }
+    if (ns_drop_privileges() != 0)
+        fprintf(stderr, "Warning: failed to drop root privileges; "
+                        "continuing as root\n");
 #endif
 
     /* open syslog output if configured */

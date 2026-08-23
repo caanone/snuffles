@@ -282,7 +282,7 @@ static int dissect_tcp(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
     char flagstr[16];
     format_tcp_flags(flags, flagstr, sizeof(flagstr));
     snprintf(out->info, sizeof(out->info),
-             "%u \xe2\x86\x92 %u %s Seq=%u Ack=%u Win=%u",
+             "%u -> %u %s Seq=%u Ack=%u Win=%u",
              out->src_port, out->dst_port, flagstr, seq, ack, win);
 
     /* try L7 if there's payload */
@@ -322,7 +322,7 @@ static int dissect_udp(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
     out->highest_proto = PROTO_UDP;
     snprintf(out->protocol, sizeof(out->protocol), "UDP");
     snprintf(out->info, sizeof(out->info),
-             "%u \xe2\x86\x92 %u Len=%u", out->src_port, out->dst_port, ulen);
+             "%u -> %u Len=%u", out->src_port, out->dst_port, ulen);
 
     /* try L7 */
     if (len > 8) {
@@ -347,7 +347,7 @@ static int dissect_sctp(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
     out->highest_proto = PROTO_SCTP;
     snprintf(out->protocol, sizeof(out->protocol), "SCTP");
     snprintf(out->info, sizeof(out->info),
-             "%u \xe2\x86\x92 %u", out->src_port, out->dst_port);
+             "%u -> %u", out->src_port, out->dst_port);
     return 0;
 }
 
@@ -450,7 +450,7 @@ static int dissect_ipv4(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
             out->highest_proto = PROTO_IPV4;
             snprintf(out->protocol, sizeof(out->protocol), "IPv4");
             snprintf(out->info, sizeof(out->info),
-                     "%s \xe2\x86\x92 %s proto=%u",
+                     "%s -> %s proto=%u",
                      out->src_ip, out->dst_ip, proto);
             break;
     }
@@ -489,7 +489,7 @@ static int dissect_ipv6(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
             out->highest_proto = PROTO_IPV6;
             snprintf(out->protocol, sizeof(out->protocol), "IPv6");
             snprintf(out->info, sizeof(out->info),
-                     "%s \xe2\x86\x92 %s next=%u",
+                     "%s -> %s next=%u",
                      out->src_ip, out->dst_ip, next_hdr);
             break;
     }
@@ -563,7 +563,7 @@ static int dissect_ethernet(const uint8_t *data, uint32_t len, pkt_summary_t *ou
             out->highest_proto = PROTO_ETH;
             snprintf(out->protocol, sizeof(out->protocol), "ETH");
             snprintf(out->info, sizeof(out->info),
-                     "%s \xe2\x86\x92 %s type=0x%04x",
+                     "%s -> %s type=0x%04x",
                      out->src_mac, out->dst_mac, ethertype);
             return 0;
     }
@@ -591,5 +591,13 @@ void dissect_packet(const uint8_t *data, uint32_t caplen,
             snprintf(out->protocol, sizeof(out->protocol), "???");
             snprintf(out->info, sizeof(out->info), "Unknown datalink %d", datalink_type);
             break;
+    }
+
+    /* Packet bytes flow into info (HTTP lines, DNS names, TLS SNI) and are
+     * later printed to the operator's terminal: strip anything that could
+     * carry escape sequences or break the JSON export's UTF-8. */
+    for (char *ip = out->info; *ip; ip++) {
+        unsigned char ch = (unsigned char)*ip;
+        if (ch < 0x20 || ch >= 0x7f) *ip = '.';
     }
 }
