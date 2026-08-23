@@ -1,6 +1,7 @@
 #ifndef EXPORT_JSON_H
 #define EXPORT_JSON_H
 
+#include <stdio.h>
 #include "snuffles.h"
 #include "ringbuf.h"
 #include "filter.h"
