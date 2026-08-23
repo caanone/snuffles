@@ -16,6 +16,7 @@
 #include "dissect.h"
 #include "syslog_out.h"
 #include <stdatomic.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -87,6 +88,16 @@ static void *capture_thread_fn(void *arg) {
         int len = (int)recv(ctx->sock, (char *)buf, sizeof(buf), 0);
         if (len <= 0) {
             if (atomic_load(&ctx->stop_req)) break;
+#ifdef _WIN32
+            if (len < 0 && WSAGetLastError() != WSAETIMEDOUT)
+                Sleep(100);              /* hard error: don't busy-spin */
+#else
+            if (len < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
+                errno != EINTR) {
+                struct timeval nap = { .tv_sec = 0, .tv_usec = 100000 };
+                select(0, NULL, NULL, NULL, &nap);
+            }
+#endif
             continue; /* timeout or error */
         }
 
@@ -313,15 +324,20 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
         snprintf(ctx->iface_name, sizeof(ctx->iface_name), "any");
     }
 
-    /* set promiscuous mode if requested */
+    /* Promiscuous mode via PACKET_ADD_MEMBERSHIP: the kernel reference-
+     * counts it and clears it when the socket closes. (SIOCSIFFLAGS left
+     * the interface promiscuous forever after exit, and restoring it
+     * ourselves is impossible once privileges are dropped.) */
     if (cfg->promisc && cfg->iface[0]) {
-        struct ifreq ifr;
-        memset(&ifr, 0, sizeof(ifr));
-        snprintf(ifr.ifr_name, IFNAMSIZ, "%s", cfg->iface);
-        if (ioctl(ctx->sock, SIOCGIFFLAGS, &ifr) == 0) {
-            ifr.ifr_flags |= IFF_PROMISC;
-            ioctl(ctx->sock, SIOCSIFFLAGS, &ifr);
-        }
+        struct packet_mreq mr;
+        memset(&mr, 0, sizeof(mr));
+        mr.mr_ifindex = (int)if_nametoindex(cfg->iface);
+        mr.mr_type    = PACKET_MR_PROMISC;
+        if (mr.mr_ifindex == 0 ||
+            setsockopt(ctx->sock, SOL_PACKET, PACKET_ADD_MEMBERSHIP,
+                       &mr, sizeof(mr)) != 0)
+            fprintf(stderr, "Warning: could not enable promiscuous mode on %s\n",
+                    cfg->iface);
     }
 
     /* receive timeout */
@@ -390,6 +406,12 @@ int capture_is_running(const capture_ctx_t *ctx) {
 int capture_is_offline(const capture_ctx_t *ctx) {
     (void)ctx;
     return 0; /* raw sockets are always live */
+}
+
+int capture_get_datalink(const capture_ctx_t *ctx) {
+    /* Linux AF_PACKET delivers Ethernet frames; the Windows raw socket
+     * delivers bare IP packets (DLT_RAW). */
+    return (ctx && ctx->has_eth) ? 1 : 101;
 }
 
 void capture_get_stats(capture_ctx_t *ctx, capture_stats_raw_t *out) {

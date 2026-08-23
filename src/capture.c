@@ -320,6 +320,10 @@ void capture_get_stats(capture_ctx_t *ctx, capture_stats_raw_t *out) {
     out->pkts_drop = atomic_load(&ctx->drops);
 }
 
+int capture_get_datalink(const capture_ctx_t *ctx) {
+    return ctx ? ctx->datalink : 1;
+}
+
 const char *capture_get_iface(const capture_ctx_t *ctx) {
     return ctx ? ctx->iface_name : "???";
 }

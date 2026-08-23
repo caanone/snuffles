@@ -28,6 +28,7 @@ struct syslog_out {
     struct sockaddr_in  dest;
     char                dest_ip[46];   /* resolved IP string for self-check */
     uint16_t            dest_port;
+    uint16_t            src_port;      /* our bound port, for the self-check */
 };
 
 /* ── Create: parse host:port, resolve, open UDP socket ───────── */
@@ -44,10 +45,22 @@ syslog_out_t *syslog_out_create(const char *host_port, const char *src_iface) {
 
     uint16_t port = SYSLOG_DEFAULT_PORT;
     char *colon = strrchr(buf, ':');
+    if (colon && strchr(buf, ':') != colon) {
+        fprintf(stderr, "syslog: IPv6 targets are not supported "
+                        "(use an IPv4 address or hostname)\n");
+        free(sl);
+        return NULL;
+    }
     if (colon) {
         *colon = '\0';
-        int p = atoi(colon + 1);
-        if (p > 0 && p <= 65535) port = (uint16_t)p;
+        char *end;
+        long p = strtol(colon + 1, &end, 10);
+        if (end == colon + 1 || *end != '\0' || p < 1 || p > 65535) {
+            fprintf(stderr, "syslog: invalid port '%s'\n", colon + 1);
+            free(sl);
+            return NULL;
+        }
+        port = (uint16_t)p;
     }
 
     /* resolve hostname */
@@ -104,6 +117,23 @@ syslog_out_t *syslog_out_create(const char *host_port, const char *src_iface) {
 #endif
     }
 
+    /* Learn our own source port so the self-check can match precisely
+     * instead of swallowing all third-party traffic on the syslog port. */
+    struct sockaddr_in local;
+    socklen_t llen = sizeof(local);
+    memset(&local, 0, sizeof(local));
+    if (getsockname(sl->sock, (struct sockaddr *)&local, &llen) != 0 ||
+        local.sin_port == 0) {
+        memset(&local, 0, sizeof(local));
+        local.sin_family      = AF_INET;
+        local.sin_addr.s_addr = htonl(INADDR_ANY);
+        local.sin_port        = 0;
+        (void)bind(sl->sock, (struct sockaddr *)&local, sizeof(local));
+        llen = sizeof(local);
+        (void)getsockname(sl->sock, (struct sockaddr *)&local, &llen);
+    }
+    sl->src_port = ntohs(local.sin_port);
+
     fprintf(stderr, "Syslog output: %s:%u (UDP)\n", sl->dest_ip, port);
     return sl;
 }
@@ -113,17 +143,27 @@ syslog_out_t *syslog_out_create(const char *host_port, const char *src_iface) {
 int syslog_out_is_self(const syslog_out_t *sl, const pkt_summary_t *pkt) {
     if (!sl) return 0;
 
-    /* check destination matches our syslog server */
-    if (pkt->dst_port == sl->dest_port &&
-        pkt->l4_proto == PROTO_UDP &&
+    /* our own datagrams to the collector */
+    if (pkt->l4_proto == PROTO_UDP &&
+        pkt->dst_port == sl->dest_port &&
+        (sl->src_port == 0 || pkt->src_port == sl->src_port) &&
         strcmp(pkt->dst_ip, sl->dest_ip) == 0) {
         return 1;
     }
 
-    /* also check source (reply packets from syslog server) */
-    if (pkt->src_port == sl->dest_port &&
-        pkt->l4_proto == PROTO_UDP &&
+    /* replies from the collector back to us */
+    if (pkt->l4_proto == PROTO_UDP &&
+        pkt->src_port == sl->dest_port &&
+        (sl->src_port == 0 || pkt->dst_port == sl->src_port) &&
         strcmp(pkt->src_ip, sl->dest_ip) == 0) {
+        return 1;
+    }
+
+    /* ICMP errors involving the collector (e.g. port unreachable while it
+     * is down): forwarding them would elicit more of them, forever. */
+    if ((pkt->l4_proto == PROTO_ICMP4 || pkt->l4_proto == PROTO_ICMP6) &&
+        (strcmp(pkt->src_ip, sl->dest_ip) == 0 ||
+         strcmp(pkt->dst_ip, sl->dest_ip) == 0)) {
         return 1;
     }
 

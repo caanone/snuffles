@@ -24,17 +24,30 @@
 
 static volatile sig_atomic_t g_stop = 0;
 static capture_ctx_t        *g_capture = NULL;
-static ui_ctx_t             *g_ui = NULL;
 
 /* ── Signal handler ──────────────────────────────────────────── */
 
 static void signal_handler(int sig) {
     (void)sig;
     g_stop = 1;
-    /* only set volatile flags — async-signal-safe */
-    if (g_ui) ui_request_stop(g_ui);
+    /* only sets sig_atomic_t flags — async-signal-safe, and no pointer
+       that teardown could have freed */
+    ui_request_stop_async();
     /* pcap_breakloop is NOT guaranteed async-signal-safe;
        the main loop checks g_stop and calls capture_stop itself */
+}
+
+/* ── Strict numeric option parsing ───────────────────────────── */
+
+static long parse_num(const char *s, const char *what, long lo, long hi) {
+    char *end;
+    long v = strtol(s, &end, 10);
+    if (end == s || *end != '\0' || v < lo || v > hi) {
+        fprintf(stderr, "snuffles: invalid %s '%s' (expected %ld-%ld)\n",
+                what, s, lo, hi);
+        exit(1);
+    }
+    return v;
 }
 
 /* ── Usage ───────────────────────────────────────────────────── */
@@ -120,17 +133,22 @@ static void run_headless(ringbuf_t *rb, capture_ctx_t *cap, int quiet) {
             pkt_record_t rec;
             if (ringbuf_read(rb, idx, &rec, NULL)) {
                 const pkt_summary_t *s = &rec.summary;
-                long sec = (long)(s->ts.tv_sec % 86400);
-                printf("%02ld:%02ld:%02ld.%06ld  %-21s -> %-21s  %-6s  %s\n",
-                       sec / 3600, (sec % 3600) / 60, sec % 60,
-                       (long)s->ts.tv_usec,
-                       s->src_ip[0] ? s->src_ip : s->src_mac,
-                       s->dst_ip[0] ? s->dst_ip : s->dst_mac,
-                       s->protocol, s->info);
+                time_t tsec = (time_t)s->ts.tv_sec;
+                struct tm lt;
+                if (ns_localtime(&tsec, &lt))
+                    printf("%02d:%02d:%02d.%06ld  %-21s -> %-21s  %-6s  %s\n",
+                           lt.tm_hour, lt.tm_min, lt.tm_sec,
+                           (long)s->ts.tv_usec,
+                           s->src_ip[0] ? s->src_ip : s->src_mac,
+                           s->dst_ip[0] ? s->dst_ip : s->dst_mac,
+                           s->protocol, s->info);
                 fflush(stdout);
             }
             last++;
         }
+
+        if (ferror(stdout))   /* reader went away (pipe closed) */
+            break;
 
         if (!capture_is_running(cap) && ringbuf_total(rb) <= last)
             break;
@@ -169,9 +187,11 @@ int main(int argc, char *argv[]) {
             case 'r': snprintf(cfg.pcap_file,   sizeof(cfg.pcap_file),  "%s", optarg); break;
             case 'f': snprintf(cfg.bpf_filter,  sizeof(cfg.bpf_filter), "%s", optarg); break;
             case 'o': snprintf(cfg.output_file, sizeof(cfg.output_file),"%s", optarg); break;
-            case 'c': cfg.count     = atoi(optarg); break;
-            case 's': cfg.snaplen   = atoi(optarg); snaplen_set = 1; break;
-            case 'b': cfg.ring_size = atoi(optarg); ring_set    = 1; break;
+            case 'c': cfg.count     = (int)parse_num(optarg, "count", 1, 1000000000); break;
+            case 's': cfg.snaplen   = (int)parse_num(optarg, "snaplen", 64, 65535);
+                      snaplen_set = 1; break;
+            case 'b': cfg.ring_size = (int)parse_num(optarg, "ring size", 16, 1000000);
+                      ring_set    = 1; break;
             case 'N': cfg.no_ui       = 1; break;
             case 'q': cfg.quiet      = 1; cfg.no_ui = 1; break;
             case 'L': cfg.list_ifaces = 1; break;
@@ -183,16 +203,19 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    if (optind < argc) {
+        fprintf(stderr, "snuffles: unexpected argument '%s'\n\n", argv[optind]);
+        print_usage(argv[0]);
+        return 1;
+    }
+
     if (cfg.list_ifaces) {
         return capture_list_interfaces();
     }
 
-    /* validate parameters */
-    if (cfg.snaplen < 64)    cfg.snaplen = 64;
-    if (cfg.snaplen > 65535) cfg.snaplen = 65535;
-    if (cfg.ring_size < 16)      cfg.ring_size = 16;
-    if (cfg.ring_size > 1000000) cfg.ring_size = 1000000;
-    if (cfg.count < 0) cfg.count = 0;
+    if (cfg.quiet && !cfg.syslog_target[0])
+        fprintf(stderr, "Warning: -q without --syslog captures packets "
+                        "but produces no output anywhere\n");
 
     /* Lean mode (tiny ring, no session table) applies only to the syslog
        forwarding modes documented in the README: headless/quiet WITH
@@ -246,6 +269,7 @@ int main(int argc, char *argv[]) {
     /* start capture thread */
     if (capture_start(cap) != 0) {
         capture_destroy(cap);
+        session_table_destroy(sessions);
         ringbuf_destroy(rb);
         return 1;
     }
@@ -258,12 +282,11 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Failed to create UI\n");
             capture_stop(cap);
             capture_destroy(cap);
+            session_table_destroy(sessions);
             ringbuf_destroy(rb);
             return 1;
         }
-        g_ui = ui;
         ui_run(ui);
-        g_ui = NULL;
         ui_destroy(ui);
     }
 
@@ -271,17 +294,24 @@ int main(int argc, char *argv[]) {
     capture_stop(cap);
 
     /* auto-export if -o specified */
+    int exit_rc = 0;
     if (cfg.output_file[0]) {
         size_t plen = strlen(cfg.output_file);
         display_filter_t no_filter = { .valid = true, .root = -1 };
+        int n;
 
         if (plen > 5 && strcmp(cfg.output_file + plen - 5, ".json") == 0) {
-            int n = export_json(cfg.output_file, rb, &no_filter,
-                                capture_get_iface(cap), cfg.bpf_filter);
-            fprintf(stderr, "Exported %d packets to %s\n", n, cfg.output_file);
+            n = export_json(cfg.output_file, rb, &no_filter,
+                            capture_get_iface(cap), cfg.bpf_filter);
         } else {
-            int n = export_pcap(cfg.output_file, rb, &no_filter,
-                                (uint32_t)cfg.snaplen);
+            n = export_pcap(cfg.output_file, rb, &no_filter,
+                            (uint32_t)cfg.snaplen,
+                            capture_get_datalink(cap));
+        }
+        if (n < 0) {
+            fprintf(stderr, "Export FAILED: %s\n", cfg.output_file);
+            exit_rc = 1;
+        } else {
             fprintf(stderr, "Exported %d packets to %s\n", n, cfg.output_file);
         }
     }
@@ -291,5 +321,5 @@ int main(int argc, char *argv[]) {
     session_table_destroy(sessions);
     ringbuf_destroy(rb);
 
-    return 0;
+    return exit_rc;
 }

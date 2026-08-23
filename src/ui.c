@@ -109,6 +109,10 @@ struct ui_ctx {
 #endif
 };
 
+/* Set from signal handlers: no pointers involved, so there is no window
+ * where a signal during teardown dereferences a freed ui_ctx. */
+static volatile sig_atomic_t g_async_stop = 0;
+
 /* ── Terminal helpers ────────────────────────────────────────── */
 
 static void get_term_size(int *rows, int *cols) {
@@ -547,10 +551,14 @@ static void render_frame(ui_ctx_t *ctx) {
                     ob_str(ctx, proto_color(s->highest_proto));
 
                     char ts[16];
-                    long sec = (long)(s->ts.tv_sec % 86400);
-                    snprintf(ts, sizeof(ts), "%02ld:%02ld:%02ld.%03ld",
-                             sec / 3600, (sec % 3600) / 60, sec % 60,
-                             (long)(s->ts.tv_usec / 1000));
+                    time_t tsec = (time_t)s->ts.tv_sec;
+                    struct tm lt;
+                    if (ns_localtime(&tsec, &lt))
+                        snprintf(ts, sizeof(ts), "%02d:%02d:%02d.%03ld",
+                                 lt.tm_hour, lt.tm_min, lt.tm_sec,
+                                 (long)(s->ts.tv_usec / 1000));
+                    else
+                        snprintf(ts, sizeof(ts), "??:??:??.???");
 
                     char src[48], dst[48];
                     if (s->src_port)
@@ -861,7 +869,8 @@ static void handle_input(ui_ctx_t *ctx) {
                                         ctx->cfg.bpf_filter);
                     } else {
                         n = export_pcap(path, ctx->rb, &ctx->dfilter,
-                                        (uint32_t)ctx->cfg.snaplen);
+                                        (uint32_t)ctx->cfg.snaplen,
+                                        capture_get_datalink(ctx->cap));
                     }
                     if (n >= 0)
                         snprintf(ctx->bpf_msg, sizeof(ctx->bpf_msg),
@@ -1042,6 +1051,7 @@ void ui_run(ui_ctx_t *ctx) {
     int notify_fd = ringbuf_get_notify_fd(ctx->rb);
 
     while (!ctx->stop) {
+        if (g_async_stop) break;
 #ifdef _WIN32
         Sleep(50);
 #else
@@ -1076,6 +1086,10 @@ void ui_run(ui_ctx_t *ctx) {
 #endif
 
     term_raw_disable(ctx);
+}
+
+void ui_request_stop_async(void) {
+    g_async_stop = 1;
 }
 
 void ui_request_stop(ui_ctx_t *ctx) {
