@@ -73,5 +73,16 @@ else()
     endif()
 endif()
 
+# Tests (backend-independent: each links only the sources it exercises)
+include(CTest)
+if(BUILD_TESTING)
+    foreach(t filter ringbuf session dissect)
+        add_executable(test_${t} tests/test_${t}.c src/${t}.c)
+        target_include_directories(test_${t} PRIVATE include src)
+        target_link_libraries(test_${t} PRIVATE Threads::Threads m)
+        add_test(NAME ${t} COMMAND test_${t})
+    endforeach()
+endif()
+
 # Install
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)

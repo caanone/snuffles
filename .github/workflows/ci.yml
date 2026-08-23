@@ -41,6 +41,8 @@ jobs:
         run: cmake --build build-ci -j
       - name: Smoke test
         run: ./build-ci/snuffles -v
+      - name: Unit tests
+        run: ctest --test-dir build-ci --output-on-failure
 
   sanitizers:
     name: ASan + UBSan
@@ -60,6 +62,37 @@ jobs:
       - uses: actions/checkout@v4
       - run: make
       - run: ./snuffles -v && ./snuffles --list-ifaces
+
+  sanitized-tests:
+    name: Unit tests (ASan + UBSan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >
+          cmake -B build-san -DNO_PCAP=ON
+          -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+      - run: cmake --build build-san -j
+      - run: ctest --test-dir build-san --output-on-failure
+
+  fuzz-smoke:
+    name: Fuzz smoke (libFuzzer)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build fuzzers
+        run: |
+          clang -std=c11 -g -O1 -fsanitize=fuzzer,address,undefined \
+            -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -Iinclude -Isrc \
+            fuzz/fuzz_dissect.c src/dissect.c -o fuzz_dissect
+          clang -std=c11 -g -O1 -fsanitize=fuzzer,address,undefined \
+            -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -Iinclude -Isrc \
+            fuzz/fuzz_filter.c src/filter.c -o fuzz_filter
+      - name: Fuzz dissectors
+        run: ./fuzz_dissect -runs=200000 -max_len=1500 -print_final_stats=1
+      - name: Fuzz filter compiler
+        run: ./fuzz_filter -runs=100000 -max_len=256 -print_final_stats=1
 
   windows-cross:
     name: Windows cross-build (MinGW, NO_PCAP)

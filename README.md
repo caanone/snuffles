@@ -1,5 +1,7 @@
 # Snuffles
 
+[![CI](https://github.com/caanone/snuffles/actions/workflows/ci.yml/badge.svg)](https://github.com/caanone/snuffles/actions/workflows/ci.yml)
+
 A lightweight, cross-platform network packet analyzer written in C. Terminal UI, two-level filtering, session tracking, syslog forwarding, and PCAP/JSON export.
 
 ~4,900 lines of C. Zero external dependencies beyond libpcap (optional).
@@ -84,6 +86,18 @@ make debug           # AddressSanitizer + UBSan
 make analyze         # Clang static analysis
 make clean           # Remove artifacts
 ```
+
+### Tests
+
+Unit tests (filter, ring buffer, sessions, dissectors) run via CTest:
+
+```bash
+cmake -B build && cmake --build build -j && ctest --test-dir build
+```
+
+libFuzzer harnesses for the dissectors and filter compiler live in `fuzz/`
+(build commands in the file headers). CI runs the test suite under
+ASan/UBSan and a fuzz smoke pass on every push.
 
 ---
 
