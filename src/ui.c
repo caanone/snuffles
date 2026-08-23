@@ -129,20 +129,77 @@ static void get_term_size(int *rows, int *cols) {
 #endif
 }
 
+#ifndef _WIN32
+/* Restore state shared with signal handlers so the terminal is never left
+ * in raw mode by a crash, SIGQUIT, or Ctrl+Z. Only async-signal-safe
+ * calls are used in the handlers. */
+static struct termios        g_orig_tio;
+static volatile sig_atomic_t g_tio_saved = 0;
+
+static void tty_restore_now(void) {
+    if (g_tio_saved) {
+        tcsetattr(STDIN_FILENO, TCSANOW, &g_orig_tio);
+        (void)!write(STDOUT_FILENO, "\033[?25h\033[0m\n", 13);
+    }
+}
+
+static void tty_fatal_handler(int sig) {
+    tty_restore_now();
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+static void tty_raw_apply(void) {
+    struct termios tio = g_orig_tio;
+    tio.c_lflag &= (tcflag_t)~(ICANON | ECHO);
+    tio.c_cc[VMIN]  = 0;
+    tio.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSANOW, &tio);
+}
+
+static void tty_tstp_handler(int sig) {
+    (void)sig;
+    tty_restore_now();
+    signal(SIGTSTP, SIG_DFL);
+    raise(SIGTSTP);
+}
+
+static void tty_cont_handler(int sig) {
+    (void)sig;
+    if (g_tio_saved) {
+        tty_raw_apply();
+        signal(SIGTSTP, tty_tstp_handler);
+    }
+}
+#endif
+
 static void term_raw_enable(ui_ctx_t *ctx) {
 #ifdef _WIN32
     HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
     DWORD mode;
     GetConsoleMode(h, &mode);
     SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+    (void)ctx;
 #else
-    struct termios tio;
-    tcgetattr(STDIN_FILENO, &ctx->orig_tio);
-    tio = ctx->orig_tio;
-    tio.c_lflag &= ~(ICANON | ECHO);
-    tio.c_cc[VMIN]  = 0;
-    tio.c_cc[VTIME] = 0;
-    tcsetattr(STDIN_FILENO, TCSANOW, &tio);
+    if (tcgetattr(STDIN_FILENO, &ctx->orig_tio) != 0)
+        return;   /* not a terminal; main gates this, but stay safe */
+    g_orig_tio  = ctx->orig_tio;
+    g_tio_saved = 1;
+    tty_raw_apply();
+
+    static int hooked = 0;
+    if (!hooked) {
+        hooked = 1;
+        atexit(tty_restore_now);
+        signal(SIGSEGV, tty_fatal_handler);
+        signal(SIGBUS,  tty_fatal_handler);
+        signal(SIGFPE,  tty_fatal_handler);
+        signal(SIGILL,  tty_fatal_handler);
+        signal(SIGABRT, tty_fatal_handler);
+        signal(SIGQUIT, tty_fatal_handler);
+        signal(SIGTSTP, tty_tstp_handler);
+        signal(SIGCONT, tty_cont_handler);
+    }
 #endif
 }
 
@@ -151,6 +208,7 @@ static void term_raw_disable(ui_ctx_t *ctx) {
     (void)ctx;
 #else
     tcsetattr(STDIN_FILENO, TCSANOW, &ctx->orig_tio);
+    g_tio_saved = 0;   /* atexit/signal restore no longer needed */
 #endif
 }
 
@@ -699,10 +757,58 @@ static void sync_stats(ui_ctx_t *ctx) {
 
 /* ── Input handling ──────────────────────────────────────────── */
 
+/* Logical navigation keys, produced by both the ANSI escape parser and
+ * the Windows extended-key translation. */
+enum {
+    KEY_UP = 1000, KEY_DOWN, KEY_PGUP, KEY_PGDN, KEY_HOME, KEY_END
+};
+
+static void navigate(ui_ctx_t *ctx, int key) {
+    if (ctx->view == VIEW_SESSIONS) {
+        switch (key) {
+            case KEY_UP:   if (ctx->sess_selected > 0) ctx->sess_selected--; break;
+            case KEY_DOWN: ctx->sess_selected++; break;
+            case KEY_PGUP: ctx->sess_selected -= 20;
+                           if (ctx->sess_selected < 0) ctx->sess_selected = 0;
+                           break;
+            case KEY_PGDN: ctx->sess_selected += 20; break;
+            case KEY_HOME: ctx->sess_selected = 0; break;
+            case KEY_END:  ctx->sess_selected = (int)ctx->sess_snap_count - 1; break;
+        }
+    } else {
+        switch (key) {
+            case KEY_UP:   if (ctx->selected > 0) ctx->selected--; break;
+            case KEY_DOWN: ctx->selected++; break;
+            case KEY_PGUP: ctx->selected -= 20;
+                           if (ctx->selected < 0) ctx->selected = 0;
+                           break;
+            case KEY_PGDN: ctx->selected += 20; break;
+            case KEY_HOME: ctx->selected = 0; break;
+            case KEY_END:  ctx->selected = (int)filtered_count(ctx) - 1; break;
+        }
+    }
+}
+
 static int read_key(void) {
 #ifdef _WIN32
-    if (_kbhit()) return _getch();
-    return -1;
+    if (!_kbhit()) return -1;
+    int c = _getch();
+    /* Extended keys arrive as a 0x00/0xE0 prefix plus a scan code; the
+     * scan code must not be interpreted as a normal character (it made
+     * PgDn quit and Up open Help). */
+    if (c == 0 || c == 0xE0) {
+        int scan = _kbhit() ? _getch() : -1;
+        switch (scan) {
+            case 72: return KEY_UP;
+            case 80: return KEY_DOWN;
+            case 73: return KEY_PGUP;
+            case 81: return KEY_PGDN;
+            case 71: return KEY_HOME;
+            case 79: return KEY_END;
+            default: return -1;
+        }
+    }
+    return c;
 #else
     unsigned char c;
     if (read(STDIN_FILENO, &c, 1) == 1) return c;
@@ -872,29 +978,20 @@ static void handle_input(ui_ctx_t *ctx) {
     } else if (c == 27) {
         int c2 = read_key();
         if (c2 == '[') {
-            int c3 = read_key();
-            if (ctx->view == VIEW_SESSIONS) {
-                switch (c3) {
-                    case 'A': if (ctx->sess_selected > 0) ctx->sess_selected--; break;
-                    case 'B': ctx->sess_selected++; break;
-                    case '5': read_key(); ctx->sess_selected -= 20;
-                              if (ctx->sess_selected < 0) ctx->sess_selected = 0; break;
-                    case '6': read_key(); ctx->sess_selected += 20; break;
-                    case 'H': ctx->sess_selected = 0; break;
-                    case 'F': ctx->sess_selected = (int)ctx->sess_snap_count - 1; break;
-                }
-            } else {
-                switch (c3) {
-                    case 'A': if (ctx->selected > 0) ctx->selected--; break;
-                    case 'B': ctx->selected++; break;
-                    case '5': read_key(); ctx->selected -= 20;
-                              if (ctx->selected < 0) ctx->selected = 0; break;
-                    case '6': read_key(); ctx->selected += 20; break;
-                    case 'H': ctx->selected = 0; break;
-                    case 'F': ctx->selected = (int)filtered_count(ctx) - 1; break;
-                }
+            int c3  = read_key();
+            int key = -1;
+            switch (c3) {
+                case 'A': key = KEY_UP;   break;
+                case 'B': key = KEY_DOWN; break;
+                case '5': read_key(); key = KEY_PGUP; break;
+                case '6': read_key(); key = KEY_PGDN; break;
+                case 'H': key = KEY_HOME; break;
+                case 'F': key = KEY_END;  break;
             }
+            if (key >= 0) navigate(ctx, key);
         }
+    } else if (c >= KEY_UP && c <= KEY_END) {
+        navigate(ctx, c);   /* Windows extended keys */
     }
 }
 

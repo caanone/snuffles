@@ -338,6 +338,13 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
     return NULL;
 #endif
 
+    /* drop root privileges now that the raw socket is open */
+#ifndef _WIN32
+    if (ns_drop_privileges() != 0)
+        fprintf(stderr, "Warning: failed to drop root privileges; "
+                        "continuing as root\n");
+#endif
+
     /* open syslog output if configured */
     if (cfg->syslog_target[0]) {
         ctx->syslog = syslog_out_create(cfg->syslog_target, cfg->syslog_iface);

@@ -162,6 +162,7 @@ int main(int argc, char *argv[]) {
     };
 
     int opt;
+    int ring_set = 0, snaplen_set = 0;
     while ((opt = getopt_long(argc, argv, "i:r:f:c:s:b:o:qvh", long_opts, NULL)) != -1) {
         switch (opt) {
             case 'i': snprintf(cfg.iface,      sizeof(cfg.iface),      "%s", optarg); break;
@@ -169,8 +170,8 @@ int main(int argc, char *argv[]) {
             case 'f': snprintf(cfg.bpf_filter,  sizeof(cfg.bpf_filter), "%s", optarg); break;
             case 'o': snprintf(cfg.output_file, sizeof(cfg.output_file),"%s", optarg); break;
             case 'c': cfg.count     = atoi(optarg); break;
-            case 's': cfg.snaplen   = atoi(optarg); break;
-            case 'b': cfg.ring_size = atoi(optarg); break;
+            case 's': cfg.snaplen   = atoi(optarg); snaplen_set = 1; break;
+            case 'b': cfg.ring_size = atoi(optarg); ring_set    = 1; break;
             case 'N': cfg.no_ui       = 1; break;
             case 'q': cfg.quiet      = 1; cfg.no_ui = 1; break;
             case 'L': cfg.list_ifaces = 1; break;
@@ -193,14 +194,27 @@ int main(int argc, char *argv[]) {
     if (cfg.ring_size > 1000000) cfg.ring_size = 1000000;
     if (cfg.count < 0) cfg.count = 0;
 
-    /* in headless mode, minimize memory: tiny ring buffer, skip session table
-       if no export is needed (syslog sends directly from capture thread) */
-    int headless_minimal = (cfg.no_ui && !cfg.output_file[0]);
+    /* Lean mode (tiny ring, no session table) applies only to the syslog
+       forwarding modes documented in the README: headless/quiet WITH
+       --syslog and no export file. Plain --no-ui keeps the full ring and
+       sessions, and explicit -b/-s always win. */
+    int headless_minimal = (cfg.no_ui && cfg.syslog_target[0] &&
+                            !cfg.output_file[0]);
     if (headless_minimal) {
-        cfg.ring_size = 64;    /* tiny scratch buffer */
-        if (cfg.syslog_target[0] && cfg.snaplen > 256)
-            cfg.snaplen = 256; /* syslog only needs headers, not payload */
+        if (!ring_set)
+            cfg.ring_size = 64;    /* tiny scratch buffer */
+        if (!snaplen_set && cfg.snaplen > 256)
+            cfg.snaplen = 256;     /* syslog only needs headers */
     }
+
+#ifndef _WIN32
+    /* The TUI writes raw ANSI and needs key input: refuse pipes early. */
+    if (!cfg.no_ui && (!isatty(STDOUT_FILENO) || !isatty(STDIN_FILENO))) {
+        fprintf(stderr, "snuffles: the TUI needs a terminal on stdin/stdout; "
+                        "use --no-ui when piping.\n");
+        return 1;
+    }
+#endif
 
     /* create ring buffer */
     ringbuf_t *rb = ringbuf_create((uint32_t)cfg.ring_size, (uint32_t)cfg.snaplen);

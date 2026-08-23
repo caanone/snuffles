@@ -72,6 +72,42 @@
   #include <pthread.h>
   #include <sys/time.h>
   #include <unistd.h>
+  #include <pwd.h>
+  #include <grp.h>
+  #include <stdlib.h>
+
+  /* Drop root privileges after the capture socket/handle is open.
+   * Target: the invoking user (real uid, or SUDO_UID under sudo),
+   * falling back to "nobody". Returns 0 on success or nothing to drop,
+   * -1 if the drop failed or could not be verified — the caller should
+   * warn loudly, since capture then continues with root privileges. */
+  static inline int ns_drop_privileges(void) {
+      if (geteuid() != 0) return 0;
+
+      uid_t uid = getuid();
+      gid_t gid = getgid();
+      if (uid == 0) {
+          const char *su = getenv("SUDO_UID"), *sg = getenv("SUDO_GID");
+          if (su && sg) {
+              uid = (uid_t)strtoul(su, NULL, 10);
+              gid = (gid_t)strtoul(sg, NULL, 10);
+          }
+      }
+      if (uid == 0) {
+          struct passwd *pw = getpwnam("nobody");
+          if (!pw) return -1;
+          uid = pw->pw_uid;
+          gid = pw->pw_gid;
+      }
+      if (uid == 0) return -1;
+
+      if (setgroups(0, NULL) != 0) return -1;
+      if (setgid(gid) != 0) return -1;
+      if (setuid(uid) != 0) return -1;
+      /* verify the drop is irreversible */
+      if (setuid(0) == 0 || geteuid() == 0) return -1;
+      return 0;
+  }
 
   typedef pthread_t         ns_thread_t;
   typedef pthread_mutex_t   ns_mutex_t;
