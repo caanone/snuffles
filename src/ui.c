@@ -143,7 +143,7 @@ static volatile sig_atomic_t g_tio_saved = 0;
 static void tty_restore_now(void) {
     if (g_tio_saved) {
         tcsetattr(STDIN_FILENO, TCSANOW, &g_orig_tio);
-        (void)!write(STDOUT_FILENO, "\033[?25h\033[0m\n", 13);
+        (void)!write(STDOUT_FILENO, "\033[?25h\033[0m\n", 11);
     }
 }
 
