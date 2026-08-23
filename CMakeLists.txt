@@ -1,16 +1,23 @@
 cmake_minimum_required(VERSION 3.15)
-project(snuffles C)
+project(snuffles VERSION 1.0.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Compiler flags
-add_compile_options(-Wall -Wextra -O2)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+# Compiler flags (optimization comes from CMAKE_BUILD_TYPE)
+add_compile_options(-Wall -Wextra)
 
 if(APPLE)
     add_compile_definitions(_DARWIN_C_SOURCE)
 elseif(UNIX)
-    add_compile_definitions(_POSIX_C_SOURCE=200809L)
+    # _DEFAULT_SOURCE: glibc hides struct ifreq/SO_BINDTODEVICE/IFF_PROMISC
+    # behind it when strict _POSIX_C_SOURCE is defined.
+    add_compile_definitions(_POSIX_C_SOURCE=200809L _DEFAULT_SOURCE)
 endif()
 
 if(WIN32)
