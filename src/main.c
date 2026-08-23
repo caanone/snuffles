@@ -117,9 +117,9 @@ static void run_headless(ringbuf_t *rb, capture_ctx_t *cap, int quiet) {
             uint64_t oldest_seq = (total > count) ? total - count : 0;
             uint32_t idx = (uint32_t)(last - oldest_seq);
 
-            const pkt_record_t *rec = ringbuf_peek(rb, idx);
-            if (rec) {
-                const pkt_summary_t *s = &rec->summary;
+            pkt_record_t rec;
+            if (ringbuf_read(rb, idx, &rec, NULL)) {
+                const pkt_summary_t *s = &rec.summary;
                 long sec = (long)(s->ts.tv_sec % 86400);
                 printf("%02ld:%02ld:%02ld.%06ld  %-21s -> %-21s  %-6s  %s\n",
                        sec / 3600, (sec % 3600) / 60, sec % 60,

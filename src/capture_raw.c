@@ -15,6 +15,7 @@
 #include "capture.h"
 #include "dissect.h"
 #include "syslog_out.h"
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,10 +59,10 @@ struct capture_ctx {
     session_table_t    *st;
     capture_cfg_t       cfg;
     ns_thread_t         thread;
-    volatile int        running;
-    volatile int        stop_req;
+    atomic_int          running;
+    atomic_int          stop_req;
     int                 has_eth;    /* 1 if we get Ethernet headers (Linux AF_PACKET) */
-    uint64_t            pkt_count;
+    atomic_uint_fast64_t pkt_count;
     char                iface_name[64];
     char                bpf_expr[512]; /* stored but not kernel-applied */
     syslog_out_t       *syslog;
@@ -71,11 +72,11 @@ struct capture_ctx {
 
 static void *capture_thread_fn(void *arg) {
     capture_ctx_t *ctx = (capture_ctx_t *)arg;
-    ctx->running = 1;
+    atomic_store(&ctx->running, 1);
 
     uint8_t buf[65536];
 
-    while (!ctx->stop_req) {
+    while (!atomic_load(&ctx->stop_req)) {
         /* use a timeout so we can check stop_req periodically */
 #ifdef _WIN32
         /* Winsock SO_RCVTIMEO is in milliseconds (DWORD) */
@@ -85,7 +86,7 @@ static void *capture_thread_fn(void *arg) {
 #endif
         int len = (int)recv(ctx->sock, (char *)buf, sizeof(buf), 0);
         if (len <= 0) {
-            if (ctx->stop_req) break;
+            if (atomic_load(&ctx->stop_req)) break;
             continue; /* timeout or error */
         }
 
@@ -139,8 +140,8 @@ static void *capture_thread_fn(void *arg) {
 
         /* session tracking */
         if (ctx->st) {
-            session_entry_t *se = session_table_update(ctx->st, &rec->summary);
-            if (se) rec->summary.session_id = se->id;
+            uint32_t sid = session_table_update(ctx->st, &rec->summary);
+            if (sid) rec->summary.session_id = sid;
         }
 
         /* syslog output (skip own traffic to prevent feedback loop) */
@@ -149,13 +150,13 @@ static void *capture_thread_fn(void *arg) {
 
         ringbuf_producer_commit(ctx->rb);
 
-        ctx->pkt_count++;
-        if (ctx->cfg.count > 0 && ctx->pkt_count >= (uint64_t)ctx->cfg.count) {
+        uint64_t n = atomic_fetch_add(&ctx->pkt_count, 1) + 1;
+        if (ctx->cfg.count > 0 && n >= (uint64_t)ctx->cfg.count) {
             break;
         }
     }
 
-    ctx->running = 0;
+    atomic_store(&ctx->running, 0);
     return NULL;
 }
 
@@ -348,10 +349,10 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
 }
 
 int capture_start(capture_ctx_t *ctx) {
-    ctx->stop_req = 0;
-    ctx->running  = 1;
+    atomic_store(&ctx->stop_req, 0);
+    atomic_store(&ctx->running, 1);
     if (ns_thread_create(&ctx->thread, capture_thread_fn, ctx) != 0) {
-        ctx->running = 0;
+        atomic_store(&ctx->running, 0);
         fprintf(stderr, "Failed to create capture thread\n");
         return -1;
     }
@@ -360,7 +361,7 @@ int capture_start(capture_ctx_t *ctx) {
 
 void capture_stop(capture_ctx_t *ctx) {
     if (!ctx) return;
-    ctx->stop_req = 1;
+    atomic_store(&ctx->stop_req, 1);
     ns_thread_join(ctx->thread);
 }
 
@@ -376,7 +377,7 @@ void capture_destroy(capture_ctx_t *ctx) {
 }
 
 int capture_is_running(const capture_ctx_t *ctx) {
-    return ctx ? ctx->running : 0;
+    return ctx ? atomic_load(&ctx->running) : 0;
 }
 
 int capture_is_offline(const capture_ctx_t *ctx) {
@@ -387,7 +388,7 @@ int capture_is_offline(const capture_ctx_t *ctx) {
 void capture_get_stats(capture_ctx_t *ctx, capture_stats_raw_t *out) {
     memset(out, 0, sizeof(*out));
     if (!ctx) return;
-    out->pkts_recv = ctx->pkt_count;
+    out->pkts_recv = atomic_load(&ctx->pkt_count);
 }
 
 const char *capture_get_iface(const capture_ctx_t *ctx) {

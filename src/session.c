@@ -154,11 +154,11 @@ void session_table_clear(session_table_t *st) {
     ns_mutex_unlock(&st->mtx);
 }
 
-session_entry_t *session_table_update(session_table_t *st,
-                                       const pkt_summary_t *pkt) {
-    if (!st) return NULL;
+uint32_t session_table_update(session_table_t *st,
+                              const pkt_summary_t *pkt) {
+    if (!st) return 0;
     /* skip packets without IP info */
-    if (!pkt->src_ip[0] || !pkt->dst_ip[0]) return NULL;
+    if (!pkt->src_ip[0] || !pkt->dst_ip[0]) return 0;
 
     session_key_t key;
     normalize_key(&key, pkt->src_ip, pkt->dst_ip,
@@ -200,7 +200,7 @@ session_entry_t *session_table_update(session_table_t *st,
 
         /* create new session */
         e = calloc(1, sizeof(session_entry_t));
-        if (!e) { ns_mutex_unlock(&st->mtx); return NULL; }
+        if (!e) { ns_mutex_unlock(&st->mtx); return 0; }
         e->key = key;
         e->id = st->next_id++;
         e->first_seen = pkt->ts;
@@ -228,8 +228,9 @@ session_entry_t *session_table_update(session_table_t *st,
         e->tcp_state = SESS_ESTABLISHED;
     }
 
+    uint32_t id = e->id;
     ns_mutex_unlock(&st->mtx);
-    return e;
+    return id;
 }
 
 uint32_t session_table_count(const session_table_t *st) {
@@ -239,32 +240,34 @@ uint32_t session_table_count(const session_table_t *st) {
 /* ── Snapshot for UI ─────────────────────────────────────────── */
 
 static int cmp_bytes(const void *a, const void *b) {
-    const session_entry_t *ea = *(const session_entry_t *const *)a;
-    const session_entry_t *eb = *(const session_entry_t *const *)b;
+    const session_entry_t *ea = (const session_entry_t *)a;
+    const session_entry_t *eb = (const session_entry_t *)b;
     uint64_t ta = ea->bytes_a_to_b + ea->bytes_b_to_a;
     uint64_t tb = eb->bytes_a_to_b + eb->bytes_b_to_a;
     return (ta < tb) ? 1 : (ta > tb) ? -1 : 0;
 }
 
 static int cmp_packets(const void *a, const void *b) {
-    const session_entry_t *ea = *(const session_entry_t *const *)a;
-    const session_entry_t *eb = *(const session_entry_t *const *)b;
+    const session_entry_t *ea = (const session_entry_t *)a;
+    const session_entry_t *eb = (const session_entry_t *)b;
     uint64_t ta = ea->pkts_a_to_b + ea->pkts_b_to_a;
     uint64_t tb = eb->pkts_a_to_b + eb->pkts_b_to_a;
     return (ta < tb) ? 1 : (ta > tb) ? -1 : 0;
 }
 
 static int cmp_recent(const void *a, const void *b) {
-    const session_entry_t *ea = *(const session_entry_t *const *)a;
-    const session_entry_t *eb = *(const session_entry_t *const *)b;
+    const session_entry_t *ea = (const session_entry_t *)a;
+    const session_entry_t *eb = (const session_entry_t *)b;
     if (ea->last_seen.tv_sec != eb->last_seen.tv_sec)
         return (ea->last_seen.tv_sec < eb->last_seen.tv_sec) ? 1 : -1;
-    return (ea->last_seen.tv_usec < eb->last_seen.tv_usec) ? 1 : -1;
+    if (ea->last_seen.tv_usec != eb->last_seen.tv_usec)
+        return (ea->last_seen.tv_usec < eb->last_seen.tv_usec) ? 1 : -1;
+    return 0;
 }
 
 static int cmp_duration(const void *a, const void *b) {
-    const session_entry_t *ea = *(const session_entry_t *const *)a;
-    const session_entry_t *eb = *(const session_entry_t *const *)b;
+    const session_entry_t *ea = (const session_entry_t *)a;
+    const session_entry_t *eb = (const session_entry_t *)b;
     double da = (double)(ea->last_seen.tv_sec - ea->first_seen.tv_sec) +
                 (double)(ea->last_seen.tv_usec - ea->first_seen.tv_usec) / 1e6;
     double db = (double)(eb->last_seen.tv_sec - eb->first_seen.tv_sec) +
@@ -272,9 +275,9 @@ static int cmp_duration(const void *a, const void *b) {
     return (da < db) ? 1 : (da > db) ? -1 : 0;
 }
 
-session_entry_t **session_table_snapshot(session_table_t *st,
-                                          uint32_t *out_count,
-                                          session_sort_t sort) {
+session_entry_t *session_table_snapshot(session_table_t *st,
+                                        uint32_t *out_count,
+                                        session_sort_t sort) {
     if (!st) { *out_count = 0; return NULL; }
 
     ns_mutex_lock(&st->mtx);
@@ -286,7 +289,7 @@ session_entry_t **session_table_snapshot(session_table_t *st,
         return NULL;
     }
 
-    session_entry_t **arr = malloc(count * sizeof(session_entry_t *));
+    session_entry_t *arr = malloc(count * sizeof(session_entry_t));
     if (!arr) {
         ns_mutex_unlock(&st->mtx);
         *out_count = 0;
@@ -296,7 +299,9 @@ session_entry_t **session_table_snapshot(session_table_t *st,
     uint32_t idx = 0;
     for (uint32_t i = 0; i < st->bucket_count && idx < count; i++) {
         for (session_entry_t *e = st->buckets[i]; e && idx < count; e = e->next) {
-            arr[idx++] = e;
+            arr[idx] = *e;
+            arr[idx].next = NULL;
+            idx++;
         }
     }
     count = idx;
@@ -310,7 +315,7 @@ session_entry_t **session_table_snapshot(session_table_t *st,
         case SORT_RECENT:   cmpfn = cmp_recent;   break;
         case SORT_DURATION: cmpfn = cmp_duration;  break;
     }
-    qsort(arr, count, sizeof(session_entry_t *), cmpfn);
+    qsort(arr, count, sizeof(session_entry_t), cmpfn);
 
     *out_count = count;
     return arr;

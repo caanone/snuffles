@@ -64,15 +64,18 @@ typedef struct {
 
 session_table_t    *session_table_create(uint32_t bucket_count);
 void                session_table_destroy(session_table_t *st);
-session_entry_t    *session_table_update(session_table_t *st,
+/* Returns the session id the packet belongs to, or 0 if untracked. */
+uint32_t            session_table_update(session_table_t *st,
                                          const pkt_summary_t *pkt);
 void                session_table_clear(session_table_t *st);
 uint32_t            session_table_count(const session_table_t *st);
 
-/* Returns malloc'd array of pointers (caller frees the array, not entries). */
-session_entry_t   **session_table_snapshot(session_table_t *st,
-                                            uint32_t *out_count,
-                                            session_sort_t sort);
+/* Returns a malloc'd array of entry COPIES taken under the table lock
+ * (caller frees the array). Entries stay valid regardless of concurrent
+ * eviction/clear; their .next pointers are NULL. */
+session_entry_t    *session_table_snapshot(session_table_t *st,
+                                           uint32_t *out_count,
+                                           session_sort_t sort);
 
 const char         *session_state_str(session_state_t s);
 

@@ -95,19 +95,25 @@ int export_pcap(const char *path, ringbuf_t *rb,
     uint32_t count = ringbuf_count(rb);
     int written = 0;
 
+    /* Copy each record out of the ring: the capture thread may still be
+     * overwriting the oldest slots while we iterate. */
+    uint8_t *data = malloc(rb->snaplen);
+    if (!data) { pcap_writer_close(pw); return -1; }
+
+    pkt_record_t rec;
     for (uint32_t i = 0; i < count; i++) {
-        const pkt_record_t *rec = ringbuf_peek(rb, i);
-        if (!rec) continue;
+        if (!ringbuf_read(rb, i, &rec, data)) continue;
 
         if (filt && filt->valid && filt->root >= 0) {
-            if (!filter_eval(filt, &rec->summary))
+            if (!filter_eval(filt, &rec.summary))
                 continue;
         }
 
-        pcap_writer_write(pw, rec);
+        pcap_writer_write(pw, &rec);
         written++;
     }
 
+    free(data);
     pcap_writer_close(pw);
     return written;
 }

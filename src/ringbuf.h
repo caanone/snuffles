@@ -7,10 +7,16 @@
 typedef struct ringbuf {
     pkt_record_t   *records;
     uint8_t        *data_pool;
+    /* Per-slot seqlock generation: odd while the producer is writing the
+     * slot, even when it is stable. Readers copy out and retry on change. */
+    atomic_uint_fast64_t *slot_gen;
     uint32_t        capacity;
     uint32_t        snaplen;
     atomic_uint_fast64_t write_seq;
     atomic_uint_fast64_t commit_seq;
+    /* Clear floor: consumers treat sequences below this as gone. The
+     * producer counters are never reset, so clearing cannot race commits. */
+    atomic_uint_fast64_t clear_seq;
     ns_mutex_t      mtx;
     ns_cond_t       cond;
 #ifdef _WIN32
@@ -28,7 +34,15 @@ void                ringbuf_producer_commit(ringbuf_t *rb);
 
 uint32_t            ringbuf_count(const ringbuf_t *rb);
 uint64_t            ringbuf_total(const ringbuf_t *rb);
-const pkt_record_t *ringbuf_peek(ringbuf_t *rb, uint32_t idx);
+uint64_t            ringbuf_oldest(const ringbuf_t *rb);
+
+/* Copy the record at display index idx (0 = oldest visible) into *out.
+ * If data is non-NULL it must hold at least snaplen bytes; the packet
+ * bytes are copied there and out->raw_data points at it. With data NULL
+ * only the summary is copied and out->raw_data is NULL.
+ * Returns 1 on success, 0 if the slot is gone or was overwritten mid-read. */
+int                 ringbuf_read(ringbuf_t *rb, uint32_t idx,
+                                 pkt_record_t *out, uint8_t *data);
 void                ringbuf_clear(ringbuf_t *rb);
 int                 ringbuf_get_notify_fd(ringbuf_t *rb);
 void                ringbuf_drain_notify(ringbuf_t *rb);
