@@ -430,6 +430,18 @@ static int dissect_ipv4(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
     format_ipv4(data + 12, out->src_ip, sizeof(out->src_ip));
     format_ipv4(data + 16, out->dst_ip, sizeof(out->dst_ip));
 
+    /* Non-first fragments carry no L4 header: parsing them as TCP/UDP
+     * would fill sessions and syslog with garbage ports. */
+    if ((out->ip_frag_off & 0x1FFF) != 0) {
+        out->highest_proto = PROTO_IPV4;
+        snprintf(out->protocol, sizeof(out->protocol), "IPv4");
+        snprintf(out->info, sizeof(out->info),
+                 "%s -> %s fragment proto=%u off=%u",
+                 out->src_ip, out->dst_ip, proto,
+                 (unsigned)((out->ip_frag_off & 0x1FFF) * 8));
+        return 0;
+    }
+
     const uint8_t *l4 = data + ihl;
     uint32_t l4len = len - ihl;
 
@@ -471,6 +483,51 @@ static int dissect_ipv6(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
 
     const uint8_t *l4 = data + 40;
     uint32_t l4len = len - 40;
+
+    /* Walk the extension-header chain so packets with hop-by-hop, routing,
+     * fragment or destination options still get L4/L7 dissection. */
+    for (int guard = 0; guard < 8; guard++) {
+        uint32_t ext_len;
+        switch (next_hdr) {
+            case 0:    /* hop-by-hop */
+            case 43:   /* routing */
+            case 60:   /* destination options */
+            case 135:  /* mobility */
+                ext_len = (l4len >= 8) ? ((uint32_t)l4[1] + 1) * 8 : 0;
+                break;
+            case 51:   /* authentication header: length in 4-byte units */
+                ext_len = (l4len >= 8) ? ((uint32_t)l4[1] + 2) * 4 : 0;
+                break;
+            case 44:   /* fragment header (fixed 8 bytes) */
+                if (l4len >= 8 && (rd16(l4 + 2) & 0xFFF8) != 0) {
+                    /* non-first fragment: no L4 header follows */
+                    out->highest_proto = PROTO_IPV6;
+                    snprintf(out->protocol, sizeof(out->protocol), "IPv6");
+                    snprintf(out->info, sizeof(out->info),
+                             "%s -> %s fragment", out->src_ip, out->dst_ip);
+                    return 0;
+                }
+                ext_len = (l4len >= 8) ? 8 : 0;
+                break;
+            default:
+                ext_len = 0;
+                guard = 8;   /* not an extension header: dispatch below */
+                break;
+        }
+        if (guard >= 8) break;
+        if (ext_len == 0 || ext_len > l4len) {
+            out->highest_proto = PROTO_IPV6;
+            snprintf(out->protocol, sizeof(out->protocol), "IPv6");
+            snprintf(out->info, sizeof(out->info),
+                     "%s -> %s truncated extension chain",
+                     out->src_ip, out->dst_ip);
+            return 0;
+        }
+        next_hdr = l4[0];
+        l4    += ext_len;
+        l4len -= ext_len;
+    }
+    out->ip_proto = next_hdr;
 
     switch (next_hdr) {
         case 58:  /* ICMPv6 */
@@ -569,6 +626,60 @@ static int dissect_ethernet(const uint8_t *data, uint32_t len, pkt_summary_t *ou
     }
 }
 
+/* ── Other datalinks ─────────────────────────────────────────── */
+
+static int dissect_by_ethertype(uint16_t ethertype, const uint8_t *p,
+                                uint32_t plen, pkt_summary_t *out,
+                                const char *l2name) {
+    out->ethertype = ethertype;
+    switch (ethertype) {
+        case ETH_P_IP:   return dissect_ipv4(p, plen, out);
+        case ETH_P_IPV6: return dissect_ipv6(p, plen, out);
+        case ETH_P_ARP:  return dissect_arp(p, plen, out);
+        default:
+            out->highest_proto = PROTO_ETH;
+            snprintf(out->protocol, sizeof(out->protocol), "%s", l2name);
+            snprintf(out->info, sizeof(out->info),
+                     "%s frame type=0x%04x", l2name, ethertype);
+            return 0;
+    }
+}
+
+/* Linux cooked capture (DLT_LINUX_SLL, the "any" device): 16-byte header
+ * with the EtherType in the last two bytes. */
+static int dissect_sll(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
+    if (len < 16) return -1;
+    return dissect_by_ethertype(rd16(data + 14), data + 16, len - 16, out, "SLL");
+}
+
+/* Linux cooked capture v2 (DLT_LINUX_SLL2): 20-byte header, EtherType first. */
+static int dissect_sll2(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
+    if (len < 20) return -1;
+    return dissect_by_ethertype(rd16(data), data + 20, len - 20, out, "SLL2");
+}
+
+/* DLT_NULL / DLT_LOOP (BSD and macOS loopback): 4-byte address family in
+ * the capturing host's byte order (LOOP: network order) — normalize both. */
+static int dissect_null(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
+    if (len < 4) return -1;
+    uint32_t fam = (uint32_t)data[0] | ((uint32_t)data[1] << 8) |
+                   ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24);
+    if (fam > 0xFF)
+        fam = ((fam >> 24) & 0xFF) | ((fam >> 8) & 0xFF00);
+
+    const uint8_t *p = data + 4;
+    uint32_t plen = len - 4;
+    if (fam == 2)                                   /* AF_INET */
+        return dissect_ipv4(p, plen, out);
+    if (fam == 10 || fam == 24 || fam == 28 || fam == 30)   /* AF_INET6 */
+        return dissect_ipv6(p, plen, out);
+
+    out->highest_proto = PROTO_UNKNOWN;
+    snprintf(out->protocol, sizeof(out->protocol), "LOOP");
+    snprintf(out->info, sizeof(out->info), "loopback family=%u", fam);
+    return 0;
+}
+
 /* ── Public entry point ──────────────────────────────────────── */
 
 void dissect_packet(const uint8_t *data, uint32_t caplen,
@@ -586,6 +697,16 @@ void dissect_packet(const uint8_t *data, uint32_t caplen,
             break;
         case 229: /* DLT_IPV6 (raw IPv6, no Ethernet header) */
             dissect_ipv6(data, caplen, out);
+            break;
+        case 113: /* DLT_LINUX_SLL (Linux "any" device) */
+            dissect_sll(data, caplen, out);
+            break;
+        case 276: /* DLT_LINUX_SLL2 */
+            dissect_sll2(data, caplen, out);
+            break;
+        case 0:   /* DLT_NULL (BSD/macOS loopback) */
+        case 108: /* DLT_LOOP */
+            dissect_null(data, caplen, out);
             break;
         default:
             snprintf(out->protocol, sizeof(out->protocol), "???");

@@ -54,6 +54,7 @@ typedef enum {
     MODE_BPF,           /* capture filter (kernel-level BPF) */
     MODE_EXPORT,
     MODE_HELP,
+    MODE_STATS,
 } input_mode_t;
 
 typedef enum {
@@ -355,7 +356,7 @@ static void render_frame(ui_ctx_t *ctx) {
     /* ── Row 2: Hotkey bar ──────────────────────────────────── */
     ob_moveto(ctx, row++);
     ob_str(ctx, ESC_DIM);
-    ob_printf(ctx, " [S]%s  [F]ilter  [B]PF  [E]xport  [C]lear  [P]%s  [H]elp  [Q]uit",
+    ob_printf(ctx, " [S]%s  [V]Stats  [F]ilter  [B]PF  [E]xport  [C]lear  [P]%s  [H]elp  [Q]uit",
               ctx->view == VIEW_SESSIONS ? "Packets" : "essions",
               ctx->paused ? "Resume" : "ause");
     ob_str(ctx, ESC_RESET);
@@ -374,6 +375,7 @@ static void render_frame(ui_ctx_t *ctx) {
             ESC_BOLD "  VIEWS" ESC_RESET,
             "    S             Toggle between Packets and Sessions view",
             "    T             Cycle session sort (bytes/packets/recent/duration)",
+            "    V             Protocol statistics overlay",
             "",
             ESC_BOLD "  FILTERS" ESC_RESET,
             "    F             Display filter (post-capture, hides packets from view)",
@@ -401,6 +403,75 @@ static void render_frame(ui_ctx_t *ctx) {
             ob_moveto(ctx, row++);
             ob_str(ctx, help[i]);
         }
+        ob_str(ctx, ESC_CLR_BELOW);
+        ob_flush(ctx);
+        return;
+    }
+
+    /* ── Statistics overlay ─────────────────────────────────── */
+    if (ctx->mode == MODE_STATS) {
+        stats_compute_rates(&ctx->stats);
+
+        ob_moveto(ctx, row++);
+        ob_moveto(ctx, row++);
+        ob_str(ctx, ESC_BOLD "  CAPTURE STATISTICS" ESC_RESET);
+        ob_moveto(ctx, row++);
+
+        long up = (long)(time(NULL) - (time_t)ctx->stats.start_time.tv_sec);
+        if (up < 0) up = 0;
+        ob_moveto(ctx, row++);
+        ob_printf(ctx, "    Uptime: %02ld:%02ld:%02ld    Packets: %llu    Dropped: %llu    Sessions: %u",
+                  up / 3600, (up % 3600) / 60, up % 60,
+                  (unsigned long long)ctx->stats.total_packets,
+                  (unsigned long long)cstats.pkts_drop,
+                  session_table_count(ctx->sessions));
+
+        char sline[128];
+        stats_format(&ctx->stats, sline, sizeof(sline));
+        ob_moveto(ctx, row++);
+        ob_printf(ctx, "    %s", sline);
+        ob_moveto(ctx, row++);
+
+        /* per-protocol breakdown, sorted by packet count */
+        int order[PROTO_MAX];
+        int n = 0;
+        for (int i = 0; i < PROTO_MAX; i++)
+            if (ctx->stats.proto_counts[i] > 0) order[n++] = i;
+        for (int i = 1; i < n; i++) {
+            int key = order[i], j = i - 1;
+            while (j >= 0 && ctx->stats.proto_counts[order[j]] <
+                             ctx->stats.proto_counts[key]) {
+                order[j + 1] = order[j];
+                j--;
+            }
+            order[j + 1] = key;
+        }
+
+        ob_moveto(ctx, row++);
+        ob_str(ctx, ESC_BOLD "  PROTOCOLS" ESC_RESET);
+        uint64_t total = ctx->stats.total_packets ? ctx->stats.total_packets : 1;
+        for (int i = 0; i < n && row <= ctx->rows - 2; i++) {
+            uint64_t c = ctx->stats.proto_counts[order[i]];
+            int pct = (int)(c * 100 / total);
+            int bar = (int)(c * 40 / total);
+            char barbuf[48];
+            int b = 0;
+            for (; b < bar && b < 40; b++) barbuf[b] = '#';
+            barbuf[b] = '\0';
+            ob_moveto(ctx, row++);
+            ob_printf(ctx, "    %-7s %10llu  %3d%%  %s%s%s",
+                      proto_name((proto_id_t)order[i]),
+                      (unsigned long long)c, pct,
+                      proto_color((proto_id_t)order[i]), barbuf, ESC_RESET);
+        }
+        if (n == 0) {
+            ob_moveto(ctx, row++);
+            ob_str(ctx, ESC_DIM "    (no packets yet)" ESC_RESET);
+        }
+
+        ob_moveto(ctx, row++);
+        ob_moveto(ctx, row++);
+        ob_str(ctx, ESC_DIM "  Press any key to close" ESC_RESET);
         ob_str(ctx, ESC_CLR_BELOW);
         ob_flush(ctx);
         return;
@@ -828,8 +899,8 @@ static void handle_input(ui_ctx_t *ctx) {
     int c = read_key();
     if (c < 0) return;
 
-    if (ctx->mode == MODE_HELP) {
-        ctx->mode = MODE_NORMAL;  /* any key dismisses help */
+    if (ctx->mode == MODE_HELP || ctx->mode == MODE_STATS) {
+        ctx->mode = MODE_NORMAL;  /* any key dismisses the overlay */
         return;
     }
 
@@ -962,6 +1033,8 @@ static void handle_input(ui_ctx_t *ctx) {
         ctx->paused = !ctx->paused;
     } else if (c == 'h' || c == 'H' || c == '?') {
         ctx->mode = MODE_HELP;
+    } else if (c == 'v' || c == 'V') {
+        ctx->mode = MODE_STATS;
     } else if (c == '\n' || c == '\r') {
         if (ctx->view == VIEW_SESSIONS) {
             /* drill into selected session: switch to packet view with filter */

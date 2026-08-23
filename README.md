@@ -1,26 +1,49 @@
-# Snuffles
+<h1 align="center">🐽 Snuffles</h1>
 
-[![CI](https://github.com/caanone/snuffles/actions/workflows/ci.yml/badge.svg)](https://github.com/caanone/snuffles/actions/workflows/ci.yml)
+<p align="center"><b>A lightweight terminal packet analyzer that sniffs everything out.</b></p>
 
-A lightweight, cross-platform network packet analyzer written in C. Terminal UI, two-level filtering, session tracking, syslog forwarding, and PCAP/JSON export.
+<p align="center">
+  <a href="https://github.com/caanone/snuffles/actions/workflows/ci.yml"><img src="https://github.com/caanone/snuffles/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/C11-single%20binary-blue" alt="C11">
+  <img src="https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey" alt="Platforms">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
+</p>
 
-~4,900 lines of C. Zero external dependencies beyond libpcap (optional).
+Live capture, Wireshark-style display filters, TCP session tracking, syslog
+forwarding, and PCAP/JSON export — in one small C11 binary with no
+dependencies beyond (optional) libpcap.
+
+```text
+ Snuffles v1.0.0 | eth0 | captured: 14203 | dropped: 0
+ [S]essions  [V]Stats  [F]ilter  [B]PF  [E]xport  [C]lear  [P]ause  [H]elp  [Q]uit
+  1201  14:31:07.412  10.0.0.5:52814      -> 142.250.74.78:443    TLS   ClientHello SNI=fonts.gstatic.com
+  1202  14:31:07.415  10.0.0.5:49732      -> 8.8.8.8:53           DNS   DNS Q A example.org
+  1203  14:31:07.417  8.8.8.8:53          -> 10.0.0.5:49732       DNS   DNS R A example.org
+  1204  14:31:07.502  10.0.0.5:52816      -> 93.184.216.34:80     HTTP  GET /index.html
+ ─────────────────────────────────────────────────────────────────────────────────────
+  Display: tcp and port 443 (2841/14203)
+```
 
 ---
 
 ## Features
 
 - Live capture and offline `.pcap` file reading
-- Protocol dissection: Ethernet, VLAN, ARP, IPv4, IPv6, ICMPv4/v6, TCP, UDP, SCTP, DNS, HTTP/1.x, TLS (SNI)
+- Protocol dissection: Ethernet, VLAN, ARP, Linux cooked capture (SLL/SLL2),
+  BSD/macOS loopback, IPv4 (fragment-aware), IPv6 with extension-header
+  chain walking, ICMPv4/v6, TCP, UDP, SCTP, DNS, HTTP/1.x, TLS (SNI)
 - Two-level filtering:
   - **BPF capture filter** `[B]` — kernel-level, standard pcap syntax
   - **Display filter** `[F]` — Wireshark-like expressions with CIDR, port ranges, substring match
 - Session/stream tracking `[S]` — bidirectional 5-tuple aggregation with TCP state machine
+- Protocol statistics `[V]` — live per-protocol breakdown with rates and drop counts
 - Syslog forwarding `--syslog` — real-time UDP CSV with full header details, feedback loop prevention
 - Silent mode `-q` — zero terminal output, minimal memory (~16KB), pure syslog forwarder
 - ANSI terminal UI with color-coded protocols, scrollable list, detail panel, hex dump, help overlay
 - Export to PCAP and JSON `[E]`
-- Security hardened: privilege dropping, bounds-checked parsing, memory-capped buffers
+- Security hardened: verified privilege dropping, bounds-checked parsing
+  (unit-tested and continuously fuzzed), sanitized display of packet-derived
+  strings, memory-capped buffers
 - Two build backends:
   - **libpcap** (default) — full features on Linux/macOS/Windows
   - **Raw sockets** (`make nopcap`) — zero dependencies, works on Windows without Npcap
@@ -98,6 +121,11 @@ cmake -B build && cmake --build build -j && ctest --test-dir build
 libFuzzer harnesses for the dissectors and filter compiler live in `fuzz/`
 (build commands in the file headers). CI runs the test suite under
 ASan/UBSan and a fuzz smoke pass on every push.
+
+The full unit suite also runs against the **Windows** build (MinGW cross +
+Wine) — locally via Docker with `./scripts/test-windows.sh`, and in CI on
+every push. Raw-socket capture and console quirks still warrant a real
+Windows machine; everything else is covered.
 
 ---
 
@@ -179,6 +207,7 @@ Press `H` or `?` for the built-in help overlay.
 | Home / End | Jump to first / last |
 | Enter | Detail panel (packets) / Drill into session (sessions) |
 | S | Toggle Packets / Sessions view |
+| V | Protocol statistics overlay |
 | T | Cycle session sort: bytes / packets / recent / duration |
 | F | Display filter (post-capture) |
 | B | BPF capture filter (kernel-level) |
@@ -361,8 +390,10 @@ sudo ./snuffles -i en0 -c 100 -o capture.json
 | L2 | Ethernet | src/dst MAC, EtherType |
 | L2 | 802.1Q | VLAN ID |
 | L2 | ARP | Operation, sender/target IP+MAC |
-| L3 | IPv4 | src/dst IP, TTL, ID, checksum, fragment, protocol |
-| L3 | IPv6 | src/dst IP, hop limit, next header |
+| L2 | Linux cooked (SLL/SLL2) | EtherType, payload dissection (the `any` device) |
+| L2 | Loopback (NULL/LOOP) | Address family, payload dissection (macOS/BSD `lo`) |
+| L3 | IPv4 | src/dst IP, TTL, ID, checksum, protocol; non-first fragments flagged, not misparsed |
+| L3 | IPv6 | src/dst IP, hop limit; extension-header chain walked to the real L4 |
 | L3 | ICMPv4 | Type, code, echo ID/seq |
 | L3 | ICMPv6 | Type, code, neighbor discovery |
 | L4 | TCP | Ports, flags, seq, ack, window, checksum |
