@@ -17,3 +17,7 @@ build/
 
 # Debug
 *.dSYM/
+
+# CMake
+build-*/
+compile_commands.json

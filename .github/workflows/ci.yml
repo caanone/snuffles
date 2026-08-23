@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux-make:
+    name: Linux make ${{ matrix.variant }} (${{ matrix.cc }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+        variant: [all, nopcap]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libpcap
+        if: matrix.variant == 'all'
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+      - name: Build
+        run: make ${{ matrix.variant }} CC=${{ matrix.cc }}
+      - name: Smoke test
+        run: ./snuffles -v && ./snuffles --list-ifaces
+
+  linux-cmake:
+    name: Linux CMake ${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [pcap, nopcap]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libpcap
+        if: matrix.variant == 'pcap'
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+      - name: Configure
+        run: cmake -B build-ci ${{ matrix.variant == 'nopcap' && '-DNO_PCAP=ON' || '' }}
+      - name: Build
+        run: cmake --build build-ci -j
+      - name: Smoke test
+        run: ./build-ci/snuffles -v
+
+  sanitizers:
+    name: ASan + UBSan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+      - run: make debug
+      # detect_leaks=0 until the known error-path leaks are fixed (plan phase 2)
+      - run: ASAN_OPTIONS=detect_leaks=0 ./snuffles -v
+      - run: ASAN_OPTIONS=detect_leaks=0 ./snuffles --list-ifaces
+
+  macos:
+    name: macOS make (libpcap)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make
+      - run: ./snuffles -v && ./snuffles --list-ifaces
+
+  windows-cross:
+    name: Windows cross-build (MinGW, NO_PCAP)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+      - name: Build snuffles.exe
+        run: |
+          x86_64-w64-mingw32-gcc -std=c11 -Wall -Wextra -O2 -DNO_PCAP -D_WIN32_WINNT=0x0601 -Iinclude \
+            src/main.c src/capture_raw.c src/dissect.c src/filter.c src/ringbuf.c \
+            src/ui.c src/export_pcap.c src/export_json.c src/stats.c src/session.c \
+            src/syslog_out.c -o snuffles.exe -lws2_32 -liphlpapi

@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>   /* strcasecmp, strncasecmp */
 #include <ctype.h>
 
 #ifdef _WIN32
