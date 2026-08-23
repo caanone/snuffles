@@ -23,6 +23,8 @@ int             capture_is_offline(const capture_ctx_t *ctx);
 void            capture_get_stats(capture_ctx_t *ctx, capture_stats_raw_t *out);
 const char     *capture_get_iface(const capture_ctx_t *ctx);
 const char     *capture_get_bpf(const capture_ctx_t *ctx);
+/* pcap linktype of the capture (DLT_EN10MB, DLT_RAW, ...) for exporters. */
+int             capture_get_datalink(const capture_ctx_t *ctx);
 int             capture_set_bpf(capture_ctx_t *ctx, const char *expr,
                                 char *errbuf, size_t errlen);
 int             capture_list_interfaces(void);

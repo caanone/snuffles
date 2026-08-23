@@ -47,8 +47,10 @@ static int parse_cidr(const char *s, uint32_t *net, uint32_t *mask) {
     int prefix = 32;
     if (slash) {
         *slash = '\0';
-        prefix = atoi(slash + 1);
-        if (prefix < 0 || prefix > 32) return 0;
+        char *end;
+        long v = strtol(slash + 1, &end, 10);
+        if (end == slash + 1 || *end != '\0' || v < 0 || v > 32) return 0;
+        prefix = (int)v;
     }
 
     struct in_addr addr;
@@ -165,7 +167,7 @@ static int tokenize(const char *expr, tokenizer_t *t, char *errbuf) {
         while (*p && isspace((unsigned char)*p)) { p++; pos++; }
         if (!*p) break;
 
-        if (t->count >= FILTER_MAX_TOKENS) {
+        if (t->count >= FILTER_MAX_TOKENS - 1) {   /* reserve the EOF slot */
             snprintf(errbuf, 128, "Too many tokens");
             return -1;
         }
@@ -251,11 +253,9 @@ static int tokenize(const char *expr, tokenizer_t *t, char *errbuf) {
         t->count++;
     }
 
-    if (t->count < FILTER_MAX_TOKENS) {
-        t->tokens[t->count].type = TOK_EOF;
-        t->tokens[t->count].val[0] = '\0';
-        t->tokens[t->count].pos = pos;
-    }
+    t->tokens[t->count].type = TOK_EOF;
+    t->tokens[t->count].val[0] = '\0';
+    t->tokens[t->count].pos = pos;
 
     return 0;
 }
@@ -286,21 +286,35 @@ static int alloc_node(parser_t *p) {
     return p->filt->node_count++;
 }
 
-static void setup_cmp_extras(filter_node_t *n) {
+static int setup_cmp_extras(filter_node_t *n, char *errbuf) {
     n->cmp.has_cidr = 0;
     n->cmp.has_range = 0;
 
+    int ip_field   = (n->cmp.field == FIELD_SRC_IP || n->cmp.field == FIELD_DST_IP ||
+                      n->cmp.field == FIELD_IP);
+    int port_field = (n->cmp.field == FIELD_SRC_PORT || n->cmp.field == FIELD_DST_PORT ||
+                      n->cmp.field == FIELD_PORT);
+
     /* detect CIDR: value contains '/' */
     if (strchr(n->cmp.value, '/')) {
-        if (parse_cidr(n->cmp.value, &n->cmp.cidr_ip, &n->cmp.cidr_mask))
+        if (parse_cidr(n->cmp.value, &n->cmp.cidr_ip, &n->cmp.cidr_mask)) {
             n->cmp.has_cidr = 1;
+        } else if (ip_field) {
+            snprintf(errbuf, 128, "Invalid CIDR '%s'", n->cmp.value);
+            return -1;
+        }
     }
 
     /* detect port range: value contains '-' and is numeric */
     if (strchr(n->cmp.value, '-') && isdigit((unsigned char)n->cmp.value[0])) {
-        if (parse_port_range(n->cmp.value, &n->cmp.range_lo, &n->cmp.range_hi))
+        if (parse_port_range(n->cmp.value, &n->cmp.range_lo, &n->cmp.range_hi)) {
             n->cmp.has_range = 1;
+        } else if (port_field) {
+            snprintf(errbuf, 128, "Invalid port range '%s'", n->cmp.value);
+            return -1;
+        }
     }
+    return 0;
 }
 
 static int parse_expr(parser_t *p);
@@ -344,7 +358,7 @@ static int parse_primary(parser_t *p) {
         p->filt->nodes[idx].cmp.op    = OP_EQ;
         snprintf(p->filt->nodes[idx].cmp.value,
                  sizeof(p->filt->nodes[idx].cmp.value), "%s", proto_tok->val);
-        setup_cmp_extras(&p->filt->nodes[idx]);
+        if (setup_cmp_extras(&p->filt->nodes[idx], p->errbuf) != 0) return -1;
         return idx;
     }
 
@@ -358,14 +372,20 @@ static int parse_primary(parser_t *p) {
         p->filt->nodes[idx].cmp.op    = OP_EQ;
         snprintf(p->filt->nodes[idx].cmp.value,
                  sizeof(p->filt->nodes[idx].cmp.value), "%s", ip_tok->val);
-        setup_cmp_extras(&p->filt->nodes[idx]);
+        if (setup_cmp_extras(&p->filt->nodes[idx], p->errbuf) != 0) return -1;
         return idx;
     }
 
-    /* "port 443" or "port 80-443" shorthand */
+    /* "port 443", "port 80-443", or "port == 443" (any operator) */
     if (tok->type == TOK_PORT_KW) {
         advance(p);
+        filter_op_t op = OP_EQ;
         token_t *val_tok = peek(p);
+        if (val_tok->type == TOK_OP) {
+            op = op_from_str(val_tok->val);
+            advance(p);
+            val_tok = peek(p);
+        }
         if (val_tok->type != TOK_VALUE && val_tok->type != TOK_BARE_IP) {
             snprintf(p->errbuf, 128, "Expected port number after 'port' at pos %d", val_tok->pos);
             return -1;
@@ -375,10 +395,10 @@ static int parse_primary(parser_t *p) {
         if (idx < 0) return -1;
         p->filt->nodes[idx].type = NODE_CMP;
         p->filt->nodes[idx].cmp.field = FIELD_PORT;
-        p->filt->nodes[idx].cmp.op    = OP_EQ;
+        p->filt->nodes[idx].cmp.op    = op;
         snprintf(p->filt->nodes[idx].cmp.value,
                  sizeof(p->filt->nodes[idx].cmp.value), "%s", val_tok->val);
-        setup_cmp_extras(&p->filt->nodes[idx]);
+        if (setup_cmp_extras(&p->filt->nodes[idx], p->errbuf) != 0) return -1;
         return idx;
     }
 
@@ -387,6 +407,17 @@ static int parse_primary(parser_t *p) {
         token_t *field_tok = advance(p);
         token_t *op_tok = peek(p);
         if (op_tok->type != TOK_OP) {
+            if (strcasecmp(field_tok->val, "vlan") == 0) {
+                /* bare "vlan": matches any 802.1Q-tagged packet */
+                int idx = alloc_node(p);
+                if (idx < 0) return -1;
+                p->filt->nodes[idx].type = NODE_CMP;
+                p->filt->nodes[idx].cmp.field = FIELD_VLAN;
+                p->filt->nodes[idx].cmp.op    = OP_NEQ;
+                snprintf(p->filt->nodes[idx].cmp.value,
+                         sizeof(p->filt->nodes[idx].cmp.value), "0");
+                return idx;
+            }
             snprintf(p->errbuf, 128, "Expected operator after '%s' at pos %d",
                      field_tok->val, op_tok->pos);
             return -1;
@@ -407,7 +438,7 @@ static int parse_primary(parser_t *p) {
         p->filt->nodes[idx].cmp.op    = op_from_str(op_tok->val);
         snprintf(p->filt->nodes[idx].cmp.value,
                  sizeof(p->filt->nodes[idx].cmp.value), "%s", val_tok->val);
-        setup_cmp_extras(&p->filt->nodes[idx]);
+        if (setup_cmp_extras(&p->filt->nodes[idx], p->errbuf) != 0) return -1;
         return idx;
     }
 
@@ -505,16 +536,32 @@ static bool match_proto(const pkt_summary_t *pkt, const char *val) {
     return false;
 }
 
-static bool eval_ip_field(const char *ip, const filter_node_t *n) {
+/* Positive-sense match (NEQ evaluated as EQ); callers apply the negation.
+ * This keeps CIDR/range values honoring the operator, and lets the
+ * either-side fields negate the combined result instead of OR-ing two
+ * negations into match-nearly-everything. */
+static bool ip_field_matches(const char *ip, const filter_node_t *n) {
     if (n->cmp.has_cidr)
         return ip_matches_cidr(ip, n->cmp.cidr_ip, n->cmp.cidr_mask);
-    return cmp_str(ip, n->cmp.value, n->cmp.op);
+    filter_op_t op = (n->cmp.op == OP_NEQ) ? OP_EQ : n->cmp.op;
+    return cmp_str(ip, n->cmp.value, op);
+}
+
+static bool eval_ip_field(const char *ip, const filter_node_t *n) {
+    bool m = ip_field_matches(ip, n);
+    return (n->cmp.op == OP_NEQ) ? !m : m;
+}
+
+static bool port_field_matches(uint16_t port, const filter_node_t *n) {
+    if (n->cmp.has_range)
+        return (long)port >= n->cmp.range_lo && (long)port <= n->cmp.range_hi;
+    filter_op_t op = (n->cmp.op == OP_NEQ) ? OP_EQ : n->cmp.op;
+    return cmp_int(port, atol(n->cmp.value), op);
 }
 
 static bool eval_port_field(uint16_t port, const filter_node_t *n) {
-    if (n->cmp.has_range)
-        return (long)port >= n->cmp.range_lo && (long)port <= n->cmp.range_hi;
-    return cmp_int(port, atol(n->cmp.value), n->cmp.op);
+    bool m = port_field_matches(port, n);
+    return (n->cmp.op == OP_NEQ) ? !m : m;
 }
 
 static bool eval_node(const display_filter_t *filt, int idx,
@@ -537,16 +584,20 @@ static bool eval_node(const display_filter_t *filt, int idx,
                     return eval_ip_field(pkt->src_ip, n);
                 case FIELD_DST_IP:
                     return eval_ip_field(pkt->dst_ip, n);
-                case FIELD_IP:
-                    return eval_ip_field(pkt->src_ip, n) ||
-                           eval_ip_field(pkt->dst_ip, n);
+                case FIELD_IP: {
+                    bool m = ip_field_matches(pkt->src_ip, n) ||
+                             ip_field_matches(pkt->dst_ip, n);
+                    return (n->cmp.op == OP_NEQ) ? !m : m;
+                }
                 case FIELD_SRC_PORT:
                     return eval_port_field(pkt->src_port, n);
                 case FIELD_DST_PORT:
                     return eval_port_field(pkt->dst_port, n);
-                case FIELD_PORT:
-                    return eval_port_field(pkt->src_port, n) ||
-                           eval_port_field(pkt->dst_port, n);
+                case FIELD_PORT: {
+                    bool m = port_field_matches(pkt->src_port, n) ||
+                             port_field_matches(pkt->dst_port, n);
+                    return (n->cmp.op == OP_NEQ) ? !m : m;
+                }
                 case FIELD_PROTO:
                     if (n->cmp.op == OP_EQ)  return match_proto(pkt, n->cmp.value);
                     if (n->cmp.op == OP_NEQ) return !match_proto(pkt, n->cmp.value);
@@ -574,13 +625,13 @@ static bool eval_node(const display_filter_t *filt, int idx,
 
 int filter_compile(const char *expr, display_filter_t *filt) {
     memset(filt, 0, sizeof(*filt));
-    snprintf(filt->expr, sizeof(filt->expr), "%s", expr);
 
     if (!expr || !expr[0]) {
         filt->valid = true;
         filt->root  = -1;
         return 0;
     }
+    snprintf(filt->expr, sizeof(filt->expr), "%s", expr);
 
     tokenizer_t t;
     if (tokenize(expr, &t, filt->error) != 0) {

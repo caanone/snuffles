@@ -15,5 +15,7 @@ ui_ctx_t   *ui_create(ringbuf_t *rb, capture_ctx_t *cap,
 void        ui_destroy(ui_ctx_t *ctx);
 void        ui_run(ui_ctx_t *ctx);
 void        ui_request_stop(ui_ctx_t *ctx);
+/* Async-signal-safe: sets a flag the UI loop polls; no context needed. */
+void        ui_request_stop_async(void);
 
 #endif /* UI_H */

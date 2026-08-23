@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef _WIN32
   #ifndef WIN32_LEAN_AND_MEAN
@@ -292,5 +293,14 @@ static inline void capture_cfg_defaults(capture_cfg_t *cfg) {
 #define NS_MAX(a, b) ((a) > (b) ? (a) : (b))
 
 #define NS_ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
+
+/* Portable localtime into caller storage. */
+static inline struct tm *ns_localtime(const time_t *t, struct tm *out) {
+#ifdef _WIN32
+    return (localtime_s(out, t) == 0) ? out : NULL;
+#else
+    return localtime_r(t, out);
+#endif
+}
 
 #endif /* SNUFFLES_H */

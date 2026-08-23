@@ -81,15 +81,18 @@ int pcap_writer_write(pcap_writer_t *pw, const pkt_record_t *rec) {
     return 0;
 }
 
-void pcap_writer_close(pcap_writer_t *pw) {
-    if (!pw) return;
-    if (pw->fp) fclose(pw->fp);
+int pcap_writer_close(pcap_writer_t *pw) {
+    if (!pw) return 0;
+    int rc = 0;
+    if (pw->fp && fclose(pw->fp) != 0) rc = -1;
     free(pw);
+    return rc;
 }
 
 int export_pcap(const char *path, ringbuf_t *rb,
-                const display_filter_t *filt, uint32_t snaplen) {
-    pcap_writer_t *pw = pcap_writer_open(path, snaplen, 1 /* LINKTYPE_ETHERNET */);
+                const display_filter_t *filt, uint32_t snaplen,
+                int linktype) {
+    pcap_writer_t *pw = pcap_writer_open(path, snaplen, (uint32_t)linktype);
     if (!pw) return -1;
 
     uint32_t count = ringbuf_count(rb);
@@ -109,11 +112,15 @@ int export_pcap(const char *path, ringbuf_t *rb,
                 continue;
         }
 
-        pcap_writer_write(pw, &rec);
+        if (pcap_writer_write(pw, &rec) != 0) {
+            free(data);
+            pcap_writer_close(pw);
+            return -1;
+        }
         written++;
     }
 
     free(data);
-    pcap_writer_close(pw);
+    if (pcap_writer_close(pw) != 0) return -1;
     return written;
 }
