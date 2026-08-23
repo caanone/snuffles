@@ -51,9 +51,38 @@ jobs:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y libpcap-dev
       - run: make debug
-      # detect_leaks=0 until the known error-path leaks are fixed (plan phase 2)
-      - run: ASAN_OPTIONS=detect_leaks=0 ./snuffles -v
-      - run: ASAN_OPTIONS=detect_leaks=0 ./snuffles --list-ifaces
+      - run: ./snuffles -v && ./snuffles --list-ifaces
+      - name: Generate test capture
+        run: |
+          python3 - <<'EOF'
+          import struct
+          def eth(p): return bytes(12)+b'\x08\x00'+p
+          def ip4(p,pr): return struct.pack('>BBHHHBBH4s4s',0x45,0,20+len(p),1,0,64,pr,0,bytes([10,0,0,1]),bytes([8,8,8,8]))+p
+          tcp=struct.pack('>HHIIBBHHH',40000,443,1,0,5<<4,2,65535,0,0)
+          pkts=[eth(ip4(tcp,6))]*25
+          out=struct.pack('<IHHiIII',0xa1b2c3d4,2,4,0,0,65535,1)
+          for i,p in enumerate(pkts): out+=struct.pack('<IIII',1700000000+i,0,len(p),len(p))+p
+          open('ci.pcap','wb').write(out)
+          EOF
+      - name: JSON Lines end-to-end
+        run: |
+          timeout 30 ./snuffles -r ci.pcap --jsonl | python3 -c "
+          import json,sys
+          lines=[json.loads(l) for l in sys.stdin]
+          assert len(lines)==25 and lines[0]['protocol']=='TCP', lines[:1]
+          print('jsonl ok:', len(lines), 'lines')"
+      - name: Streaming -w end-to-end
+        run: |
+          timeout 30 ./snuffles -r ci.pcap --no-ui -w stream.pcap >/dev/null
+          python3 -c "
+          import struct
+          d=open('stream.pcap','rb').read()
+          h=struct.unpack('<IHHiIII',d[:24]); assert h[0]==0xa1b2c3d4 and h[6]==1
+          n,off=0,24
+          while off<len(d):
+              inc=struct.unpack('<I',d[off+8:off+12])[0]; off+=16+inc; n+=1
+          assert n==25, n
+          print('stream pcap ok:', n, 'records')"
 
   macos:
     name: macOS make (libpcap)

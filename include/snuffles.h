@@ -161,9 +161,9 @@
 /* ── Version ─────────────────────────────────────────────────── */
 
 #define SNUFFLES_VERSION_MAJOR 1
-#define SNUFFLES_VERSION_MINOR 0
+#define SNUFFLES_VERSION_MINOR 1
 #define SNUFFLES_VERSION_PATCH 0
-#define SNUFFLES_VERSION_STR   "1.0.0"
+#define SNUFFLES_VERSION_STR   "1.1.0"
 #define SNUFFLES_NAME          "Snuffles"
 
 /* ── Protocol IDs ────────────────────────────────────────────── */
@@ -263,6 +263,8 @@ typedef struct {
     int         count;
     int         no_ui;
     int         quiet;          /* -q / --quiet: no terminal output at all */
+    int         jsonl;          /* --jsonl: stream JSON Lines to stdout */
+    char        stream_file[512]; /* -w: write pcap while capturing */
     int         list_ifaces;
     int         verbose;
     char        syslog_target[256];

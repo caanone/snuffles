@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <math.h>
+#include <ctype.h>
 #include <errno.h>
 #include <signal.h>
 
@@ -55,6 +56,7 @@ typedef enum {
     MODE_EXPORT,
     MODE_HELP,
     MODE_STATS,
+    MODE_SEARCH,
 } input_mode_t;
 
 typedef enum {
@@ -97,6 +99,17 @@ struct ui_ctx {
     /* scratch for copy-out ring reads */
     pkt_record_t        peek_rec;
     uint8_t            *peek_data;      /* snaplen bytes */
+
+    /* filtered-index cache: sequence numbers of packets matching the
+     * display filter, kept sorted. Makes row access O(1) instead of a
+     * full ring scan per row. */
+    uint64_t           *fcache;
+    uint32_t            fcache_cap;
+    uint32_t            fcache_len;     /* entries incl. expired head */
+    uint32_t            fcache_head;    /* first non-expired entry */
+    uint64_t            fcache_scanned; /* next seq to evaluate */
+
+    char                search[128];    /* last search string */
 
     uint64_t            last_total;
     int                 cur_row;
@@ -287,45 +300,128 @@ static const char *proto_color(proto_id_t p) {
 
 /* ── Filtered packet count & access ──────────────────────────── */
 
-static uint32_t filtered_count(ui_ctx_t *ctx) {
-    uint32_t total = ringbuf_count(ctx->rb);
-    if (!ctx->dfilter.valid || ctx->dfilter.root < 0)
-        return total;
+static int dfilter_active(const ui_ctx_t *ctx) {
+    return ctx->dfilter.valid && ctx->dfilter.root >= 0;
+}
 
-    uint32_t c = 0;
-    pkt_record_t rec;
-    for (uint32_t i = 0; i < total; i++) {
-        if (ringbuf_read(ctx->rb, i, &rec, NULL) &&
-            filter_eval(&ctx->dfilter, &rec.summary))
-            c++;
+/* Invalidate the cache; called whenever the display filter changes or the
+ * ring is cleared. */
+static void fcache_reset(ui_ctx_t *ctx) {
+    ctx->fcache_len     = 0;
+    ctx->fcache_head    = 0;
+    ctx->fcache_scanned = ringbuf_oldest(ctx->rb);
+}
+
+static void fcache_push(ui_ctx_t *ctx, uint64_t seq) {
+    if (ctx->fcache_len == ctx->fcache_cap) {
+        uint32_t ncap = ctx->fcache_cap ? ctx->fcache_cap * 2 : 1024;
+        uint64_t *nb = realloc(ctx->fcache, (size_t)ncap * sizeof(uint64_t));
+        if (!nb) return;   /* degrade: drop the entry */
+        ctx->fcache = nb;
+        ctx->fcache_cap = ncap;
     }
-    return c;
+    ctx->fcache[ctx->fcache_len++] = seq;
+}
+
+/* Amortized maintenance: expire entries that fell off the ring, compact,
+ * and evaluate the filter on newly committed packets only. */
+static void fcache_sync(ui_ctx_t *ctx) {
+    uint64_t oldest = ringbuf_oldest(ctx->rb);
+    uint64_t total  = ringbuf_total(ctx->rb);
+
+    while (ctx->fcache_head < ctx->fcache_len &&
+           ctx->fcache[ctx->fcache_head] < oldest)
+        ctx->fcache_head++;
+    if (ctx->fcache_head > 4096 || ctx->fcache_head == ctx->fcache_len) {
+        memmove(ctx->fcache, ctx->fcache + ctx->fcache_head,
+                (size_t)(ctx->fcache_len - ctx->fcache_head) * sizeof(uint64_t));
+        ctx->fcache_len -= ctx->fcache_head;
+        ctx->fcache_head = 0;
+    }
+
+    if (ctx->fcache_scanned < oldest)
+        ctx->fcache_scanned = oldest;
+
+    pkt_record_t rec;
+    while (ctx->fcache_scanned < total) {
+        uint32_t idx = (uint32_t)(ctx->fcache_scanned - oldest);
+        if (ringbuf_read(ctx->rb, idx, &rec, NULL) &&
+            filter_eval(&ctx->dfilter, &rec.summary))
+            fcache_push(ctx, ctx->fcache_scanned);
+        ctx->fcache_scanned++;
+    }
+}
+
+static uint32_t filtered_count(ui_ctx_t *ctx) {
+    if (!dfilter_active(ctx))
+        return ringbuf_count(ctx->rb);
+    fcache_sync(ctx);
+    return ctx->fcache_len - ctx->fcache_head;
 }
 
 /* Copies the record into ctx->peek_rec/peek_data; the pointer is only
  * valid until the next filtered_peek call. */
 static const pkt_record_t *filtered_peek(ui_ctx_t *ctx, uint32_t idx) {
-    uint32_t total = ringbuf_count(ctx->rb);
-    if (!ctx->dfilter.valid || ctx->dfilter.root < 0) {
+    if (!dfilter_active(ctx)) {
         if (ringbuf_read(ctx->rb, idx, &ctx->peek_rec, ctx->peek_data))
             return &ctx->peek_rec;
         return NULL;
     }
 
-    uint32_t c = 0;
-    pkt_record_t rec;
-    for (uint32_t i = 0; i < total; i++) {
-        if (!ringbuf_read(ctx->rb, i, &rec, NULL)) continue;
-        if (filter_eval(&ctx->dfilter, &rec.summary)) {
-            if (c == idx) {
-                if (ringbuf_read(ctx->rb, i, &ctx->peek_rec, ctx->peek_data))
-                    return &ctx->peek_rec;
-                return NULL;
-            }
-            c++;
+    fcache_sync(ctx);
+    if (idx >= ctx->fcache_len - ctx->fcache_head)
+        return NULL;
+    uint64_t seq    = ctx->fcache[ctx->fcache_head + idx];
+    uint64_t oldest = ringbuf_oldest(ctx->rb);
+    if (seq < oldest)
+        return NULL;   /* raced away between sync and read */
+    if (ringbuf_read(ctx->rb, (uint32_t)(seq - oldest),
+                     &ctx->peek_rec, ctx->peek_data))
+        return &ctx->peek_rec;
+    return NULL;
+}
+
+/* ── Search ──────────────────────────────────────────────────── */
+
+static int ci_contains(const char *hay, const char *needle) {
+    size_t nlen = strlen(needle);
+    if (!nlen) return 1;
+    for (const char *p = hay; *p; p++) {
+        size_t i = 0;
+        while (i < nlen && p[i] &&
+               tolower((unsigned char)p[i]) == tolower((unsigned char)needle[i]))
+            i++;
+        if (i == nlen) return 1;
+    }
+    return 0;
+}
+
+/* Move the selection to the next row (dir=+1) or previous row (dir=-1)
+ * whose info/IPs/protocol contain ctx->search, wrapping around. */
+static void do_search(ui_ctx_t *ctx, int dir) {
+    if (!ctx->search[0] || ctx->view != VIEW_PACKETS) return;
+    uint32_t n = filtered_count(ctx);
+    if (n == 0) goto miss;
+
+    for (uint32_t step = 1; step <= n; step++) {
+        long i = (long)ctx->selected + (long)step * dir;
+        i %= (long)n;
+        if (i < 0) i += n;
+        const pkt_record_t *rec = filtered_peek(ctx, (uint32_t)i);
+        if (!rec) continue;
+        const pkt_summary_t *s = &rec->summary;
+        if (ci_contains(s->info, ctx->search) ||
+            ci_contains(s->src_ip, ctx->search) ||
+            ci_contains(s->dst_ip, ctx->search) ||
+            ci_contains(s->protocol, ctx->search)) {
+            ctx->selected = (int)i;
+            return;
         }
     }
-    return NULL;
+miss:
+    snprintf(ctx->bpf_msg, sizeof(ctx->bpf_msg),
+             "\033[33mNot found: %s\033[0m", ctx->search);
+    ctx->bpf_msg_frames = 60;
 }
 
 /* ── Render ──────────────────────────────────────────────────── */
@@ -376,6 +472,10 @@ static void render_frame(ui_ctx_t *ctx) {
             "    S             Toggle between Packets and Sessions view",
             "    T             Cycle session sort (bytes/packets/recent/duration)",
             "    V             Protocol statistics overlay",
+            "",
+            ESC_BOLD "  SEARCH" ESC_RESET,
+            "    /             Search packet list (info, IPs, protocol)",
+            "    n / N         Next / previous match",
             "",
             ESC_BOLD "  FILTERS" ESC_RESET,
             "    F             Display filter (post-capture, hides packets from view)",
@@ -773,6 +873,11 @@ static void render_frame(ui_ctx_t *ctx) {
         ob_str(ctx, ESC_BOLD " Export (.pcap/.json): " ESC_RESET);
         ob_str(ctx, ctx->input_buf);
         ob_str(ctx, "\xe2\x96\x88");
+    } else if (ctx->mode == MODE_SEARCH) {
+        ob_str(ctx, ESC_BOLD " Search> " ESC_RESET);
+        ob_str(ctx, ctx->input_buf);
+        ob_str(ctx, "\xe2\x96\x88");
+        ob_str(ctx, ESC_DIM "  (matches info, IPs, protocol; n/N = next/prev)" ESC_RESET);
     } else {
         stats_compute_rates(&ctx->stats);
         char stats_str[256];
@@ -904,7 +1009,8 @@ static void handle_input(ui_ctx_t *ctx) {
         return;
     }
 
-    if (ctx->mode == MODE_FILTER || ctx->mode == MODE_BPF || ctx->mode == MODE_EXPORT) {
+    if (ctx->mode == MODE_FILTER || ctx->mode == MODE_BPF ||
+        ctx->mode == MODE_EXPORT || ctx->mode == MODE_SEARCH) {
         if (c == 27) {
             ctx->mode = MODE_NORMAL;
             ctx->input_pos = 0;
@@ -912,8 +1018,12 @@ static void handle_input(ui_ctx_t *ctx) {
         } else if (c == '\n' || c == '\r') {
             if (ctx->mode == MODE_FILTER) {
                 filter_compile(ctx->input_buf, &ctx->dfilter);
+                fcache_reset(ctx);
                 ctx->selected = 0;
                 ctx->scroll_off = 0;
+            } else if (ctx->mode == MODE_SEARCH) {
+                snprintf(ctx->search, sizeof(ctx->search), "%s", ctx->input_buf);
+                do_search(ctx, +1);
             } else if (ctx->mode == MODE_BPF) {
                 char errbuf[256];
                 if (capture_set_bpf(ctx->cap, ctx->input_buf, errbuf, sizeof(errbuf)) == 0) {
@@ -1026,6 +1136,7 @@ static void handle_input(ui_ctx_t *ctx) {
         ringbuf_clear(ctx->rb);
         if (ctx->sessions) session_table_clear(ctx->sessions);
         stats_init(&ctx->stats);
+        fcache_reset(ctx);
         ctx->last_total = ringbuf_total(ctx->rb);
         ctx->selected = 0;
         ctx->scroll_off = 0;
@@ -1035,6 +1146,14 @@ static void handle_input(ui_ctx_t *ctx) {
         ctx->mode = MODE_HELP;
     } else if (c == 'v' || c == 'V') {
         ctx->mode = MODE_STATS;
+    } else if (c == '/') {
+        ctx->mode = MODE_SEARCH;
+        ctx->input_pos = 0;
+        ctx->input_buf[0] = '\0';
+    } else if (c == 'n') {
+        do_search(ctx, +1);
+    } else if (c == 'N') {
+        do_search(ctx, -1);
     } else if (c == '\n' || c == '\r') {
         if (ctx->view == VIEW_SESSIONS) {
             /* drill into selected session: switch to packet view with filter */
@@ -1044,6 +1163,7 @@ static void handle_input(ui_ctx_t *ctx) {
                 char expr[32];
                 snprintf(expr, sizeof(expr), "session == %u", sid);
                 filter_compile(expr, &ctx->dfilter);
+                fcache_reset(ctx);
                 ctx->view = VIEW_PACKETS;
                 ctx->selected = 0;
                 ctx->scroll_off = 0;
@@ -1105,6 +1225,7 @@ ui_ctx_t *ui_create(ringbuf_t *rb, capture_ctx_t *cap,
 void ui_destroy(ui_ctx_t *ctx) {
     if (!ctx) return;
     free(ctx->sess_snap);
+    free(ctx->fcache);
     free(ctx->peek_data);
     free(ctx->outbuf);
     free(ctx);

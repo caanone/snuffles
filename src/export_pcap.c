@@ -30,14 +30,20 @@ typedef struct {
 struct pcap_writer {
     FILE     *fp;
     uint32_t  snaplen;
-    uint32_t  count;
+    uint64_t  count;
+    int       to_stdout;
 };
 
 pcap_writer_t *pcap_writer_open(const char *path, uint32_t snaplen, uint32_t linktype) {
     pcap_writer_t *pw = calloc(1, sizeof(pcap_writer_t));
     if (!pw) return NULL;
 
-    pw->fp = fopen(path, "wb");
+    if (strcmp(path, "-") == 0) {
+        pw->fp = stdout;
+        pw->to_stdout = 1;
+    } else {
+        pw->fp = fopen(path, "wb");
+    }
     if (!pw->fp) { free(pw); return NULL; }
 
     pw->snaplen = snaplen;
@@ -78,13 +84,24 @@ int pcap_writer_write(pcap_writer_t *pw, const pkt_record_t *rec) {
     if (fwrite(rec->raw_data, 1, incl, pw->fp) != incl) return -1;
 
     pw->count++;
+    if (pw->to_stdout) fflush(pw->fp);   /* live piping (e.g. into wireshark) */
     return 0;
+}
+
+uint64_t pcap_writer_count(const pcap_writer_t *pw) {
+    return pw ? pw->count : 0;
 }
 
 int pcap_writer_close(pcap_writer_t *pw) {
     if (!pw) return 0;
     int rc = 0;
-    if (pw->fp && fclose(pw->fp) != 0) rc = -1;
+    if (pw->fp) {
+        if (pw->to_stdout) {
+            if (fflush(pw->fp) != 0) rc = -1;   /* never fclose stdout */
+        } else if (fclose(pw->fp) != 0) {
+            rc = -1;
+        }
+    }
     free(pw);
     return rc;
 }
