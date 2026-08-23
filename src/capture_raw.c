@@ -14,6 +14,7 @@
 
 #include "capture.h"
 #include "dissect.h"
+#include "export_pcap.h"
 #include "syslog_out.h"
 #include <stdatomic.h>
 #include <errno.h>
@@ -67,6 +68,7 @@ struct capture_ctx {
     char                iface_name[64];
     char                bpf_expr[512]; /* stored but not kernel-applied */
     syslog_out_t       *syslog;
+    pcap_writer_t      *stream;     /* -w: capture thread only */
 };
 
 /* ── Capture thread ──────────────────────────────────────────── */
@@ -158,6 +160,13 @@ static void *capture_thread_fn(void *arg) {
         /* syslog output (skip own traffic to prevent feedback loop) */
         if (ctx->syslog && !syslog_out_is_self(ctx->syslog, &rec->summary))
             syslog_out_send(ctx->syslog, &rec->summary);
+
+        /* streaming -w write (before commit: the slot is still ours) */
+        if (ctx->stream && pcap_writer_write(ctx->stream, rec) != 0) {
+            fprintf(stderr, "stream write failed; disabling -w output\n");
+            pcap_writer_close(ctx->stream);
+            ctx->stream = NULL;
+        }
 
         ringbuf_producer_commit(ctx->rb);
 
@@ -368,6 +377,15 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
             fprintf(stderr, "Warning: syslog output disabled\n");
     }
 
+    /* streaming -w writer (after the privilege drop: file owned by user) */
+    if (cfg->stream_file[0]) {
+        ctx->stream = pcap_writer_open(cfg->stream_file, (uint32_t)cfg->snaplen,
+                                       ctx->has_eth ? 1u : 101u /* DLT_RAW */);
+        if (!ctx->stream)
+            fprintf(stderr, "Warning: cannot open '%s' for -w streaming\n",
+                    cfg->stream_file);
+    }
+
     return ctx;
 }
 
@@ -390,6 +408,15 @@ void capture_stop(capture_ctx_t *ctx) {
 
 void capture_destroy(capture_ctx_t *ctx) {
     if (!ctx) return;
+    if (ctx->stream) {
+        uint64_t n = pcap_writer_count(ctx->stream);
+        if (pcap_writer_close(ctx->stream) != 0)
+            fprintf(stderr, "Warning: error finalizing -w stream file\n");
+        else
+            fprintf(stderr, "Streamed %llu packets to %s\n",
+                    (unsigned long long)n, ctx->cfg.stream_file);
+        ctx->stream = NULL;
+    }
     syslog_out_destroy(ctx->syslog);
     if (ctx->sock != RAW_INVALID)
         RAW_CLOSE(ctx->sock);

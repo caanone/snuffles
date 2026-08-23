@@ -40,6 +40,9 @@ dependencies beyond (optional) libpcap.
 - Syslog forwarding `--syslog` — real-time UDP CSV with full header details, feedback loop prevention
 - Silent mode `-q` — zero terminal output, minimal memory (~16KB), pure syslog forwarder
 - ANSI terminal UI with color-coded protocols, scrollable list, detail panel, hex dump, help overlay
+- Streaming write `-w` — tcpdump-style write-while-capturing (`-w -` pipes into Wireshark)
+- JSON Lines output `--jsonl` — one JSON object per packet on stdout, made for `jq`
+- Search `/` — find packets by info, IP, or protocol; `n`/`N` to step through matches
 - Export to PCAP and JSON `[E]`
 - Security hardened: verified privilege dropping, bounds-checked parsing
   (unit-tested and continuously fuzzed), sanitized display of packet-derived
@@ -142,7 +145,10 @@ Options:
   -s <snaplen>        Snapshot length (default: 65535)
   -b <ring_size>      Ring buffer size (default: 10000)
   -o <file>           Export on exit (.pcap or .json)
+  -w <file>           Stream packets to a pcap file while capturing
+                      ('-w -' writes to stdout; combine with -q)
   --no-ui             Headless mode (print to stdout)
+  --jsonl             Headless mode, one JSON object per packet
   -q, --quiet         Silent mode (no output, use with --syslog)
   --syslog <host:port> Forward packets via UDP syslog
   --syslog-iface <ip|dev>  Source interface/IP for syslog
@@ -178,6 +184,15 @@ sudo ./snuffles -i en0 -c 100 --no-ui -o output.json
 # Pipe through grep
 sudo ./snuffles -i en0 --no-ui | grep DNS
 
+# Stream to disk while watching the TUI
+sudo ./snuffles -i eth0 -w rolling.pcap
+
+# Live-pipe into Wireshark
+sudo ./snuffles -i eth0 -q -w - | wireshark -k -i -
+
+# JSON Lines into jq
+sudo ./snuffles -i en0 --jsonl | jq -r '.dst_ip'
+
 # List interfaces
 ./snuffles --list-ifaces
 ```
@@ -206,6 +221,8 @@ Press `H` or `?` for the built-in help overlay.
 | PgUp / PgDn | Scroll by page |
 | Home / End | Jump to first / last |
 | Enter | Detail panel (packets) / Drill into session (sessions) |
+| / | Search packet list (info, IPs, protocol) |
+| n / N | Next / previous search match |
 | S | Toggle Packets / Sessions view |
 | V | Protocol statistics overlay |
 | T | Cycle session sort: bytes / packets / recent / duration |
