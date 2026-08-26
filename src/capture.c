@@ -40,6 +40,9 @@ struct capture_ctx {
     atomic_int          bpf_req;
 
     pcap_writer_t      *stream;     /* -w: capture thread only */
+
+    atomic_int          had_error;  /* set by the capture thread on fatal error */
+    char                err_msg[256]; /* written before had_error is set */
 };
 
 /* ── Capture callback ────────────────────────────────────────── */
@@ -132,7 +135,11 @@ static void *capture_thread_fn(void *arg) {
             if (atomic_load(&ctx->stop_req)) break;
         }
         if (ret == PCAP_ERROR) {
-            fprintf(stderr, "pcap error: %s\n", pcap_geterr(ctx->handle));
+            /* No stderr here: it would scribble over the TUI. The UI status
+             * bar and main's exit path surface the stored message. */
+            snprintf(ctx->err_msg, sizeof(ctx->err_msg), "%s",
+                     pcap_geterr(ctx->handle));
+            atomic_store(&ctx->had_error, 1);
             break;
         }
     }
@@ -351,6 +358,14 @@ void capture_get_stats(capture_ctx_t *ctx, capture_stats_raw_t *out) {
 
 int capture_get_datalink(const capture_ctx_t *ctx) {
     return ctx ? ctx->datalink : 1;
+}
+
+int capture_had_error(const capture_ctx_t *ctx) {
+    return ctx ? atomic_load(&ctx->had_error) : 0;
+}
+
+const char *capture_error_msg(const capture_ctx_t *ctx) {
+    return (ctx && atomic_load(&ctx->had_error)) ? ctx->err_msg : "";
 }
 
 const char *capture_get_iface(const capture_ctx_t *ctx) {

@@ -334,6 +334,11 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    if (capture_had_error(cap)) {
+        fprintf(stderr, "capture error: %s\n", capture_error_msg(cap));
+        exit_rc = 1;
+    }
+
     capture_destroy(cap);
     g_capture = NULL;
     session_table_destroy(sessions);

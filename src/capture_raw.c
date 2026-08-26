@@ -435,6 +435,16 @@ int capture_is_offline(const capture_ctx_t *ctx) {
     return 0; /* raw sockets are always live */
 }
 
+int capture_had_error(const capture_ctx_t *ctx) {
+    (void)ctx;
+    return 0;   /* raw backend treats socket errors as transient */
+}
+
+const char *capture_error_msg(const capture_ctx_t *ctx) {
+    (void)ctx;
+    return "";
+}
+
 int capture_get_datalink(const capture_ctx_t *ctx) {
     /* Linux AF_PACKET delivers Ethernet frames; the Windows raw socket
      * delivers bare IP packets (DLT_RAW). */

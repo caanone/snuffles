@@ -25,6 +25,9 @@ const char     *capture_get_iface(const capture_ctx_t *ctx);
 const char     *capture_get_bpf(const capture_ctx_t *ctx);
 /* pcap linktype of the capture (DLT_EN10MB, DLT_RAW, ...) for exporters. */
 int             capture_get_datalink(const capture_ctx_t *ctx);
+/* Nonzero if the capture thread terminated on an error; msg valid then. */
+int             capture_had_error(const capture_ctx_t *ctx);
+const char     *capture_error_msg(const capture_ctx_t *ctx);
 int             capture_set_bpf(capture_ctx_t *ctx, const char *expr,
                                 char *errbuf, size_t errlen);
 int             capture_list_interfaces(void);
