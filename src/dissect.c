@@ -139,8 +139,60 @@ static void dissect_dns(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
         }
     }
 
-    snprintf(out->info, sizeof(out->info), "DNS %s %s %s", qr, qtype, name);
     snprintf(out->protocol, sizeof(out->protocol), "DNS");
+
+    if (!is_response) {
+        snprintf(out->info, sizeof(out->info), "DNS %s %s %s", qr, qtype, name);
+        return;
+    }
+
+    /* Response: surface rcode, and the first A/AAAA answer if present. */
+    uint8_t  rcode   = flags & 0x0F;
+    uint16_t ancount = rd16(data + 6);
+    char rdata[64] = "";
+
+    if (rcode == 0 && qdcount > 0 && ancount > 0 && offset + 4 <= len) {
+        uint32_t aoff = offset + 4;   /* past qtype + qclass */
+        for (uint16_t a = 0; a < ancount && a < 16 && aoff < len && !rdata[0]; a++) {
+            /* skip the answer name: compression pointer or label sequence */
+            if ((data[aoff] & 0xC0) == 0xC0) {
+                aoff += 2;
+            } else {
+                int lb = 0;
+                while (aoff < len && data[aoff] != 0 && lb++ < 128) {
+                    uint8_t ll = data[aoff];
+                    if ((ll & 0xC0) == 0xC0) { aoff++; break; }
+                    if (ll > 63) { aoff = len; break; }
+                    aoff += 1u + ll;
+                }
+                aoff++;
+            }
+            if (aoff + 10 > len) break;
+            uint16_t atype = rd16(data + aoff);
+            uint16_t rdlen = rd16(data + aoff + 8);
+            aoff += 10;
+            if (rdlen > len - aoff) break;
+            if (atype == 1 && rdlen == 4)
+                format_ipv4(data + aoff, rdata, sizeof(rdata));
+            else if (atype == 28 && rdlen == 16)
+                format_ipv6(data + aoff, rdata, sizeof(rdata));
+            else if (atype == 5)
+                snprintf(rdata, sizeof(rdata), "CNAME");
+            aoff += rdlen;
+        }
+    }
+
+    static const char *rcodes[] = { "", "FormErr", "ServFail", "NXDOMAIN",
+                                    "NotImp", "Refused" };
+    if (rcode != 0) {
+        const char *rstr = (rcode <= 5) ? rcodes[rcode] : "Err";
+        snprintf(out->info, sizeof(out->info), "DNS R %s %s", rstr, name);
+    } else if (rdata[0]) {
+        snprintf(out->info, sizeof(out->info), "DNS R %s %s = %s",
+                 qtype, name, rdata);
+    } else {
+        snprintf(out->info, sizeof(out->info), "DNS R %s %s", qtype, name);
+    }
 }
 
 static void dissect_http(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
