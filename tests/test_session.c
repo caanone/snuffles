@@ -93,6 +93,35 @@ int main(void) {
         CHECK(session_table_count(st) <= 4);
     }
 
+    /* LRU eviction order: touching an old session protects it */
+    session_table_clear(st);
+    st->max_sessions = 3;
+    pkt_summary_t sa = mk("1.1.1.1", "2.2.2.2", 100, 80, TF_SYN, 10);
+    pkt_summary_t sb = mk("1.1.1.1", "2.2.2.2", 101, 80, TF_SYN, 11);
+    pkt_summary_t sc = mk("1.1.1.1", "2.2.2.2", 102, 80, TF_SYN, 12);
+    uint32_t ida = session_table_update(st, &sa);
+    uint32_t idb = session_table_update(st, &sb);
+    uint32_t idc = session_table_update(st, &sc);
+    session_table_update(st, &sa);   /* touch A: B becomes LRU */
+    pkt_summary_t sd = mk("1.1.1.1", "2.2.2.2", 103, 80, TF_SYN, 14);
+    uint32_t idd = session_table_update(st, &sd);
+    CHECK(session_table_count(st) == 3);
+    {
+        uint32_t n;
+        session_entry_t *snap = session_table_snapshot(st, &n, SORT_BYTES);
+        CHECK(snap && n == 3);
+        int hasA=0, hasB=0, hasC=0, hasD=0;
+        for (uint32_t i = 0; i < n; i++) {
+            if (snap[i].id == ida) hasA=1;
+            if (snap[i].id == idb) hasB=1;
+            if (snap[i].id == idc) hasC=1;
+            if (snap[i].id == idd) hasD=1;
+        }
+        CHECK(hasA && hasC && hasD && !hasB);   /* untouched B was evicted */
+        free(snap);
+    }
+    st->max_sessions = SESSION_DEFAULT_MAX;
+
     /* clear */
     session_table_clear(st);
     CHECK(session_table_count(st) == 0);

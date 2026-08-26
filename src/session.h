@@ -38,6 +38,8 @@ typedef struct session_entry {
     session_state_t     tcp_state;
     uint8_t             tcp_flags_seen;
     struct session_entry *next;     /* hash chain */
+    struct session_entry *lru_prev; /* intrusive LRU list (head = most recent) */
+    struct session_entry *lru_next;
 } session_entry_t;
 
 /* ── Sort modes ──────────────────────────────────────────────── */
@@ -53,6 +55,8 @@ typedef enum {
 
 typedef struct {
     session_entry_t   **buckets;
+    session_entry_t    *lru_head;   /* most recently touched */
+    session_entry_t    *lru_tail;   /* eviction candidate */
     uint32_t            bucket_count;
     uint32_t            session_count;
     uint32_t            next_id;

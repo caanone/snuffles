@@ -70,6 +70,24 @@ static int keys_equal(const session_key_t *a, const session_key_t *b) {
            a->proto  == b->proto;
 }
 
+/* ── LRU list (head = most recently touched, tail = evict next) ── */
+
+static void lru_unlink(session_table_t *st, session_entry_t *e) {
+    if (e->lru_prev) e->lru_prev->lru_next = e->lru_next;
+    else             st->lru_head = e->lru_next;
+    if (e->lru_next) e->lru_next->lru_prev = e->lru_prev;
+    else             st->lru_tail = e->lru_prev;
+    e->lru_prev = e->lru_next = NULL;
+}
+
+static void lru_push_front(session_table_t *st, session_entry_t *e) {
+    e->lru_prev = NULL;
+    e->lru_next = st->lru_head;
+    if (st->lru_head) st->lru_head->lru_prev = e;
+    st->lru_head = e;
+    if (!st->lru_tail) st->lru_tail = e;
+}
+
 /* ── TCP state machine ───────────────────────────────────────── */
 
 static session_state_t tcp_next_state(session_state_t cur, uint8_t flags) {
@@ -149,6 +167,8 @@ void session_table_clear(session_table_t *st) {
         }
         st->buckets[i] = NULL;
     }
+    st->lru_head = NULL;
+    st->lru_tail = NULL;
     st->session_count = 0;
     st->next_id = 1;
     ns_mutex_unlock(&st->mtx);
@@ -177,25 +197,17 @@ uint32_t session_table_update(session_table_t *st,
     }
 
     if (!e) {
-        /* evict oldest session if at capacity */
-        if (st->max_sessions > 0 && st->session_count >= st->max_sessions) {
-            session_entry_t *oldest = NULL;
-            uint32_t oldest_bucket = 0;
-            for (uint32_t bi = 0; bi < st->bucket_count; bi++) {
-                for (session_entry_t *s = st->buckets[bi]; s; s = s->next) {
-                    if (!oldest || s->last_seen.tv_sec < oldest->last_seen.tv_sec ||
-                        (s->last_seen.tv_sec == oldest->last_seen.tv_sec &&
-                         s->last_seen.tv_usec < oldest->last_seen.tv_usec)) {
-                        oldest = s;
-                        oldest_bucket = bi;
-                    }
-                }
-            }
-            if (oldest) {
-                session_entry_t **pp = &st->buckets[oldest_bucket];
-                while (*pp && *pp != oldest) pp = &(*pp)->next;
-                if (*pp) { *pp = oldest->next; free(oldest); st->session_count--; }
-            }
+        /* at capacity: evict the LRU tail in O(1) */
+        if (st->max_sessions > 0 && st->session_count >= st->max_sessions &&
+            st->lru_tail) {
+            session_entry_t *old = st->lru_tail;
+            uint32_t ob = key_hash(&old->key, st->bucket_count);
+            session_entry_t **pp = &st->buckets[ob];
+            while (*pp && *pp != old) pp = &(*pp)->next;
+            if (*pp) *pp = old->next;
+            lru_unlink(st, old);
+            free(old);
+            st->session_count--;
         }
 
         /* create new session */
@@ -208,6 +220,11 @@ uint32_t session_table_update(session_table_t *st,
         e->next = st->buckets[bucket];
         st->buckets[bucket] = e;
         st->session_count++;
+        lru_push_front(st, e);
+    } else {
+        /* touch: move to the front of the LRU list */
+        lru_unlink(st, e);
+        lru_push_front(st, e);
     }
 
     /* update counters */
@@ -301,6 +318,8 @@ session_entry_t *session_table_snapshot(session_table_t *st,
         for (session_entry_t *e = st->buckets[i]; e && idx < count; e = e->next) {
             arr[idx] = *e;
             arr[idx].next = NULL;
+            arr[idx].lru_prev = NULL;
+            arr[idx].lru_next = NULL;
             idx++;
         }
     }
