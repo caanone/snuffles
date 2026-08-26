@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.2.0] — 2026-08-27
 
 ### Added
 - Raw-socket builds get kernel BPF on Linux: a built-in classic-BPF
