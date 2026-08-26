@@ -110,6 +110,7 @@ struct ui_ctx {
     uint64_t            fcache_scanned; /* next seq to evaluate */
 
     char                search[128];    /* last search string */
+    int                 hex_scroll;     /* detail-panel hex dump row offset */
 
     uint64_t            last_total;
     int                 cur_row;
@@ -442,12 +443,19 @@ static void render_frame(ui_ctx_t *ctx) {
 
     ob_moveto(ctx, row++);
     ob_str(ctx, ESC_BOLD ESC_REVERSE);
-    ob_printf(ctx, " %s v%s | %s | captured: %lu | dropped: %lu ",
+    ob_printf(ctx, " %s v%s | %s | captured: %llu | dropped: %llu ",
               SNUFFLES_NAME, SNUFFLES_VERSION_STR,
               capture_get_iface(ctx->cap),
-              (unsigned long)ringbuf_total(ctx->rb),
-              (unsigned long)cstats.pkts_drop);
+              (unsigned long long)ringbuf_total(ctx->rb),
+              (unsigned long long)cstats.pkts_drop);
     ob_str(ctx, ESC_RESET);
+    if (!capture_is_running(ctx->cap)) {
+        if (capture_had_error(ctx->cap))
+            ob_printf(ctx, " \033[1;31m[CAPTURE ERROR: %.48s]\033[0m",
+                      capture_error_msg(ctx->cap));
+        else
+            ob_str(ctx, ESC_DIM " [capture ended]" ESC_RESET);
+    }
 
     /* ── Row 2: Hotkey bar ──────────────────────────────────── */
     ob_moveto(ctx, row++);
@@ -466,6 +474,7 @@ static void render_frame(ui_ctx_t *ctx) {
             "    PgUp/PgDn     Scroll by page",
             "    Home/End      Jump to first/last",
             "    Enter         Toggle detail panel (packet view)",
+            "    Left/Right    Scroll the hex dump in the detail panel",
             "                  Drill into session (session view)",
             "",
             ESC_BOLD "  VIEWS" ESC_RESET,
@@ -771,8 +780,14 @@ static void render_frame(ui_ctx_t *ctx) {
                 char lines[6][128];
                 int nlines = 0;
 
-                snprintf(lines[nlines++], 128, " Pkt #%d (session %u): %u bytes, %u captured",
-                         ctx->selected + 1, s->session_id, s->length, rec->raw_len);
+                uint32_t hex_rows = (rec->raw_len + 15) / 16;
+                if (ctx->hex_scroll < 0) ctx->hex_scroll = 0;
+                if (hex_rows > 0 && (uint32_t)ctx->hex_scroll >= hex_rows)
+                    ctx->hex_scroll = (int)hex_rows - 1;
+                snprintf(lines[nlines++], 128,
+                         " Pkt #%d (session %u): %u bytes, %u captured | hex row %d/%u (Left/Right)",
+                         ctx->selected + 1, s->session_id, s->length, rec->raw_len,
+                         ctx->hex_scroll + 1, hex_rows ? hex_rows : 1);
                 snprintf(lines[nlines++], 128, " Eth: %s -> %s  Type: 0x%04x",
                          s->src_mac, s->dst_mac, s->ethertype);
                 if (s->vlan_id)
@@ -790,7 +805,8 @@ static void render_frame(ui_ctx_t *ctx) {
                     used++;
                 }
 
-                for (uint32_t off = 0; off < rec->raw_len && used < detail_rows; off += 16) {
+                for (uint32_t off = (uint32_t)ctx->hex_scroll * 16;
+                     off < rec->raw_len && used < detail_rows; off += 16) {
                     ob_moveto(ctx, row++);
                     ob_printf(ctx, " %04x: ", off);
                     for (int j = 0; j < 16; j++) {
@@ -944,7 +960,8 @@ static void sync_stats(ui_ctx_t *ctx) {
 /* Logical navigation keys, produced by both the ANSI escape parser and
  * the Windows extended-key translation. */
 enum {
-    KEY_UP = 1000, KEY_DOWN, KEY_PGUP, KEY_PGDN, KEY_HOME, KEY_END
+    KEY_UP = 1000, KEY_DOWN, KEY_PGUP, KEY_PGDN, KEY_HOME, KEY_END,
+    KEY_LEFT, KEY_RIGHT
 };
 
 static void navigate(ui_ctx_t *ctx, int key) {
@@ -969,7 +986,10 @@ static void navigate(ui_ctx_t *ctx, int key) {
             case KEY_PGDN: ctx->selected += 20; break;
             case KEY_HOME: ctx->selected = 0; break;
             case KEY_END:  ctx->selected = (int)filtered_count(ctx) - 1; break;
+            case KEY_LEFT:  if (ctx->hex_scroll > 0) ctx->hex_scroll--; return;
+            case KEY_RIGHT: ctx->hex_scroll++; return;   /* clamped in render */
         }
+        ctx->hex_scroll = 0;   /* selection moved: restart the hex view */
     }
 }
 
@@ -989,6 +1009,8 @@ static int read_key(void) {
             case 81: return KEY_PGDN;
             case 71: return KEY_HOME;
             case 79: return KEY_END;
+            case 75: return KEY_LEFT;
+            case 77: return KEY_RIGHT;
             default: return -1;
         }
     }
@@ -1012,9 +1034,18 @@ static void handle_input(ui_ctx_t *ctx) {
     if (ctx->mode == MODE_FILTER || ctx->mode == MODE_BPF ||
         ctx->mode == MODE_EXPORT || ctx->mode == MODE_SEARCH) {
         if (c == 27) {
-            ctx->mode = MODE_NORMAL;
+            int c2 = read_key();
+            if (c2 == '[') {
+                /* arrow/nav escape sequence: swallow it, keep the prompt */
+                int c3 = read_key();
+                if (c3 == '5' || c3 == '6') read_key();   /* trailing ~ */
+                return;
+            }
+            ctx->mode = MODE_NORMAL;   /* bare ESC cancels */
             ctx->input_pos = 0;
             ctx->input_buf[0] = '\0';
+        } else if (c >= KEY_UP && c <= KEY_RIGHT) {
+            /* ignore translated nav keys inside prompts (Windows path) */
         } else if (c == '\n' || c == '\r') {
             if (ctx->mode == MODE_FILTER) {
                 filter_compile(ctx->input_buf, &ctx->dfilter);
@@ -1171,6 +1202,7 @@ static void handle_input(ui_ctx_t *ctx) {
             }
         } else {
             ctx->detail_open = !ctx->detail_open;
+            ctx->hex_scroll = 0;
         }
     } else if (c == 't' || c == 'T') {
         /* cycle session sort in session view */
@@ -1189,10 +1221,12 @@ static void handle_input(ui_ctx_t *ctx) {
                 case '6': read_key(); key = KEY_PGDN; break;
                 case 'H': key = KEY_HOME; break;
                 case 'F': key = KEY_END;  break;
+                case 'C': key = KEY_RIGHT; break;
+                case 'D': key = KEY_LEFT;  break;
             }
             if (key >= 0) navigate(ctx, key);
         }
-    } else if (c >= KEY_UP && c <= KEY_END) {
+    } else if (c >= KEY_UP && c <= KEY_RIGHT) {
         navigate(ctx, c);   /* Windows extended keys */
     }
 }
