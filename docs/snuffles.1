@@ -1,0 +1,110 @@
+.TH SNUFFLES 1 "August 2026" "snuffles 1.1" "User Commands"
+.SH NAME
+snuffles \- lightweight terminal network packet analyzer
+.SH SYNOPSIS
+.B snuffles
+[\fB\-i\fR \fIiface\fR] [\fB\-r\fR \fIfile.pcap\fR] [\fB\-f\fR \fIfilter\fR]
+[\fB\-c\fR \fIcount\fR] [\fB\-s\fR \fIsnaplen\fR] [\fB\-b\fR \fIring\fR]
+[\fB\-o\fR \fIfile\fR] [\fB\-w\fR \fIfile\fR] [\fB\-\-no\-ui\fR] [\fB\-\-jsonl\fR]
+[\fB\-q\fR] [\fB\-\-syslog\fR \fIhost:port\fR] [\fB\-\-list\-ifaces\fR]
+.SH DESCRIPTION
+.B snuffles
+captures and dissects network traffic with an interactive terminal UI:
+Wireshark\-style display filters, TCP session tracking, protocol statistics,
+streaming pcap output, JSON Lines output, syslog forwarding, and PCAP/JSON
+export. It dissects Ethernet, VLAN, ARP, Linux cooked capture, loopback
+framing, IPv4/IPv6 (extension headers included), ICMP, TCP, UDP, SCTP,
+DNS, HTTP/1.x and TLS (SNI).
+.PP
+Live capture requires elevated privileges; snuffles drops root after the
+capture socket is open.
+.SH OPTIONS
+.TP
+.BI \-i " iface"
+Capture interface (default: auto\-detect).
+.TP
+.BI \-r " file.pcap"
+Read packets from a pcap file (libpcap build only).
+.TP
+.BI \-f " filter"
+BPF capture filter. libpcap build: full pcap syntax. Raw\-socket build
+(Linux): subset \(em tcp/udp/icmp/sctp/ip/arp, [src|dst] host \fIA.B.C.D\fR,
+[src|dst] port \fIN\fR, joined with \fBand\fR.
+.TP
+.BI \-c " count"
+Stop after \fIcount\fR packets.
+.TP
+.BI \-s " snaplen"
+Snapshot length in bytes (64\-65535, default 65535).
+.TP
+.BI \-b " ring"
+Ring buffer size in packets (16\-1000000, default 10000).
+.TP
+.BI \-o " file"
+Export the ring buffer on exit; format chosen by extension
+(\fB.pcap\fR or \fB.json\fR).
+.TP
+.BI \-w " file"
+Stream every captured packet to a pcap file while capturing.
+.B \-w \-
+writes to stdout (combine with \fB\-q\fR), e.g. for
+.BR "snuffles \-q \-w \- | wireshark \-k \-i \-" .
+.TP
+.B \-\-no\-ui
+Headless mode: print one line per packet to stdout.
+.TP
+.B \-\-jsonl
+Headless mode emitting one JSON object per packet (JSON Lines).
+.TP
+.BR \-q ", " \-\-quiet
+No terminal output at all; use with \fB\-\-syslog\fR or \fB\-w\fR.
+.TP
+.BI \-\-syslog " host:port"
+Forward per\-packet CSV records over UDP syslog.
+.TP
+.BI \-\-syslog\-iface " ip|dev"
+Source address or device for syslog datagrams.
+.TP
+.B \-\-list\-ifaces
+List capture interfaces and exit.
+.TP
+.B \-v
+Print version. \fB\-h\fR prints usage.
+.SH INTERACTIVE KEYS
+Up/Down/PgUp/PgDn/Home/End scroll; Enter opens the packet detail panel
+(Left/Right scroll its hex dump) or drills into a session;
+.B S
+toggles the sessions view,
+.B T
+cycles its sort;
+.B V
+shows protocol statistics;
+.B /
+searches (\fBn\fR/\fBN\fR next/previous);
+.B F
+sets the display filter,
+.B B
+the kernel BPF filter;
+.B E
+exports,
+.B C
+clears,
+.B P
+pauses,
+.B Q
+quits,
+.B H
+shows help.
+.SH EXAMPLES
+.nf
+sudo snuffles \-i eth0
+sudo snuffles \-i eth0 \-f "tcp port 443" \-w capture.pcap
+sudo snuffles \-i eth0 \-\-jsonl | jq \-r .dst_ip
+snuffles \-r traffic.pcap
+.fi
+.SH EXIT STATUS
+0 on success; 1 on invalid arguments, capture error, or failed export.
+.SH SEE ALSO
+.BR tcpdump (8),
+.BR wireshark (1),
+.BR pcap\-filter (7)

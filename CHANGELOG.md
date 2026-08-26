@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Raw-socket builds get kernel BPF on Linux: a built-in classic-BPF
+  compiler (subset: proto, `[src|dst] host`, `[src|dst] port`, `and`)
+  attaches via `SO_ATTACH_FILTER`, for both `-f` and the TUI `[B]` prompt
+- DNS response dissection: rcode and the first A/AAAA answer
+- Scrollable detail-panel hex dump (Left/Right)
+- Man page (`docs/snuffles.1`) and `make install`/`uninstall`
+
+### Fixed
+- Session eviction at the cap is O(1) via an intrusive LRU list
+  (was a full-table scan per new session)
+- Capture-thread errors now show in the TUI title bar and set a nonzero
+  exit code instead of dying silently with exit 0
+- Arrow keys inside Filter/BPF/Export/Search prompts no longer cancel
+  the prompt and leak keys into normal mode
+
 ## [1.1.0] — 2026-08-23
 
 The "audit release": a full multi-dimension review of the codebase followed
