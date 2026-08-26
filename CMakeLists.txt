@@ -48,7 +48,7 @@ set(COMMON_SOURCES
 
 if(NO_PCAP)
     # ── Raw socket build (no libpcap) ──
-    set(SOURCES ${COMMON_SOURCES} src/capture_raw.c)
+    set(SOURCES ${COMMON_SOURCES} src/capture_raw.c src/cbpf.c)
     add_executable(${PROJECT_NAME} ${SOURCES})
     target_compile_definitions(${PROJECT_NAME} PRIVATE NO_PCAP)
     target_include_directories(${PROJECT_NAME} PRIVATE include)
@@ -76,7 +76,7 @@ endif()
 # Tests (backend-independent: each links only the sources it exercises)
 include(CTest)
 if(BUILD_TESTING)
-    foreach(t filter ringbuf session dissect)
+    foreach(t filter ringbuf session dissect cbpf)
         add_executable(test_${t} tests/test_${t}.c src/${t}.c)
         target_include_directories(test_${t} PRIVATE include src)
         target_link_libraries(test_${t} PRIVATE Threads::Threads m)
@@ -86,3 +86,4 @@ endif()
 
 # Install
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
+install(FILES docs/snuffles.1 DESTINATION share/man/man1)

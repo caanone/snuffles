@@ -46,6 +46,8 @@
   #ifdef __linux__
     #include <netpacket/packet.h>
     #include <net/ethernet.h>
+    #include <linux/filter.h>
+    #include "cbpf.h"
   #endif
 
   typedef int raw_sock_t;
@@ -297,6 +299,10 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
     DWORD tv_ms = 100;
     setsockopt(ctx->sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv_ms, sizeof(tv_ms));
 
+    if (cfg->bpf_filter[0])
+        fprintf(stderr, "Warning: -f is not supported by the Windows raw "
+                        "backend; capturing unfiltered\n");
+
     ctx->has_eth = 0; /* Windows raw socket gives IP headers only */
     char ip_str[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &bind_addr.sin_addr, ip_str, sizeof(ip_str));
@@ -352,6 +358,34 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
     /* receive timeout */
     struct timeval tv = { .tv_sec = 0, .tv_usec = 100000 };
     setsockopt(ctx->sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    /* -f: compile the subset syntax to classic BPF and attach in-kernel */
+    if (cfg->bpf_filter[0]) {
+        cbpf_insn_t insns[CBPF_MAX_INSNS];
+        char cerr[128];
+        int n = cbpf_compile(cfg->bpf_filter, insns, CBPF_MAX_INSNS,
+                             cerr, sizeof(cerr));
+        if (n < 0) {
+            fprintf(stderr, "BPF (raw build): %s\n"
+                    "Supported: tcp/udp/icmp/sctp/ip/arp, [src|dst] host A.B.C.D, "
+                    "[src|dst] port N, joined with 'and'\n", cerr);
+            RAW_CLOSE(ctx->sock);
+            free(ctx);
+            return NULL;
+        }
+        struct sock_fprog prog = {
+            .len    = (unsigned short)n,
+            .filter = (struct sock_filter *)insns,
+        };
+        if (setsockopt(ctx->sock, SOL_SOCKET, SO_ATTACH_FILTER,
+                       &prog, sizeof(prog)) != 0) {
+            perror("SO_ATTACH_FILTER");
+            RAW_CLOSE(ctx->sock);
+            free(ctx);
+            return NULL;
+        }
+        snprintf(ctx->bpf_expr, sizeof(ctx->bpf_expr), "%s", cfg->bpf_filter);
+    }
 
     ctx->has_eth = 1; /* AF_PACKET gives full Ethernet frames */
 
@@ -471,11 +505,39 @@ int capture_set_bpf(capture_ctx_t *ctx, const char *expr,
         snprintf(errbuf, errlen, "No capture context");
         return -1;
     }
-    /* Raw socket backend doesn't support kernel BPF.
-     * Store the expression — the UI display filter handles filtering. */
-    snprintf(ctx->bpf_expr, sizeof(ctx->bpf_expr), "%s", expr ? expr : "");
-    snprintf(errbuf, errlen, "Note: BPF not available in raw socket mode. Use display filter [F].");
+#ifdef __linux__
+    if (!expr || !expr[0]) {
+        int dummy = 0;
+        /* detaching with nothing attached returns ENOENT; that's fine */
+        (void)setsockopt(ctx->sock, SOL_SOCKET, SO_DETACH_FILTER,
+                         &dummy, sizeof(dummy));
+        ctx->bpf_expr[0] = '\0';
+        return 0;
+    }
+    cbpf_insn_t insns[CBPF_MAX_INSNS];
+    char cerr[128];
+    int n = cbpf_compile(expr, insns, CBPF_MAX_INSNS, cerr, sizeof(cerr));
+    if (n < 0) {
+        snprintf(errbuf, errlen, "%s (subset: proto, host, port, 'and')", cerr);
+        return -1;
+    }
+    struct sock_fprog prog = {
+        .len    = (unsigned short)n,
+        .filter = (struct sock_filter *)insns,
+    };
+    if (setsockopt(ctx->sock, SOL_SOCKET, SO_ATTACH_FILTER,
+                   &prog, sizeof(prog)) != 0) {
+        snprintf(errbuf, errlen, "SO_ATTACH_FILTER failed");
+        return -1;
+    }
+    snprintf(ctx->bpf_expr, sizeof(ctx->bpf_expr), "%s", expr);
+    return 0;
+#else
+    (void)expr;
+    snprintf(errbuf, errlen,
+             "BPF needs Linux in the raw build. Use display filter [F].");
     return -1;
+#endif
 }
 
 int capture_list_interfaces(void) {
