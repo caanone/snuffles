@@ -54,7 +54,7 @@ COMMON_SRCS = src/main.c       \
               src/syslog_out.c
 
 SRCS_PCAP = $(COMMON_SRCS) src/capture.c
-SRCS_RAW  = $(COMMON_SRCS) src/capture_raw.c
+SRCS_RAW  = $(COMMON_SRCS) src/capture_raw.c src/cbpf.c
 
 RELEASE_FLAGS = -O2
 DEBUG_FLAGS   = -g -O0 -fsanitize=address,undefined -fno-omit-frame-pointer
@@ -65,7 +65,9 @@ OBJS_RAW   = $(SRCS_RAW:src/%.c=$(OBJDIR)/raw/%.o)
 OBJS_DEBUG = $(SRCS_PCAP:src/%.c=$(OBJDIR)/debug/%.o)
 ALL_DEPS   = $(OBJS_PCAP:.o=.d) $(OBJS_RAW:.o=.d) $(OBJS_DEBUG:.o=.d)
 
-.PHONY: all nopcap debug clean analyze
+PREFIX ?= /usr/local
+
+.PHONY: all nopcap debug clean analyze install uninstall
 
 # Each variant links its own binary under build/, then copies it to ./snuffles,
 # so "make" after "make nopcap" can't leave a stale mixed binary in place.
@@ -103,6 +105,15 @@ $(OBJDIR)/pcap $(OBJDIR)/raw $(OBJDIR)/debug:
 
 clean:
 	rm -rf $(OBJDIR) $(TARGET) $(TARGET).exe src/*.o
+
+install: $(TARGET)
+	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/share/man/man1
+	install -m755 $(TARGET) $(DESTDIR)$(PREFIX)/bin/
+	install -m644 docs/snuffles.1 $(DESTDIR)$(PREFIX)/share/man/man1/
+
+uninstall:
+	rm -f $(DESTDIR)$(PREFIX)/bin/$(TARGET) \
+	      $(DESTDIR)$(PREFIX)/share/man/man1/snuffles.1
 
 analyze:
 	scan-build $(MAKE) clean all

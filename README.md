@@ -92,9 +92,9 @@ Windows MinGW one-liner:
 
 ```bash
 gcc -std=c11 -Wall -O2 -DNO_PCAP -D_WIN32_WINNT=0x0601 -Iinclude ^
-    src/main.c src/capture_raw.c src/dissect.c src/filter.c src/ringbuf.c ^
-    src/ui.c src/export_pcap.c src/export_json.c src/stats.c src/session.c ^
-    src/syslog_out.c -o snuffles.exe -lws2_32 -liphlpapi
+    src/main.c src/capture_raw.c src/cbpf.c src/dissect.c src/filter.c ^
+    src/ringbuf.c src/ui.c src/export_pcap.c src/export_json.c src/stats.c ^
+    src/session.c src/syslog_out.c -o snuffles.exe -lws2_32 -liphlpapi
 ```
 
 ### Cross-Compilation
@@ -537,7 +537,7 @@ Packets to/from syslog destination excluded automatically.
 | Feature | `make` (libpcap) | `make nopcap` (raw) |
 |---------|-------------------|---------------------|
 | Dependencies | libpcap / Npcap | None |
-| BPF kernel filter | Yes | No |
+| BPF kernel filter | Yes | Linux: subset (proto/host/port + and) |
 | Offline pcap | Yes | No |
 | Ethernet/ARP | Yes | Linux only |
 | Syslog | Yes | Yes |
