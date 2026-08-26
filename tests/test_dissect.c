@@ -133,6 +133,42 @@ int main(void) {
             dissect_packet(pkt, len, 228, &out);
     }
 
+    /* ── DNS response: answer IP and rcode surfaced ─────────── */
+    {
+        static const uint8_t dnsr[] = {
+            0x12, 0x34, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0,
+            7, 'e','x','a','m','p','l','e', 3, 'c','o','m', 0,
+            0, 1, 0, 1,
+            0xC0, 0x0C,                /* name: pointer to question */
+            0, 1, 0, 1,                /* type A, class IN */
+            0, 0, 0, 60,               /* TTL */
+            0, 4, 93, 184, 216, 34     /* rdlength 4 + A rdata */
+        };
+        size_t o = eth_hdr(pkt, 0x0800);
+        o = ipv4_hdr(pkt, o, 17, (uint16_t)(8 + sizeof(dnsr)));
+        o = udp_hdr(pkt, o, 53, 5353, (uint16_t)sizeof(dnsr));
+        o = put(pkt, o, dnsr, sizeof(dnsr));
+        dissect_packet(pkt, (uint32_t)o, 1, &out);
+        CHECK(out.l7_proto == PROTO_DNS);
+        CHECK(strstr(out.info, "93.184.216.34") != NULL);
+        for (uint32_t len = 0; len <= (uint32_t)o; len++) {
+            dissect_packet(pkt, len, 1, &out);
+            CHECK(info_is_clean(&out));
+        }
+
+        /* NXDOMAIN */
+        uint8_t nx[sizeof(dnsr)];
+        memcpy(nx, dnsr, sizeof(dnsr));
+        nx[3] = 0x83;                  /* rcode 3 */
+        nx[7] = 0;                     /* ancount 0 */
+        o = eth_hdr(pkt, 0x0800);
+        o = ipv4_hdr(pkt, o, 17, (uint16_t)(8 + sizeof(nx)));
+        o = udp_hdr(pkt, o, 53, 5353, (uint16_t)sizeof(nx));
+        o = put(pkt, o, nx, sizeof(nx));
+        dissect_packet(pkt, (uint32_t)o, 1, &out);
+        CHECK(strstr(out.info, "NXDOMAIN") != NULL);
+    }
+
     /* ── IPv4 non-first fragment: no L4 parse ───────────────── */
     {
         size_t o = eth_hdr(pkt, 0x0800);
