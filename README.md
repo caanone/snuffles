@@ -115,9 +115,14 @@ make clean           # Remove artifacts
 
 ### Tests
 
-Unit tests (filter, ring buffer, sessions, dissectors) run via CTest:
+Unit tests (filter, ring buffer, sessions, dissectors, BPF compiler,
+config) run either from the Makefile or via CTest:
 
 ```bash
+make test                 # all suites
+make test SAN=1           # under AddressSanitizer + UBSan
+make test-stress RUNS=30  # repeat the concurrency suites
+
 cmake -B build && cmake --build build -j && ctest --test-dir build
 ```
 
