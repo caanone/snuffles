@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.3.1] — 2026-08-27
+
+### Fixed
+- **Ring buffer torn reads on weakly-ordered CPUs (arm64)**: the seqlock
+  was missing both memory fences — a release fence after the producer's
+  write-begin mark, and an acquire fence before the reader's generation
+  recheck. Without them a reader could validate a half-overwritten packet
+  record, corrupting the TUI, headless output, and exports. x86's stronger
+  ordering masked this completely; it was found by running the test suite
+  on Apple Silicon.
+
+  **Anyone running v1.3.0 on arm64 (Apple Silicon, arm64 Linux) should
+  upgrade.** x86_64 builds are unaffected in practice.
+
+### Changed
+- CI: every job that builds now also runs the full test suite. The macOS
+  job (Apple Silicon) previously only compiled and smoke-tested, which is
+  why the above escaped; added a Linux arm64 job as a second
+  weakly-ordered platform, plus `make test`, `make test SAN=1` and
+  `make test-stress` so the suites run off the make path too.
+
 ## [1.3.0] — 2026-08-27
 
 ### Added
