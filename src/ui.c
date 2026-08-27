@@ -481,10 +481,8 @@ static void follow_open(ui_ctx_t *ctx, uint32_t id) {
     if (!a || !b) { free(a); free(b); return; }
     ctx->follow_a = a;
     ctx->follow_b = b;
-    ctx->follow_len_a = session_stream_copy(ctx->sessions, id, 0,
-                                            a, SESSION_STREAM_CAP);
-    ctx->follow_len_b = session_stream_copy(ctx->sessions, id, 1,
-                                            b, SESSION_STREAM_CAP);
+    session_streams_copy(ctx->sessions, id, a, b, SESSION_STREAM_CAP,
+                         &ctx->follow_len_a, &ctx->follow_len_b);
     ctx->follow_id     = id;
     ctx->follow_scroll = 0;
     ctx->mode = MODE_FOLLOW;

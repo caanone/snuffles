@@ -142,7 +142,13 @@ static void stream_update(session_table_t *st, session_entry_t *e, int a2b,
         }
     }
 
-    *nseq += paylen;
+    /* Advance by the WIRE payload length, not the captured length: with a
+     * short snaplen every segment is truncated, and advancing by captured
+     * bytes would register a spurious gap on each following segment. */
+    uint32_t wire_paylen = paylen;
+    if (pkt->length > pkt->l7_off && pkt->length - pkt->l7_off > paylen)
+        wire_paylen = pkt->length - pkt->l7_off;
+    *nseq += wire_paylen;
     if (pkt->tcp_flags & TF_SYN) (*nseq)++;
     if (pkt->tcp_flags & TF_FIN) (*nseq)++;
 }
@@ -326,7 +332,23 @@ uint32_t session_table_update(session_table_t *st,
 }
 
 uint32_t session_table_count(const session_table_t *st) {
-    return st ? st->session_count : 0;
+    if (!st) return 0;
+    /* the capture thread mutates session_count under the mutex */
+    session_table_t *m = (session_table_t *)st;
+    ns_mutex_lock(&m->mtx);
+    uint32_t c = st->session_count;
+    ns_mutex_unlock(&m->mtx);
+    return c;
+}
+
+static uint32_t stream_copy_locked(const session_entry_t *e, int dir,
+                                   uint8_t *out, uint32_t cap) {
+    const uint8_t *src = (dir == 0) ? e->stream_a     : e->stream_b;
+    uint32_t       len = (dir == 0) ? e->stream_len_a : e->stream_len_b;
+    if (!src || len == 0) return 0;
+    uint32_t n = len < cap ? len : cap;
+    memcpy(out, src, n);
+    return n;
 }
 
 uint32_t session_stream_copy(session_table_t *st, uint32_t id, int dir,
@@ -337,19 +359,34 @@ uint32_t session_stream_copy(session_table_t *st, uint32_t id, int dir,
     for (uint32_t i = 0; i < st->bucket_count; i++) {
         for (session_entry_t *e = st->buckets[i]; e; e = e->next) {
             if (e->id != id) continue;
-            const uint8_t *src = (dir == 0) ? e->stream_a     : e->stream_b;
-            uint32_t       len = (dir == 0) ? e->stream_len_a : e->stream_len_b;
-            uint32_t n = 0;
-            if (src && len > 0) {
-                n = len < cap ? len : cap;
-                memcpy(out, src, n);
-            }
+            uint32_t n = stream_copy_locked(e, dir, out, cap);
             ns_mutex_unlock(&st->mtx);
             return n;
         }
     }
     ns_mutex_unlock(&st->mtx);
     return 0;
+}
+
+void session_streams_copy(session_table_t *st, uint32_t id,
+                          uint8_t *out_a, uint8_t *out_b, uint32_t cap,
+                          uint32_t *len_a, uint32_t *len_b) {
+    *len_a = *len_b = 0;
+    if (!st || !out_a || !out_b || cap == 0) return;
+
+    /* one critical section so the two directions form a coherent
+     * point-in-time view of the session */
+    ns_mutex_lock(&st->mtx);
+    for (uint32_t i = 0; i < st->bucket_count; i++) {
+        for (session_entry_t *e = st->buckets[i]; e; e = e->next) {
+            if (e->id != id) continue;
+            *len_a = stream_copy_locked(e, 0, out_a, cap);
+            *len_b = stream_copy_locked(e, 1, out_b, cap);
+            ns_mutex_unlock(&st->mtx);
+            return;
+        }
+    }
+    ns_mutex_unlock(&st->mtx);
 }
 
 /* ── Snapshot for UI ─────────────────────────────────────────── */
