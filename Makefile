@@ -43,6 +43,7 @@ else
 endif
 
 COMMON_SRCS = src/main.c       \
+              src/config.c      \
               src/dissect.c     \
               src/filter.c      \
               src/ringbuf.c     \

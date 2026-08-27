@@ -1,4 +1,5 @@
 #include "snuffles.h"
+#include "config.h"
 #include "ringbuf.h"
 #include "capture.h"
 #include "dissect.h"
@@ -165,9 +166,15 @@ static void run_headless(ringbuf_t *rb, capture_ctx_t *cap,
 
 /* ── Main ────────────────────────────────────────────────────── */
 
+#define MAIN_MAX_PRESETS 32
+
 int main(int argc, char *argv[]) {
     capture_cfg_t cfg;
     capture_cfg_defaults(&cfg);
+
+    /* config file first, so CLI flags below override it */
+    filter_preset_t presets[MAIN_MAX_PRESETS];
+    int npresets = config_load(NULL, &cfg, presets, MAIN_MAX_PRESETS);
 
     static struct option long_opts[] = {
         {"interface",   required_argument, 0, 'i'},
@@ -295,7 +302,7 @@ int main(int argc, char *argv[]) {
     if (cfg.no_ui) {
         run_headless(rb, cap, &cfg);
     } else {
-        ui_ctx_t *ui = ui_create(rb, cap, &cfg, sessions);
+        ui_ctx_t *ui = ui_create(rb, cap, &cfg, sessions, presets, npresets);
         if (!ui) {
             fprintf(stderr, "Failed to create UI\n");
             capture_stop(cap);
