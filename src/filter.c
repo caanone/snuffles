@@ -17,7 +17,8 @@
 static int is_proto_shorthand(const char *s) {
     static const char *protos[] = {
         "tcp", "udp", "icmp", "icmpv6", "arp", "dns",
-        "http", "tls", "sctp", "ipv4", "ipv6", "vlan", NULL
+        "http", "tls", "sctp", "ipv4", "ipv6", "vlan",
+        "dhcp", "ntp", "mdns", "quic", NULL
     };
     for (int i = 0; protos[i]; i++) {
         if (strcasecmp(s, protos[i]) == 0) return 1;
