@@ -247,6 +247,12 @@ typedef struct {
     proto_id_t  l7_proto;
     proto_id_t  highest_proto;
     uint32_t    session_id;
+
+    /* L4 payload location within the captured bytes. l7_len is set only on
+     * the TCP path (0 elsewhere/on truncation). Invariant, enforced by
+     * dissect_packet: l7_off + l7_len <= caplen. */
+    uint32_t    l7_off;
+    uint32_t    l7_len;
 } pkt_summary_t;
 
 /* ── Packet record (stored in ring buffer) ───────────────────── */
