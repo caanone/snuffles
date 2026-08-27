@@ -22,6 +22,8 @@ jobs:
         run: make ${{ matrix.variant }} CC=${{ matrix.cc }}
       - name: Smoke test
         run: ./snuffles -v && ./snuffles --list-ifaces
+      - name: Unit tests
+        run: make test CC=${{ matrix.cc }}
 
   linux-cmake:
     name: Linux CMake ${{ matrix.variant }}
@@ -52,6 +54,8 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libpcap-dev
       - run: make debug
       - run: ./snuffles -v && ./snuffles --list-ifaces
+      - name: Unit tests (sanitized)
+        run: make clean && make test SAN=1
       - name: Generate test capture
         run: |
           python3 - <<'EOF'
@@ -85,12 +89,38 @@ jobs:
           print('stream pcap ok:', n, 'records')"
 
   macos:
-    name: macOS make (libpcap)
-    runs-on: macos-latest
+    name: macOS arm64 (libpcap)
+    runs-on: macos-latest        # Apple Silicon: weakly-ordered memory model
     steps:
       - uses: actions/checkout@v4
       - run: make
       - run: ./snuffles -v && ./snuffles --list-ifaces
+      - name: Unit tests
+        run: make test
+      - name: Unit tests (sanitized)
+        run: make clean && make test SAN=1
+      - name: Concurrency stress
+        run: make clean && make test-stress RUNS=30
+      - name: CMake + CTest
+        run: |
+          cmake -B build-ci -DNO_PCAP=ON
+          cmake --build build-ci -j
+          ctest --test-dir build-ci --output-on-failure
+
+  linux-arm64:
+    name: Linux arm64
+    runs-on: ubuntu-24.04-arm    # second weakly-ordered platform
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+      - run: make
+      - run: ./snuffles -v && ./snuffles --list-ifaces
+      - name: Unit tests
+        run: make test
+      - name: Unit tests (sanitized)
+        run: make clean && make test SAN=1
+      - name: Concurrency stress
+        run: make clean && make test-stress RUNS=30
 
   sanitized-tests:
     name: Unit tests (ASan + UBSan)

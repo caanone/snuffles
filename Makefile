@@ -64,11 +64,27 @@ OBJDIR     = build
 OBJS_PCAP  = $(SRCS_PCAP:src/%.c=$(OBJDIR)/pcap/%.o)
 OBJS_RAW   = $(SRCS_RAW:src/%.c=$(OBJDIR)/raw/%.o)
 OBJS_DEBUG = $(SRCS_PCAP:src/%.c=$(OBJDIR)/debug/%.o)
-ALL_DEPS   = $(OBJS_PCAP:.o=.d) $(OBJS_RAW:.o=.d) $(OBJS_DEBUG:.o=.d)
+
+# ── Unit tests (also runnable via CTest; this target keeps them
+#    available on the make-only path, e.g. macOS release builds) ──
+TESTS      = filter ringbuf session dissect cbpf config
+TEST_BINS  = $(TESTS:%=$(OBJDIR)/tests/test_%)
+# make test SAN=1 -> run the suite under ASan/UBSan
+ifdef SAN
+  TEST_FLAGS   = -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer
+  TEST_LDFLAGS = -fsanitize=address,undefined
+else
+  TEST_FLAGS   = -g -O2
+  TEST_LDFLAGS =
+endif
+TEST_LDLIBS = -lpthread -lm
+
+ALL_DEPS   = $(OBJS_PCAP:.o=.d) $(OBJS_RAW:.o=.d) $(OBJS_DEBUG:.o=.d) \
+             $(TEST_BINS:=.d)
 
 PREFIX ?= /usr/local
 
-.PHONY: all nopcap debug clean analyze install uninstall
+.PHONY: all nopcap debug clean analyze install uninstall test test-stress
 
 # Each variant links its own binary under build/, then copies it to ./snuffles,
 # so "make" after "make nopcap" can't leave a stale mixed binary in place.
@@ -103,6 +119,36 @@ $(OBJDIR)/debug/%.o: src/%.c | $(OBJDIR)/debug
 
 $(OBJDIR)/pcap $(OBJDIR)/raw $(OBJDIR)/debug:
 	mkdir -p $@
+
+# ── Tests ────────────────────────────────────────────────────
+$(OBJDIR)/tests/test_%: tests/test_%.c src/%.c | $(OBJDIR)/tests
+	$(CC) $(BASE_CFLAGS) $(TEST_FLAGS) -Isrc $(CFLAGS) -o $@ $^ \
+	      $(TEST_LDFLAGS) $(LDFLAGS) $(TEST_LDLIBS)
+
+$(OBJDIR)/tests:
+	mkdir -p $@
+
+test: $(TEST_BINS)
+	@fail=0; \
+	for t in $(TEST_BINS); do \
+	  printf '%-14s ' "$$(basename $$t)"; \
+	  if $$t >/dev/null 2>&1; then echo "pass"; \
+	  else echo "FAIL"; $$t 2>&1 | tail -20; fail=1; fi; \
+	done; \
+	if [ $$fail -eq 0 ]; then echo "all tests pass"; else \
+	  echo "TEST FAILURES"; exit 1; fi
+
+# Repeat the concurrency suite: seqlock/memory-ordering defects are
+# racy by nature and a single green run proves little (RUNS=n).
+RUNS ?= 20
+test-stress: $(OBJDIR)/tests/test_ringbuf $(OBJDIR)/tests/test_session
+	@fail=0; \
+	for i in $$(seq 1 $(RUNS)); do \
+	  $(OBJDIR)/tests/test_ringbuf >/dev/null 2>&1 || fail=$$((fail+1)); \
+	  $(OBJDIR)/tests/test_session >/dev/null 2>&1 || fail=$$((fail+1)); \
+	done; \
+	echo "stress: $(RUNS) rounds, $$fail failure(s)"; \
+	[ $$fail -eq 0 ] || exit 1
 
 clean:
 	rm -rf $(OBJDIR) $(TARGET) $(TARGET).exe src/*.o
