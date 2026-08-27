@@ -70,9 +70,18 @@ static void capture_callback(u_char *user, const struct pcap_pkthdr *hdr,
     rec->summary.ts     = hdr->ts;
     rec->summary.length = hdr->len;
 
-    /* update session table */
+    /* update session table (TCP payload bytes clamped to what we copied) */
     if (ctx->st) {
-        uint32_t sid = session_table_update(ctx->st, &rec->summary);
+        const uint8_t *pl = NULL;
+        uint32_t pln = 0;
+        if (rec->summary.l4_proto == PROTO_TCP && rec->summary.l7_len > 0 &&
+            rec->summary.l7_off < rec->raw_len) {
+            pl  = rec->raw_data + rec->summary.l7_off;
+            pln = rec->summary.l7_len;
+            if (pln > rec->raw_len - rec->summary.l7_off)
+                pln = rec->raw_len - rec->summary.l7_off;
+        }
+        uint32_t sid = session_table_update(ctx->st, &rec->summary, pl, pln);
         if (sid) rec->summary.session_id = sid;
     }
 

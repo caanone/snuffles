@@ -102,6 +102,29 @@ sudo snuffles \-i eth0 \-f "tcp port 443" \-w capture.pcap
 sudo snuffles \-i eth0 \-\-jsonl | jq \-r .dst_ip
 snuffles \-r traffic.pcap
 .fi
+.SH FILES
+.TP
+.I ~/.snufflesrc
+Optional configuration, read at startup and overridden by command\-line
+flags. The path can be changed with the
+.B SNUFFLES_CONFIG
+environment variable; a missing file is silently ignored.
+Format: \fB#\fR comments, blank lines, and \fIkey\fR \fB=\fR \fIvalue\fR
+pairs with the keys
+.BR interface ,
+.BR snaplen " (64\-65535),"
+.BR ring_size " (16\-1000000),"
+.BR promisc " (0/1),"
+.BR syslog ", and"
+.BR syslog_iface .
+Saved display\-filter presets are declared as
+.B preset
+.I name
+.B =
+.I expression
+(name: alphanumeric/underscore/hyphen, at most 31 characters) and applied
+from the TUI display\-filter prompt as \fB@\fIname\fR (case\-insensitive).
+Invalid lines print a warning and are skipped; the config is never fatal.
 .SH EXIT STATUS
 0 on success; 1 on invalid arguments, capture error, or failed export.
 .SH SEE ALSO
