@@ -199,6 +199,36 @@ sudo ./snuffles -i en0 --jsonl | jq -r '.dst_ip'
 
 ---
 
+## Configuration
+
+Snuffles reads an optional config file at startup: `$SNUFFLES_CONFIG` if set,
+otherwise `~/.snufflesrc` (`%USERPROFILE%\.snufflesrc` on Windows). A missing
+file is silently ignored. CLI flags always override config values.
+
+```ini
+# ~/.snufflesrc — '#' comments, blank lines, key = value
+interface    = eth0
+snaplen      = 1500            # 64-65535
+ring_size    = 50000           # 16-1000000
+promisc      = 1               # 0 or 1
+syslog       = 10.0.0.100:514
+syslog_iface = 192.168.1.5
+
+# Saved display-filter presets (name: alnum/_/-, max 31 chars)
+preset web = tcp and (port 80 or port 443)
+preset dns = udp and port 53
+preset noisy = not arp and not icmp
+```
+
+Bad lines (unknown keys, out-of-range values, malformed syntax) print one
+warning each and are skipped — the config is never fatal.
+
+In the TUI, apply a preset from the display-filter prompt (`F`) by typing
+`@name` (case-insensitive), e.g. `@web`. With an empty prompt the filter bar
+lists the first few preset names.
+
+---
+
 ## Operating Modes
 
 | Mode | Flags | Memory | Output |
