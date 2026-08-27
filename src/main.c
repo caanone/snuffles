@@ -267,6 +267,8 @@ int main(int argc, char *argv[]) {
 
     /* create session table (skip in headless-minimal mode to save memory) */
     session_table_t *sessions = headless_minimal ? NULL : session_table_create(4096);
+    if (sessions)
+        session_table_enable_reasm(sessions, 16 * 1024 * 1024);
 
     /* create capture context */
     capture_ctx_t *cap = capture_create(&cfg, rb, sessions);

@@ -57,6 +57,7 @@ typedef enum {
     MODE_HELP,
     MODE_STATS,
     MODE_SEARCH,
+    MODE_FOLLOW,        /* follow-stream overlay (session view) */
 } input_mode_t;
 
 typedef enum {
@@ -95,6 +96,14 @@ struct ui_ctx {
     session_sort_t      sess_sort;
     session_entry_t    *sess_snap;      /* value copies (see session.h) */
     uint32_t            sess_snap_count;
+
+    /* follow-stream overlay: copies taken on open, freed on close */
+    uint8_t            *follow_a;       /* a->b bytes (SESSION_STREAM_CAP) */
+    uint8_t            *follow_b;       /* b->a bytes (SESSION_STREAM_CAP) */
+    uint32_t            follow_len_a;
+    uint32_t            follow_len_b;
+    uint32_t            follow_id;
+    int                 follow_scroll;  /* in wrapped-line units */
 
     /* scratch for copy-out ring reads */
     pkt_record_t        peek_rec;
@@ -425,6 +434,32 @@ miss:
     ctx->bpf_msg_frames = 60;
 }
 
+/* ── Follow-stream overlay ───────────────────────────────────── */
+
+static void follow_open(ui_ctx_t *ctx, uint32_t id) {
+    uint8_t *a = malloc(SESSION_STREAM_CAP);
+    uint8_t *b = malloc(SESSION_STREAM_CAP);
+    if (!a || !b) { free(a); free(b); return; }
+    ctx->follow_a = a;
+    ctx->follow_b = b;
+    ctx->follow_len_a = session_stream_copy(ctx->sessions, id, 0,
+                                            a, SESSION_STREAM_CAP);
+    ctx->follow_len_b = session_stream_copy(ctx->sessions, id, 1,
+                                            b, SESSION_STREAM_CAP);
+    ctx->follow_id     = id;
+    ctx->follow_scroll = 0;
+    ctx->mode = MODE_FOLLOW;
+}
+
+static void follow_close(ui_ctx_t *ctx) {
+    free(ctx->follow_a);
+    free(ctx->follow_b);
+    ctx->follow_a = NULL;
+    ctx->follow_b = NULL;
+    ctx->follow_len_a = ctx->follow_len_b = 0;
+    ctx->mode = MODE_NORMAL;
+}
+
 /* ── Render ──────────────────────────────────────────────────── */
 
 static void render_frame(ui_ctx_t *ctx) {
@@ -480,6 +515,7 @@ static void render_frame(ui_ctx_t *ctx) {
             ESC_BOLD "  VIEWS" ESC_RESET,
             "    S             Toggle between Packets and Sessions view",
             "    T             Cycle session sort (bytes/packets/recent/duration)",
+            "    O             Follow the reassembled TCP stream (session view)",
             "    V             Protocol statistics overlay",
             "",
             ESC_BOLD "  SEARCH" ESC_RESET,
@@ -511,6 +547,63 @@ static void render_frame(ui_ctx_t *ctx) {
         for (int i = 0; i < nlines && row <= ctx->rows; i++) {
             ob_moveto(ctx, row++);
             ob_str(ctx, help[i]);
+        }
+        ob_str(ctx, ESC_CLR_BELOW);
+        ob_flush(ctx);
+        return;
+    }
+
+    /* ── Follow-stream overlay ──────────────────────────────── */
+    if (ctx->mode == MODE_FOLLOW) {
+        int w = ctx->cols - 2;          /* leading space + margin */
+        if (w < 1) w = 1;
+        if (w > 1000) w = 1000;         /* line assembly buffer bound */
+
+        /* virtual lines: A rule, wrapped A bytes, B rule, wrapped B bytes */
+        uint32_t lines_a = (ctx->follow_len_a + (uint32_t)w - 1) / (uint32_t)w;
+        uint32_t lines_b = (ctx->follow_len_b + (uint32_t)w - 1) / (uint32_t)w;
+        uint32_t vtotal  = lines_a + lines_b + 2;
+        int avail = ctx->rows - 3;      /* title, hotkeys, overlay header */
+        if (avail < 1) avail = 1;
+        int max_scroll = (vtotal > (uint32_t)avail)
+                         ? (int)(vtotal - (uint32_t)avail) : 0;
+        if (ctx->follow_scroll < 0) ctx->follow_scroll = 0;
+        if (ctx->follow_scroll > max_scroll) ctx->follow_scroll = max_scroll;
+
+        ob_moveto(ctx, row++);
+        ob_printf(ctx, ESC_BOLD " Follow session #%u \xe2\x80\x94 A->B %u bytes, "
+                  "B->A %u bytes (Up/Down scroll, ESC close)" ESC_RESET,
+                  ctx->follow_id, ctx->follow_len_a, ctx->follow_len_b);
+
+        char line[1004];
+        for (int i = 0; i < avail && row <= ctx->rows; i++) {
+            uint32_t v = (uint32_t)ctx->follow_scroll + (uint32_t)i;
+            if (v >= vtotal) break;
+            ob_moveto(ctx, row++);
+            if (v == 0 || v == lines_a + 1) {
+                ob_printf(ctx, "%s \xe2\x94\x80\xe2\x94\x80 %s "
+                          "\xe2\x94\x80\xe2\x94\x80" ESC_RESET,
+                          v == 0 ? CLR_TCP : CLR_UDP,   /* cyan / yellow */
+                          v == 0 ? "A -> B" : "B -> A");
+                continue;
+            }
+            const uint8_t *src;
+            uint32_t slen, chunk;
+            if (v <= lines_a) {
+                src = ctx->follow_a; slen = ctx->follow_len_a; chunk = v - 1;
+            } else {
+                src = ctx->follow_b; slen = ctx->follow_len_b;
+                chunk = v - lines_a - 2;
+            }
+            uint32_t start = chunk * (uint32_t)w;
+            uint32_t n = slen - start;
+            if (n > (uint32_t)w) n = (uint32_t)w;
+            line[0] = ' ';
+            for (uint32_t j = 0; j < n; j++) {
+                uint8_t bc = src[start + j];
+                line[1 + j] = (bc >= 0x20 && bc < 0x7f) ? (char)bc : '.';
+            }
+            ob_append(ctx, line, 1 + n);
         }
         ob_str(ctx, ESC_CLR_BELOW);
         ob_flush(ctx);
@@ -916,6 +1009,9 @@ static void render_frame(ui_ctx_t *ctx) {
                       ctx->dfilter.expr, shown, rb_total);
         }
 
+        if (ctx->view == VIEW_SESSIONS)
+            ob_str(ctx, "  [O]Follow stream");
+
         if (ctx->paused)
             ob_str(ctx, "  [PAUSED]");
 
@@ -1025,6 +1121,38 @@ static int read_key(void) {
 static void handle_input(ui_ctx_t *ctx) {
     int c = read_key();
     if (c < 0) return;
+
+    if (ctx->mode == MODE_FOLLOW) {
+        int page = ctx->rows - 3;      /* matches the overlay's line count */
+        if (page < 1) page = 1;
+        if (c == 27) {
+            int c2 = read_key();
+            if (c2 == '[') {           /* nav escape sequence: scroll */
+                int c3 = read_key();
+                switch (c3) {
+                    case 'A': ctx->follow_scroll--; break;
+                    case 'B': ctx->follow_scroll++; break;
+                    case '5': read_key(); ctx->follow_scroll -= page; break;
+                    case '6': read_key(); ctx->follow_scroll += page; break;
+                }
+                if (ctx->follow_scroll < 0) ctx->follow_scroll = 0;
+                return;                /* upper clamp happens in render */
+            }
+            follow_close(ctx);         /* bare ESC */
+        } else if (c == 'q' || c == 'Q' || c == '\n' || c == '\r') {
+            follow_close(ctx);
+        } else if (c == KEY_UP) {
+            if (ctx->follow_scroll > 0) ctx->follow_scroll--;
+        } else if (c == KEY_DOWN) {
+            ctx->follow_scroll++;
+        } else if (c == KEY_PGUP) {
+            ctx->follow_scroll -= page;
+            if (ctx->follow_scroll < 0) ctx->follow_scroll = 0;
+        } else if (c == KEY_PGDN) {
+            ctx->follow_scroll += page;
+        }
+        return;
+    }
 
     if (ctx->mode == MODE_HELP || ctx->mode == MODE_STATS) {
         ctx->mode = MODE_NORMAL;  /* any key dismisses the overlay */
@@ -1209,6 +1337,13 @@ static void handle_input(ui_ctx_t *ctx) {
         if (ctx->view == VIEW_SESSIONS) {
             ctx->sess_sort = (session_sort_t)((ctx->sess_sort + 1) % 4);
         }
+    } else if (c == 'o' || c == 'O') {
+        /* follow the selected session's reassembled TCP stream */
+        if (ctx->view == VIEW_SESSIONS && ctx->sess_snap &&
+            ctx->sess_selected >= 0 &&
+            (uint32_t)ctx->sess_selected < ctx->sess_snap_count) {
+            follow_open(ctx, ctx->sess_snap[ctx->sess_selected].id);
+        }
     } else if (c == 27) {
         int c2 = read_key();
         if (c2 == '[') {
@@ -1258,6 +1393,8 @@ ui_ctx_t *ui_create(ringbuf_t *rb, capture_ctx_t *cap,
 
 void ui_destroy(ui_ctx_t *ctx) {
     if (!ctx) return;
+    free(ctx->follow_a);
+    free(ctx->follow_b);
     free(ctx->sess_snap);
     free(ctx->fcache);
     free(ctx->peek_data);
