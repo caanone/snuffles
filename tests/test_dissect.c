@@ -258,6 +258,125 @@ int main(void) {
             dissect_packet(pkt, len, 0, &out);
     }
 
+    /* ── DHCP DISCOVER (and OFFER with yiaddr) ──────────────── */
+    {
+        uint8_t dhcp[244];
+        memset(dhcp, 0, sizeof(dhcp));
+        dhcp[0] = 1;                   /* op: BOOTREQUEST */
+        dhcp[1] = 1; dhcp[2] = 6;      /* htype ethernet, hlen 6 */
+        dhcp[236] = 0x63; dhcp[237] = 0x82;   /* magic cookie */
+        dhcp[238] = 0x53; dhcp[239] = 0x63;
+        dhcp[240] = 53; dhcp[241] = 1; dhcp[242] = 1;   /* opt 53: DISCOVER */
+        dhcp[243] = 255;               /* end */
+        size_t o = eth_hdr(pkt, 0x0800);
+        o = ipv4_hdr(pkt, o, 17, (uint16_t)(8 + sizeof(dhcp)));
+        o = udp_hdr(pkt, o, 68, 67, (uint16_t)sizeof(dhcp));
+        o = put(pkt, o, dhcp, sizeof(dhcp));
+        dissect_packet(pkt, (uint32_t)o, 1, &out);
+        CHECK(out.l7_proto == PROTO_DHCP);
+        CHECK(strcmp(out.protocol, "DHCP") == 0);
+        CHECK(strstr(out.info, "DHCP DISCOVER") != NULL);
+        for (uint32_t len = 0; len <= (uint32_t)o; len++) {
+            dissect_packet(pkt, len, 1, &out);
+            CHECK(info_is_clean(&out));
+        }
+
+        /* OFFER: op reply, yiaddr set, server -> client ports */
+        dhcp[0] = 2;
+        dhcp[16] = 10; dhcp[17] = 0; dhcp[18] = 0; dhcp[19] = 42;
+        dhcp[242] = 2;
+        o = eth_hdr(pkt, 0x0800);
+        o = ipv4_hdr(pkt, o, 17, (uint16_t)(8 + sizeof(dhcp)));
+        o = udp_hdr(pkt, o, 67, 68, (uint16_t)sizeof(dhcp));
+        o = put(pkt, o, dhcp, sizeof(dhcp));
+        dissect_packet(pkt, (uint32_t)o, 1, &out);
+        CHECK(out.l7_proto == PROTO_DHCP);
+        CHECK(strstr(out.info, "DHCP OFFER") != NULL);
+        CHECK(strstr(out.info, "10.0.0.42") != NULL);
+        for (uint32_t len = 0; len <= (uint32_t)o; len++) {
+            dissect_packet(pkt, len, 1, &out);
+            CHECK(info_is_clean(&out));
+        }
+    }
+
+    /* ── NTP client (mode 3, v4) ────────────────────────────── */
+    {
+        uint8_t ntp[48];
+        memset(ntp, 0, sizeof(ntp));
+        ntp[0] = (0 << 6) | (4 << 3) | 3;   /* LI 0, VN 4, mode client */
+        size_t o = eth_hdr(pkt, 0x0800);
+        o = ipv4_hdr(pkt, o, 17, (uint16_t)(8 + sizeof(ntp)));
+        o = udp_hdr(pkt, o, 50123, 123, (uint16_t)sizeof(ntp));
+        o = put(pkt, o, ntp, sizeof(ntp));
+        dissect_packet(pkt, (uint32_t)o, 1, &out);
+        CHECK(out.l7_proto == PROTO_NTP);
+        CHECK(strcmp(out.protocol, "NTP") == 0);
+        CHECK(strstr(out.info, "NTP client v4") != NULL);
+        for (uint32_t len = 0; len <= (uint32_t)o; len++) {
+            dissect_packet(pkt, len, 1, &out);
+            CHECK(info_is_clean(&out));
+        }
+
+        /* server reply: mode 4, stratum 2 */
+        ntp[0] = (0 << 6) | (4 << 3) | 4;
+        ntp[1] = 2;
+        o = eth_hdr(pkt, 0x0800);
+        o = ipv4_hdr(pkt, o, 17, (uint16_t)(8 + sizeof(ntp)));
+        o = udp_hdr(pkt, o, 123, 50123, (uint16_t)sizeof(ntp));
+        o = put(pkt, o, ntp, sizeof(ntp));
+        dissect_packet(pkt, (uint32_t)o, 1, &out);
+        CHECK(out.l7_proto == PROTO_NTP);
+        CHECK(strstr(out.info, "NTP server v4 stratum 2") != NULL);
+    }
+
+    /* ── mDNS query: DNS bytes on port 5353, relabeled ──────── */
+    {
+        static const uint8_t dns[] = {
+            0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0,
+            7, 'e','x','a','m','p','l','e', 3, 'c','o','m', 0,
+            0, 1, 0, 1
+        };
+        size_t o = eth_hdr(pkt, 0x0800);
+        o = ipv4_hdr(pkt, o, 17, (uint16_t)(8 + sizeof(dns)));
+        o = udp_hdr(pkt, o, 5353, 5353, (uint16_t)sizeof(dns));
+        o = put(pkt, o, dns, sizeof(dns));
+        dissect_packet(pkt, (uint32_t)o, 1, &out);
+        CHECK(out.l7_proto == PROTO_MDNS);
+        CHECK(out.highest_proto == PROTO_MDNS);
+        CHECK(strcmp(out.protocol, "mDNS") == 0);
+        CHECK(strstr(out.info, "example.com") != NULL);
+        for (uint32_t len = 0; len <= (uint32_t)o; len++) {
+            dissect_packet(pkt, len, 1, &out);
+            CHECK(info_is_clean(&out));
+        }
+    }
+
+    /* ── QUIC Initial long header on UDP 443 ────────────────── */
+    {
+        uint8_t quic[16];
+        memset(quic, 0, sizeof(quic));
+        quic[0] = 0xC0;                /* long header, type 0 = Initial */
+        quic[4] = 0x01;                /* version 0x00000001 */
+        size_t o = eth_hdr(pkt, 0x0800);
+        o = ipv4_hdr(pkt, o, 17, (uint16_t)(8 + sizeof(quic)));
+        o = udp_hdr(pkt, o, 51000, 443, (uint16_t)sizeof(quic));
+        o = put(pkt, o, quic, sizeof(quic));
+        dissect_packet(pkt, (uint32_t)o, 1, &out);
+        CHECK(out.l7_proto == PROTO_QUIC);
+        CHECK(strcmp(out.protocol, "QUIC") == 0);
+        CHECK(strstr(out.info, "QUIC Initial v1") != NULL);
+        for (uint32_t len = 0; len <= (uint32_t)o; len++) {
+            dissect_packet(pkt, len, 1, &out);
+            CHECK(info_is_clean(&out));
+        }
+
+        /* short header (top bit clear) must stay plain UDP */
+        pkt[o - sizeof(quic)] = 0x40;
+        dissect_packet(pkt, (uint32_t)o, 1, &out);
+        CHECK(out.l7_proto == PROTO_UNKNOWN);
+        CHECK(strcmp(out.protocol, "UDP") == 0);
+    }
+
     /* ── random garbage sweep (mini-fuzz, deterministic) ────── */
     {
         unsigned seed = 42;
