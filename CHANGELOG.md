@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **TCP stream reassembly + follow-stream**: per-direction, budget-capped
+  reassembly (retransmit-safe, gap-aware, snaplen-aware) under the session
+  table; press `O` on a session to read both directions as text
+- **UDP dissectors**: DHCP (message types, addresses), NTP (mode/version/
+  stratum), mDNS, and QUIC long-header recognition, with filter shorthands
+- **Config file** `~/.snufflesrc` (or `$SNUFFLES_CONFIG`): defaults for
+  interface/snaplen/ring/promisc/syslog plus named display-filter presets,
+  usable in the TUI as `@name`
+- Windows: console mode restored on exit; Winsock initialized explicitly
+
 ## [1.2.0] — 2026-08-27
 
 ### Added
