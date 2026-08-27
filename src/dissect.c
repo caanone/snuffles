@@ -308,6 +308,107 @@ tls_done:
     }
 }
 
+static void dissect_dhcp(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
+    /* BOOTP fixed header is 236 bytes; DHCP requires the magic cookie
+     * right after it, then TLV options (0 = pad, 255 = end). */
+    if (len < 240) return;
+    if (rd32(data + 236) != 0x63825363) return;
+
+    out->l7_proto = PROTO_DHCP;
+    out->highest_proto = PROTO_DHCP;
+    snprintf(out->protocol, sizeof(out->protocol), "DHCP");
+
+    uint8_t op = data[0];
+    int msg_type = -1;
+    uint32_t off = 240;
+    while (off < len) {
+        uint8_t opt = data[off++];
+        if (opt == 0) continue;         /* pad */
+        if (opt == 255) break;          /* end */
+        if (off >= len) break;
+        uint8_t olen = data[off++];
+        if (olen > len - off) break;    /* option data must fit */
+        if (opt == 53 && olen >= 1) msg_type = data[off];
+        off += olen;
+    }
+
+    char type[16];
+    switch (msg_type) {
+        case 1:  snprintf(type, sizeof(type), "DISCOVER"); break;
+        case 2:  snprintf(type, sizeof(type), "OFFER");    break;
+        case 3:  snprintf(type, sizeof(type), "REQUEST");  break;
+        case 5:  snprintf(type, sizeof(type), "ACK");      break;
+        case 6:  snprintf(type, sizeof(type), "NAK");      break;
+        case 7:  snprintf(type, sizeof(type), "RELEASE");  break;
+        default:
+            if (msg_type >= 0)
+                snprintf(type, sizeof(type), "type=%d", msg_type);
+            else if (op == 1 || op == 2)
+                snprintf(type, sizeof(type), "%s",
+                         (op == 1) ? "request" : "reply");
+            else
+                snprintf(type, sizeof(type), "op=%u", op);
+            break;
+    }
+
+    /* OFFER/ACK carry the assigned address in yiaddr; other messages
+     * may carry the client's current address in ciaddr. */
+    char addr[24] = "";
+    if ((msg_type == 2 || msg_type == 5) && rd32(data + 16) != 0) {
+        char ip[16];
+        format_ipv4(data + 16, ip, sizeof(ip));
+        snprintf(addr, sizeof(addr), " %s", ip);
+    } else if (msg_type != 2 && msg_type != 5 && rd32(data + 12) != 0) {
+        char ip[16];
+        format_ipv4(data + 12, ip, sizeof(ip));
+        snprintf(addr, sizeof(addr), " %s", ip);
+    }
+
+    snprintf(out->info, sizeof(out->info), "DHCP %s%s", type, addr);
+}
+
+static void dissect_ntp(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
+    if (len < 48) return;
+
+    uint8_t vn      = (data[0] >> 3) & 0x07;
+    uint8_t mode    = data[0] & 0x07;
+    uint8_t stratum = data[1];
+
+    out->l7_proto = PROTO_NTP;
+    out->highest_proto = PROTO_NTP;
+    snprintf(out->protocol, sizeof(out->protocol), "NTP");
+
+    if (mode == 3)
+        snprintf(out->info, sizeof(out->info), "NTP client v%u", vn);
+    else if (mode == 4)
+        snprintf(out->info, sizeof(out->info),
+                 "NTP server v%u stratum %u", vn, stratum);
+    else
+        snprintf(out->info, sizeof(out->info), "NTP mode=%u v%u", mode, vn);
+}
+
+static void dissect_quic(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
+    /* Long header only: short headers carry no version and are
+     * indistinguishable from random payload, so they stay plain UDP. */
+    if (len < 5) return;
+    if (!(data[0] & 0x80)) return;
+
+    uint32_t version = rd32(data + 1);
+    uint8_t  ptype   = (data[0] >> 4) & 3;
+
+    out->l7_proto = PROTO_QUIC;
+    out->highest_proto = PROTO_QUIC;
+    snprintf(out->protocol, sizeof(out->protocol), "QUIC");
+
+    static const char *types[] = { "Initial", "0-RTT", "Handshake", "Retry" };
+    char ver[16];
+    if (version == 0x00000001)
+        snprintf(ver, sizeof(ver), "v1");
+    else
+        snprintf(ver, sizeof(ver), "v0x%08x", version);
+    snprintf(out->info, sizeof(out->info), "QUIC %s %s", types[ptype], ver);
+}
+
 /* ── Layer 4 dissectors ──────────────────────────────────────── */
 
 static int dissect_tcp(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
@@ -383,6 +484,21 @@ static int dissect_udp(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
 
         if (out->src_port == 53 || out->dst_port == 53) {
             dissect_dns(payload, plen, out);
+        } else if (out->src_port == 67 || out->dst_port == 67 ||
+                   out->src_port == 68 || out->dst_port == 68) {
+            dissect_dhcp(payload, plen, out);
+        } else if (out->src_port == 123 || out->dst_port == 123) {
+            dissect_ntp(payload, plen, out);
+        } else if (out->src_port == 5353 || out->dst_port == 5353) {
+            /* mDNS is DNS on the wire: reuse the dissector, relabel */
+            dissect_dns(payload, plen, out);
+            if (out->l7_proto == PROTO_DNS) {
+                out->l7_proto = PROTO_MDNS;
+                out->highest_proto = PROTO_MDNS;
+                snprintf(out->protocol, sizeof(out->protocol), "mDNS");
+            }
+        } else if (out->src_port == 443 || out->dst_port == 443) {
+            dissect_quic(payload, plen, out);
         }
     }
 
