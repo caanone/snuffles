@@ -428,6 +428,8 @@ static int dissect_tcp(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
     out->tcp_ack      = ack;
     out->tcp_window   = win;
     out->tcp_checksum = rd16(data + 16);
+    out->l7_off      += doff;           /* doff <= len validated above */
+    out->l7_len       = len - doff;
     out->l4_proto     = PROTO_TCP;
     out->highest_proto = PROTO_TCP;
     snprintf(out->protocol, sizeof(out->protocol), "TCP");
@@ -612,6 +614,7 @@ static int dissect_ipv4(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
 
     const uint8_t *l4 = data + ihl;
     uint32_t l4len = len - ihl;
+    out->l7_off += ihl;
 
     switch (proto) {
         case 1:   /* ICMP */
@@ -651,6 +654,7 @@ static int dissect_ipv6(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
 
     const uint8_t *l4 = data + 40;
     uint32_t l4len = len - 40;
+    out->l7_off += 40;
 
     /* Walk the extension-header chain so packets with hop-by-hop, routing,
      * fragment or destination options still get L4/L7 dissection. */
@@ -694,6 +698,7 @@ static int dissect_ipv6(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
         next_hdr = l4[0];
         l4    += ext_len;
         l4len -= ext_len;
+        out->l7_off += ext_len;
     }
     out->ip_proto = next_hdr;
 
@@ -765,6 +770,7 @@ static int dissect_ethernet(const uint8_t *data, uint32_t len, pkt_summary_t *ou
 
     const uint8_t *payload = data + ETH_HLEN;
     uint32_t plen = len - ETH_HLEN;
+    out->l7_off += ETH_HLEN;
 
     /* handle 802.1Q VLAN tag */
     if (ethertype == ETH_P_8021Q) {
@@ -774,6 +780,7 @@ static int dissect_ethernet(const uint8_t *data, uint32_t len, pkt_summary_t *ou
         out->ethertype = ethertype;
         payload += 4;
         plen -= 4;
+        out->l7_off += 4;
         out->highest_proto = PROTO_VLAN;
     }
 
@@ -817,12 +824,14 @@ static int dissect_by_ethertype(uint16_t ethertype, const uint8_t *p,
  * with the EtherType in the last two bytes. */
 static int dissect_sll(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
     if (len < 16) return -1;
+    out->l7_off += 16;
     return dissect_by_ethertype(rd16(data + 14), data + 16, len - 16, out, "SLL");
 }
 
 /* Linux cooked capture v2 (DLT_LINUX_SLL2): 20-byte header, EtherType first. */
 static int dissect_sll2(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
     if (len < 20) return -1;
+    out->l7_off += 20;
     return dissect_by_ethertype(rd16(data), data + 20, len - 20, out, "SLL2");
 }
 
@@ -837,6 +846,7 @@ static int dissect_null(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
 
     const uint8_t *p = data + 4;
     uint32_t plen = len - 4;
+    out->l7_off += 4;
     if (fam == 2)                                   /* AF_INET */
         return dissect_ipv4(p, plen, out);
     if (fam == 10 || fam == 24 || fam == 28 || fam == 30)   /* AF_INET6 */
@@ -881,6 +891,15 @@ void dissect_packet(const uint8_t *data, uint32_t caplen,
             snprintf(out->info, sizeof(out->info), "Unknown datalink %d", datalink_type);
             break;
     }
+
+    /* Consumers index the captured bytes with l7_off/l7_len directly:
+     * clamp so the pair can never reach past caplen. */
+    if (out->l7_off > caplen) {
+        out->l7_off = caplen;
+        out->l7_len = 0;
+    }
+    if (out->l7_len > caplen - out->l7_off)
+        out->l7_len = caplen - out->l7_off;
 
     /* Packet bytes flow into info (HTTP lines, DNS names, TLS SNI) and are
      * later printed to the operator's terminal: strip anything that could

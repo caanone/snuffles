@@ -71,6 +71,28 @@ int main(void) {
     CHECK(out.l4_proto == PROTO_TCP);
     CHECK(out.tcp_flags == 0x02);
     CHECK(out.ip_ttl == 64);
+    CHECK(out.l7_off == 14 + 20 + 20);
+    CHECK(out.l7_len == 0);
+
+    /* ── l7_off/l7_len locate the TCP payload ───────────────── */
+    {
+        static const char pay[] = "hello payload";
+        size_t o = eth_hdr(pkt, 0x0800);
+        o = ipv4_hdr(pkt, o, 6, (uint16_t)(20 + sizeof(pay) - 1));
+        o = tcp_hdr(pkt, o, 40000, 9999, 0x18);
+        o = put(pkt, o, pay, sizeof(pay) - 1);
+        dissect_packet(pkt, (uint32_t)o, 1, &out);
+        CHECK(out.l7_off == 14 + 20 + 20);
+        CHECK(out.l7_len == sizeof(pay) - 1);
+        CHECK(out.l7_off + out.l7_len <= (uint32_t)o);
+        CHECK(memcmp(pkt + out.l7_off, pay, out.l7_len) == 0);
+
+        /* truncation keeps the invariant l7_off + l7_len <= caplen */
+        for (uint32_t len = 0; len <= (uint32_t)o; len++) {
+            dissect_packet(pkt, len, 1, &out);
+            CHECK(out.l7_off + out.l7_len <= len);
+        }
+    }
 
     /* ── truncation sweep: every prefix must be safe and quiet ─ */
     for (uint32_t len = 0; len <= (uint32_t)off; len++) {
@@ -196,9 +218,21 @@ int main(void) {
         dissect_packet(pkt, (uint32_t)o, 1, &out);
         CHECK(out.l4_proto == PROTO_TCP);
         CHECK(out.src_port == 1234 && out.dst_port == 443);
-        for (uint32_t len = 0; len <= (uint32_t)o; len++) {
+        CHECK(out.l7_off == 14 + 40 + 8 + 20);
+        CHECK(out.l7_len == 0);
+
+        /* payload lands past the extension chain */
+        static const uint8_t v6pay[4] = { 'a', 'b', 'c', 'd' };
+        size_t o2 = put(pkt, o, v6pay, sizeof(v6pay));
+        dissect_packet(pkt, (uint32_t)o2, 1, &out);
+        CHECK(out.l7_off == 14 + 40 + 8 + 20);
+        CHECK(out.l7_len == sizeof(v6pay));
+        CHECK(memcmp(pkt + out.l7_off, v6pay, sizeof(v6pay)) == 0);
+
+        for (uint32_t len = 0; len <= (uint32_t)o2; len++) {
             dissect_packet(pkt, len, 1, &out);
             CHECK(info_is_clean(&out));
+            CHECK(out.l7_off + out.l7_len <= len);
         }
     }
 
