@@ -54,8 +54,6 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libpcap-dev
       - run: make debug
       - run: ./snuffles -v && ./snuffles --list-ifaces
-      - name: Unit tests (sanitized)
-        run: make clean && make test SAN=1
       - name: Generate test capture
         run: |
           python3 - <<'EOF'
@@ -87,6 +85,9 @@ jobs:
               inc=struct.unpack('<I',d[off+8:off+12])[0]; off+=16+inc; n+=1
           assert n==25, n
           print('stream pcap ok:', n, 'records')"
+      # last: this rebuilds under sanitizers and would clobber ./snuffles
+      - name: Unit tests (sanitized)
+        run: make clean && make test SAN=1
 
   macos:
     name: macOS arm64 (libpcap)
