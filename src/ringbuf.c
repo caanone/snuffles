@@ -138,6 +138,10 @@ int ringbuf_read(ringbuf_t *rb, uint32_t idx, pkt_record_t *out, uint8_t *data) 
             out->raw_data = NULL;
         }
 
+        /* The data copy above uses plain loads; on weakly-ordered CPUs
+         * (arm64) they may be satisfied after the recheck load below,
+         * validating a torn read. Fence so the copy completes first. */
+        atomic_thread_fence(memory_order_acquire);
         if (atomic_load(&rb->slot_gen[slot]) == g1 && out->seq_num == target)
             return 1;
     }
