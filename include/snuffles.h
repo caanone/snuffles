@@ -162,8 +162,8 @@
 
 #define SNUFFLES_VERSION_MAJOR 1
 #define SNUFFLES_VERSION_MINOR 3
-#define SNUFFLES_VERSION_PATCH 0
-#define SNUFFLES_VERSION_STR   "1.3.0"
+#define SNUFFLES_VERSION_PATCH 1
+#define SNUFFLES_VERSION_STR   "1.3.1"
 #define SNUFFLES_NAME          "Snuffles"
 
 /* ── Protocol IDs ────────────────────────────────────────────── */
