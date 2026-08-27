@@ -35,6 +35,7 @@ find_package(Threads REQUIRED)
 # Common sources (everything except capture backend)
 set(COMMON_SOURCES
     src/main.c
+    src/config.c
     src/dissect.c
     src/filter.c
     src/ringbuf.c
@@ -76,7 +77,7 @@ endif()
 # Tests (backend-independent: each links only the sources it exercises)
 include(CTest)
 if(BUILD_TESTING)
-    foreach(t filter ringbuf session dissect cbpf)
+    foreach(t filter ringbuf session dissect cbpf config)
         add_executable(test_${t} tests/test_${t}.c src/${t}.c)
         target_include_directories(test_${t} PRIVATE include src)
         target_link_libraries(test_${t} PRIVATE Threads::Threads m)

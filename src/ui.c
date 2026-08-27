@@ -112,6 +112,10 @@ struct ui_ctx {
     char                search[128];    /* last search string */
     int                 hex_scroll;     /* detail-panel hex dump row offset */
 
+    /* saved display-filter presets ("@name"); owned by the caller */
+    const filter_preset_t *presets;
+    int                 npresets;
+
     uint64_t            last_total;
     int                 cur_row;
 
@@ -396,6 +400,27 @@ static const pkt_record_t *filtered_peek(ui_ctx_t *ctx, uint32_t idx) {
     return NULL;
 }
 
+/* ── Filter presets ──────────────────────────────────────────── */
+
+/* Case-insensitive preset lookup; tolerates spaces around the name. */
+static const filter_preset_t *preset_find(const ui_ctx_t *ctx,
+                                          const char *name) {
+    while (*name == ' ') name++;
+    size_t n = strlen(name);
+    while (n > 0 && name[n - 1] == ' ') n--;
+    if (n == 0) return NULL;
+
+    for (int i = 0; i < ctx->npresets; i++) {
+        const char *pn = ctx->presets[i].name;
+        size_t j = 0;
+        while (j < n && pn[j] &&
+               tolower((unsigned char)pn[j]) == tolower((unsigned char)name[j]))
+            j++;
+        if (j == n && pn[n] == '\0') return &ctx->presets[i];
+    }
+    return NULL;
+}
+
 /* ── Search ──────────────────────────────────────────────────── */
 
 static int ci_contains(const char *hay, const char *needle) {
@@ -505,6 +530,7 @@ static void render_frame(ui_ctx_t *ctx) {
             "                  Syntax: tcp | 10.0.0.1 | port 443 | ip == 10.0.0.0/24",
             "                          info contains GET | session == 5 | !arp",
             "                          Combine: and or not () && || !",
+            "                  @name applies a saved preset from the config file",
             "    B             BPF capture filter (kernel-level, drops non-matching)",
             "                  Syntax: tcp port 443 | host 10.0.0.1 | udp | icmp",
             "",
@@ -865,7 +891,13 @@ static void render_frame(ui_ctx_t *ctx) {
         ob_str(ctx, "\xe2\x96\x88");
 
         /* live preview: compile and count matches (throttled — caps scan to 2000 packets) */
-        if (ctx->input_buf[0]) {
+        if (ctx->input_buf[0] == '@') {
+            const filter_preset_t *p = preset_find(ctx, ctx->input_buf + 1);
+            if (p)
+                ob_printf(ctx, ESC_DIM "  = %s" ESC_RESET, p->expr);
+            else
+                ob_str(ctx, ESC_DIM "  (saved preset name)" ESC_RESET);
+        } else if (ctx->input_buf[0]) {
             display_filter_t preview;
             if (filter_compile(ctx->input_buf, &preview) == 0) {
                 uint32_t matches = 0;
@@ -885,6 +917,14 @@ static void render_frame(ui_ctx_t *ctx) {
             } else {
                 ob_printf(ctx, "  \033[31m%s" ESC_RESET, preview.error);
             }
+        } else if (ctx->npresets > 0) {
+            /* empty prompt with presets on file: hint up to 5 names */
+            ob_str(ctx, ESC_DIM "  presets:");
+            int shown = NS_MIN(ctx->npresets, 5);
+            for (int i = 0; i < shown; i++)
+                ob_printf(ctx, " @%s", ctx->presets[i].name);
+            if (ctx->npresets > shown) ob_str(ctx, " ...");
+            ob_str(ctx, ESC_RESET);
         } else {
             ob_str(ctx, ESC_DIM
                    "  tcp | 10.0.0.1 | port 443 | ip == 10.0.0.0/24 | info contains GET"
@@ -1062,10 +1102,26 @@ static void handle_input(ui_ctx_t *ctx) {
             /* ignore translated nav keys inside prompts (Windows path) */
         } else if (c == '\n' || c == '\r') {
             if (ctx->mode == MODE_FILTER) {
-                filter_compile(ctx->input_buf, &ctx->dfilter);
-                fcache_reset(ctx);
-                ctx->selected = 0;
-                ctx->scroll_off = 0;
+                const char *expr = ctx->input_buf;
+                if (expr[0] == '@') {
+                    /* "@name" applies a saved preset's expression */
+                    const filter_preset_t *p = preset_find(ctx, expr + 1);
+                    if (p) {
+                        expr = p->expr;
+                    } else {
+                        snprintf(ctx->bpf_msg, sizeof(ctx->bpf_msg),
+                                 "\033[31mUnknown preset: %.40s\033[0m",
+                                 ctx->input_buf);
+                        ctx->bpf_msg_frames = 80;
+                        expr = NULL;   /* keep the current display filter */
+                    }
+                }
+                if (expr) {
+                    filter_compile(expr, &ctx->dfilter);
+                    fcache_reset(ctx);
+                    ctx->selected = 0;
+                    ctx->scroll_off = 0;
+                }
             } else if (ctx->mode == MODE_SEARCH) {
                 snprintf(ctx->search, sizeof(ctx->search), "%s", ctx->input_buf);
                 do_search(ctx, +1);
@@ -1248,7 +1304,8 @@ static void handle_input(ui_ctx_t *ctx) {
 /* ── Public API ──────────────────────────────────────────────── */
 
 ui_ctx_t *ui_create(ringbuf_t *rb, capture_ctx_t *cap,
-                     const capture_cfg_t *cfg, session_table_t *st) {
+                     const capture_cfg_t *cfg, session_table_t *st,
+                     const filter_preset_t *presets, int npresets) {
     ui_ctx_t *ctx = calloc(1, sizeof(ui_ctx_t));
     if (!ctx) return NULL;
 
@@ -1256,6 +1313,8 @@ ui_ctx_t *ui_create(ringbuf_t *rb, capture_ctx_t *cap,
     ctx->cap      = cap;
     ctx->cfg      = *cfg;
     ctx->sessions = st;
+    ctx->presets  = presets;
+    ctx->npresets = (presets && npresets > 0) ? npresets : 0;
     ctx->outbuf_size = 65536;
     ctx->outbuf = malloc(ctx->outbuf_size);
     if (!ctx->outbuf) { free(ctx); return NULL; }
