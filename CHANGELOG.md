@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.3.0] — 2026-08-27
 
 ### Added
 - **TCP stream reassembly + follow-stream**: per-direction, budget-capped
