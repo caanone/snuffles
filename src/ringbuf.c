@@ -75,6 +75,11 @@ pkt_record_t *ringbuf_producer_next(ringbuf_t *rb) {
     uint64_t seq = atomic_load(&rb->write_seq);
     uint32_t idx = (uint32_t)(seq % rb->capacity);
     atomic_fetch_add(&rb->slot_gen[idx], 1);   /* even -> odd: write begins */
+    /* The RMW's store half doesn't order the caller's later plain data
+     * stores after it on weakly-ordered CPUs (arm64): a lapped reader
+     * could see new data before the odd generation and validate a torn
+     * copy. Fence so the odd mark is visible before any data write. */
+    atomic_thread_fence(memory_order_release);
     return &rb->records[idx];
 }
 
