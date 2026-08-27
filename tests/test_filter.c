@@ -62,6 +62,28 @@ int main(void) {
     CHECK(eval("vlan == 7", &a) == 1);
     a.vlan_id = 0;
 
+    /* new UDP L7 shorthands compile and match (eval == -1 on
+     * compile failure, so these also cover is_proto_shorthand) */
+    {
+        pkt_summary_t q = mk("10.0.0.5", "8.8.8.8", 51000, 443);
+        q.l4_proto = PROTO_UDP;
+        q.l7_proto = PROTO_QUIC;
+        q.highest_proto = PROTO_QUIC;
+        snprintf(q.protocol, sizeof(q.protocol), "QUIC");
+        CHECK(eval("quic", &q) == 1);
+        CHECK(eval("dhcp", &q) == 0);
+        q.l7_proto = PROTO_MDNS; q.highest_proto = PROTO_MDNS;
+        snprintf(q.protocol, sizeof(q.protocol), "mDNS");
+        CHECK(eval("mdns", &q) == 1);
+        q.l7_proto = PROTO_DHCP; q.highest_proto = PROTO_DHCP;
+        snprintf(q.protocol, sizeof(q.protocol), "DHCP");
+        CHECK(eval("dhcp", &q) == 1);
+        q.l7_proto = PROTO_NTP; q.highest_proto = PROTO_NTP;
+        snprintf(q.protocol, sizeof(q.protocol), "NTP");
+        CHECK(eval("ntp", &q) == 1);
+        CHECK(eval("quic", &q) == 0);
+    }
+
     /* malformed CIDR / ranges are compile errors, not match-all */
     CHECK(!compiles("ip == 10.0.0.0/abc"));
     CHECK(!compiles("ip == 10.0.0.0/33"));

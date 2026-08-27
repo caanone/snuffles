@@ -419,6 +419,10 @@ sudo ./snuffles -i en0 -c 100 -o capture.json
 | L7 | DNS | Query/response, QNAME, type |
 | L7 | HTTP/1.x | Method + path or status |
 | L7 | TLS | Handshake type, SNI |
+| L7 | DHCP | Message type (option 53), assigned/client IP |
+| L7 | NTP | Mode (client/server), version, stratum |
+| L7 | mDNS | Same fields as DNS (port 5353) |
+| L7 | QUIC | Long-header packet type, version |
 
 ---
 
