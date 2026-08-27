@@ -192,12 +192,22 @@ static void tty_cont_handler(int sig) {
 }
 #endif
 
+#ifdef _WIN32
+/* Original console output mode: restored on exit so VT processing does
+ * not leak into the parent shell. */
+static DWORD g_win_orig_mode;
+static int   g_win_mode_saved = 0;
+#endif
+
 static void term_raw_enable(ui_ctx_t *ctx) {
 #ifdef _WIN32
     HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
     DWORD mode;
-    GetConsoleMode(h, &mode);
-    SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+    if (GetConsoleMode(h, &mode)) {
+        g_win_orig_mode  = mode;
+        g_win_mode_saved = 1;
+        SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+    }
     (void)ctx;
 #else
     if (tcgetattr(STDIN_FILENO, &ctx->orig_tio) != 0)
@@ -224,6 +234,10 @@ static void term_raw_enable(ui_ctx_t *ctx) {
 
 static void term_raw_disable(ui_ctx_t *ctx) {
 #ifdef _WIN32
+    if (g_win_mode_saved) {
+        SetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), g_win_orig_mode);
+        g_win_mode_saved = 0;
+    }
     (void)ctx;
 #else
     tcsetattr(STDIN_FILENO, TCSANOW, &ctx->orig_tio);
