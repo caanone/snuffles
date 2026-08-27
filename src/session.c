@@ -88,6 +88,65 @@ static void lru_push_front(session_table_t *st, session_entry_t *e) {
     if (!st->lru_tail) st->lru_tail = e;
 }
 
+/* ── TCP stream reassembly (all under the table lock) ────────── */
+
+/* Frees an entry's stream buffers and refunds their budget charge. */
+static void entry_free_streams(session_table_t *st, session_entry_t *e) {
+    if (e->stream_a) {
+        free(e->stream_a);
+        e->stream_a = NULL;
+        st->reasm_used -= SESSION_STREAM_CAP;
+    }
+    if (e->stream_b) {
+        free(e->stream_b);
+        e->stream_b = NULL;
+        st->reasm_used -= SESSION_STREAM_CAP;
+    }
+}
+
+/* One direction of the flow. Sequence tracking always advances (SYN and
+ * FIN each consume one sequence number); bytes are stored only while the
+ * per-direction cap and the global budget allow. */
+static void stream_update(session_table_t *st, session_entry_t *e, int a2b,
+                          const pkt_summary_t *pkt,
+                          const uint8_t *payload, uint32_t paylen) {
+    uint8_t  *init = a2b ? &e->seq_init_a   : &e->seq_init_b;
+    uint32_t *nseq = a2b ? &e->next_seq_a   : &e->next_seq_b;
+    uint8_t **buf  = a2b ? &e->stream_a     : &e->stream_b;
+    uint32_t *blen = a2b ? &e->stream_len_a : &e->stream_len_b;
+
+    if (!payload) paylen = 0;
+
+    if (!*init) {
+        *nseq = pkt->tcp_seq + ((pkt->tcp_flags & TF_SYN) ? 1 : 0);
+        *init = 1;
+    }
+
+    int32_t d = (int32_t)(pkt->tcp_seq - *nseq);
+    if (d < 0) return;      /* retransmit/overlap: drop the segment */
+    if (d > 0) {            /* hole: count it and resync past it */
+        e->gaps++;
+        *nseq = pkt->tcp_seq;
+    }
+
+    if (paylen > 0) {
+        if (!*buf && st->reasm_used + SESSION_STREAM_CAP <= st->reasm_budget) {
+            *buf = malloc(SESSION_STREAM_CAP);
+            if (*buf) st->reasm_used += SESSION_STREAM_CAP;
+        }
+        if (*buf && *blen < SESSION_STREAM_CAP) {
+            uint32_t room = SESSION_STREAM_CAP - *blen;
+            uint32_t n = paylen < room ? paylen : room;
+            memcpy(*buf + *blen, payload, n);
+            *blen += n;
+        }
+    }
+
+    *nseq += paylen;
+    if (pkt->tcp_flags & TF_SYN) (*nseq)++;
+    if (pkt->tcp_flags & TF_FIN) (*nseq)++;
+}
+
 /* ── TCP state machine ───────────────────────────────────────── */
 
 static session_state_t tcp_next_state(session_state_t cur, uint8_t flags) {
@@ -146,6 +205,7 @@ void session_table_destroy(session_table_t *st) {
         session_entry_t *e = st->buckets[i];
         while (e) {
             session_entry_t *next = e->next;
+            entry_free_streams(st, e);
             free(e);
             e = next;
         }
@@ -155,6 +215,14 @@ void session_table_destroy(session_table_t *st) {
     free(st);
 }
 
+void session_table_enable_reasm(session_table_t *st, size_t budget_bytes) {
+    if (!st) return;
+    ns_mutex_lock(&st->mtx);
+    st->reasm_enabled = 1;
+    st->reasm_budget  = budget_bytes;
+    ns_mutex_unlock(&st->mtx);
+}
+
 void session_table_clear(session_table_t *st) {
     if (!st) return;
     ns_mutex_lock(&st->mtx);
@@ -162,6 +230,7 @@ void session_table_clear(session_table_t *st) {
         session_entry_t *e = st->buckets[i];
         while (e) {
             session_entry_t *next = e->next;
+            entry_free_streams(st, e);
             free(e);
             e = next;
         }
@@ -175,7 +244,9 @@ void session_table_clear(session_table_t *st) {
 }
 
 uint32_t session_table_update(session_table_t *st,
-                              const pkt_summary_t *pkt) {
+                              const pkt_summary_t *pkt,
+                              const uint8_t *payload,
+                              uint32_t paylen) {
     if (!st) return 0;
     /* skip packets without IP info */
     if (!pkt->src_ip[0] || !pkt->dst_ip[0]) return 0;
@@ -206,6 +277,7 @@ uint32_t session_table_update(session_table_t *st,
             while (*pp && *pp != old) pp = &(*pp)->next;
             if (*pp) *pp = old->next;
             lru_unlink(st, old);
+            entry_free_streams(st, old);
             free(old);
             st->session_count--;
         }
@@ -228,7 +300,8 @@ uint32_t session_table_update(session_table_t *st,
     }
 
     /* update counters */
-    if (is_a_to_b(&key, pkt->src_ip, pkt->src_port)) {
+    int a2b = is_a_to_b(&key, pkt->src_ip, pkt->src_port);
+    if (a2b) {
         e->pkts_a_to_b++;
         e->bytes_a_to_b += pkt->length;
     } else {
@@ -241,6 +314,8 @@ uint32_t session_table_update(session_table_t *st,
     if (pkt->l4_proto == PROTO_TCP) {
         e->tcp_flags_seen |= pkt->tcp_flags;
         e->tcp_state = tcp_next_state(e->tcp_state, pkt->tcp_flags);
+        if (st->reasm_enabled)
+            stream_update(st, e, a2b, pkt, payload, paylen);
     } else {
         e->tcp_state = SESS_ESTABLISHED;
     }
@@ -252,6 +327,29 @@ uint32_t session_table_update(session_table_t *st,
 
 uint32_t session_table_count(const session_table_t *st) {
     return st ? st->session_count : 0;
+}
+
+uint32_t session_stream_copy(session_table_t *st, uint32_t id, int dir,
+                             uint8_t *out, uint32_t cap) {
+    if (!st || !out || cap == 0) return 0;
+
+    ns_mutex_lock(&st->mtx);
+    for (uint32_t i = 0; i < st->bucket_count; i++) {
+        for (session_entry_t *e = st->buckets[i]; e; e = e->next) {
+            if (e->id != id) continue;
+            const uint8_t *src = (dir == 0) ? e->stream_a     : e->stream_b;
+            uint32_t       len = (dir == 0) ? e->stream_len_a : e->stream_len_b;
+            uint32_t n = 0;
+            if (src && len > 0) {
+                n = len < cap ? len : cap;
+                memcpy(out, src, n);
+            }
+            ns_mutex_unlock(&st->mtx);
+            return n;
+        }
+    }
+    ns_mutex_unlock(&st->mtx);
+    return 0;
 }
 
 /* ── Snapshot for UI ─────────────────────────────────────────── */
@@ -320,6 +418,10 @@ session_entry_t *session_table_snapshot(session_table_t *st,
             arr[idx].next = NULL;
             arr[idx].lru_prev = NULL;
             arr[idx].lru_next = NULL;
+            /* stream buffers stay owned by the table: copies must never
+             * carry live pointers (use session_stream_copy instead) */
+            arr[idx].stream_a = NULL;
+            arr[idx].stream_b = NULL;
             idx++;
         }
     }
