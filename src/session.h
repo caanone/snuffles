@@ -97,6 +97,11 @@ void                session_table_enable_reasm(session_table_t *st,
                                                size_t budget_bytes);
 /* Copies up to cap reassembled bytes of session `id` (dir 0 = a->b) into
  * out under the table lock; returns bytes copied (0 if not found/empty). */
+/* Copy both directions inside one critical section (coherent pair). */
+void                session_streams_copy(session_table_t *st, uint32_t id,
+                                         uint8_t *out_a, uint8_t *out_b,
+                                         uint32_t cap,
+                                         uint32_t *len_a, uint32_t *len_b);
 uint32_t            session_stream_copy(session_table_t *st, uint32_t id,
                                         int dir, uint8_t *out, uint32_t cap);
 void                session_table_clear(session_table_t *st);

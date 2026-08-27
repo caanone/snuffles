@@ -142,15 +142,17 @@ int main(void) {
         /* in-order segments accumulate per direction independently
          * (strcmp: "10.0.0.1" < "8.8.8.8", so side A = 10.0.0.1) */
         pkt_summary_t p;
+        /* mk() sets length=100; reassembly derives the wire payload from
+         * length - l7_off, so make each summary self-consistent */
         p = mk("10.0.0.1", "8.8.8.8", 40000, 443, TF_ACK, 1);
-        p.tcp_seq = 1000;
+        p.tcp_seq = 1000; p.length = 5;
         uint32_t sid = session_table_update(rt, &p, (const uint8_t *)"hello", 5);
         CHECK(sid != 0);
         p = mk("8.8.8.8", "10.0.0.1", 443, 40000, TF_ACK, 2);
-        p.tcp_seq = 9000;
+        p.tcp_seq = 9000; p.length = 6;
         session_table_update(rt, &p, (const uint8_t *)"WORLD!", 6);
         p = mk("10.0.0.1", "8.8.8.8", 40000, 443, TF_ACK, 3);
-        p.tcp_seq = 1005;
+        p.tcp_seq = 1005; p.length = 6;
         session_table_update(rt, &p, (const uint8_t *)" there", 6);
 
         uint8_t buf[SESSION_STREAM_CAP];
@@ -161,13 +163,13 @@ int main(void) {
 
         /* retransmitted segment does not duplicate */
         p = mk("10.0.0.1", "8.8.8.8", 40000, 443, TF_ACK, 4);
-        p.tcp_seq = 1005;
+        p.tcp_seq = 1005; p.length = 6;
         session_table_update(rt, &p, (const uint8_t *)" there", 6);
         CHECK(session_stream_copy(rt, sid, 0, buf, sizeof(buf)) == 11);
 
         /* gap resyncs: later bytes still captured, gaps counted */
         p = mk("10.0.0.1", "8.8.8.8", 40000, 443, TF_ACK, 5);
-        p.tcp_seq = 2000;
+        p.tcp_seq = 2000; p.length = 9;
         session_table_update(rt, &p, (const uint8_t *)"after-gap", 9);
         got = session_stream_copy(rt, sid, 0, buf, sizeof(buf));
         CHECK(got == 20 && memcmp(buf + 11, "after-gap", 9) == 0);
@@ -188,7 +190,7 @@ int main(void) {
             uint32_t seq = 2009;   /* continues right after "after-gap" */
             for (int i = 0; i < 40; i++) {   /* 40 KB > 16 KB cap */
                 p = mk("10.0.0.1", "8.8.8.8", 40000, 443, TF_ACK, 10 + i);
-                p.tcp_seq = seq;
+                p.tcp_seq = seq; p.length = sizeof(big);
                 session_table_update(rt, &p, big, sizeof(big));
                 seq += sizeof(big);
             }
@@ -197,6 +199,30 @@ int main(void) {
             got = session_stream_copy(rt, sid, 0, cb, SESSION_STREAM_CAP + 16);
             CHECK(got == SESSION_STREAM_CAP);
             free(cb);
+        }
+
+        /* snaplen truncation: wire length exceeds the captured payload;
+         * next_seq must advance by the WIRE length so the following
+         * in-order segment is not miscounted as a gap */
+        {
+            session_table_t *tt = session_table_create(64);
+            session_table_enable_reasm(tt, 1 << 20);
+            pkt_summary_t q = mk("10.0.0.1", "8.8.8.8", 50000, 80, TF_ACK, 1);
+            q.tcp_seq = 100; q.l7_off = 54; q.length = 54 + 1000;
+            uint32_t tid = session_table_update(tt, &q,
+                                                (const uint8_t *)"trunc", 5);
+            q = mk("10.0.0.1", "8.8.8.8", 50000, 80, TF_ACK, 2);
+            q.tcp_seq = 1100; q.l7_off = 54; q.length = 54 + 1000;
+            session_table_update(tt, &q, (const uint8_t *)"cated", 5);
+            uint32_t n;
+            session_entry_t *ts = session_table_snapshot(tt, &n, SORT_RECENT);
+            CHECK(ts && n == 1 && ts[0].id == tid);
+            CHECK(ts[0].gaps == 0);   /* truncation is not packet loss */
+            free(ts);
+            uint8_t tb[32];
+            CHECK(session_stream_copy(tt, tid, 0, tb, sizeof(tb)) == 10);
+            CHECK(memcmp(tb, "trunccated", 10) == 0);
+            session_table_destroy(tt);
         }
 
         /* clear frees the buffers and refunds the budget */

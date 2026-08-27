@@ -24,3 +24,6 @@ compile_commands.json
 
 # Windows test artifacts
 build-win/
+
+# agent worktrees / local claude state
+.claude/
