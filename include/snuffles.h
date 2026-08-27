@@ -183,6 +183,10 @@ typedef enum {
     PROTO_DNS,
     PROTO_HTTP,
     PROTO_TLS,
+    PROTO_DHCP,
+    PROTO_NTP,
+    PROTO_MDNS,
+    PROTO_QUIC,
     PROTO_MAX
 } proto_id_t;
 
@@ -202,6 +206,10 @@ static inline const char *proto_name(proto_id_t id) {
         [PROTO_DNS]     = "DNS",
         [PROTO_HTTP]    = "HTTP",
         [PROTO_TLS]     = "TLS",
+        [PROTO_DHCP]    = "DHCP",
+        [PROTO_NTP]     = "NTP",
+        [PROTO_MDNS]    = "mDNS",
+        [PROTO_QUIC]    = "QUIC",
     };
     if (id >= PROTO_MAX) return "???";
     return names[id];
@@ -239,6 +247,12 @@ typedef struct {
     proto_id_t  l7_proto;
     proto_id_t  highest_proto;
     uint32_t    session_id;
+
+    /* L4 payload location within the captured bytes. l7_len is set only on
+     * the TCP path (0 elsewhere/on truncation). Invariant, enforced by
+     * dissect_packet: l7_off + l7_len <= caplen. */
+    uint32_t    l7_off;
+    uint32_t    l7_len;
 } pkt_summary_t;
 
 /* ── Packet record (stored in ring buffer) ───────────────────── */
