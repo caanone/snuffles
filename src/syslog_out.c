@@ -23,6 +23,21 @@
 
 #define SYSLOG_DEFAULT_PORT 514
 
+#ifdef _WIN32
+/* socket()/getaddrinfo() fail with WSANOTINITIALISED unless Winsock is
+ * started; the pcap backend initializes it as a side effect, the raw
+ * build must not rely on that. Called once, never torn down: Windows
+ * cleans up at process exit. */
+static void ensure_wsa(void) {
+    static int done = 0;
+    if (!done) {
+        WSADATA wsa;
+        (void)WSAStartup(MAKEWORD(2, 2), &wsa);
+        done = 1;
+    }
+}
+#endif
+
 struct syslog_out {
     sock_t              sock;
     struct sockaddr_in  dest;
@@ -34,6 +49,9 @@ struct syslog_out {
 /* ── Create: parse host:port, resolve, open UDP socket ───────── */
 
 syslog_out_t *syslog_out_create(const char *host_port, const char *src_iface) {
+#ifdef _WIN32
+    ensure_wsa();
+#endif
     if (!host_port || !host_port[0]) return NULL;
 
     syslog_out_t *sl = calloc(1, sizeof(syslog_out_t));
