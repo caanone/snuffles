@@ -1,4 +1,5 @@
 #include "syslog_out.h"
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,6 +45,8 @@ struct syslog_out {
     char                dest_ip[46];   /* resolved IP string for self-check */
     uint16_t            dest_port;
     uint16_t            src_port;      /* our bound port, for the self-check */
+    atomic_uint_fast64_t sent;
+    atomic_uint_fast64_t failed;
 };
 
 /* ── Create: parse host:port, resolve, open UDP socket ───────── */
@@ -242,9 +245,19 @@ void syslog_out_send(syslog_out_t *sl, const pkt_summary_t *pkt) {
     }
 
     if (len > 0) {
-        sendto(sl->sock, msg, (size_t)len, 0,
-               (struct sockaddr *)&sl->dest, sizeof(sl->dest));
+        if (sendto(sl->sock, msg, (size_t)len, 0,
+                   (struct sockaddr *)&sl->dest, sizeof(sl->dest)) < 0)
+            atomic_fetch_add_explicit(&sl->failed, 1, memory_order_relaxed);
+        else
+            atomic_fetch_add_explicit(&sl->sent, 1, memory_order_relaxed);
     }
+}
+
+void syslog_out_counts(const syslog_out_t *sl, uint64_t *sent, uint64_t *failed) {
+    *sent = *failed = 0;
+    if (!sl) return;
+    *sent   = atomic_load_explicit(&sl->sent,   memory_order_relaxed);
+    *failed = atomic_load_explicit(&sl->failed, memory_order_relaxed);
 }
 
 /* ── Destroy ─────────────────────────────────────────────────── */

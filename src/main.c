@@ -15,6 +15,14 @@
 #include <string.h>
 #include <signal.h>
 #include <getopt.h>
+#include <stdatomic.h>
+
+#ifndef _WIN32
+  #include <sys/time.h>
+#endif
+#ifdef __linux__
+  #include <sys/prctl.h>
+#endif
 
 #ifndef _WIN32
   #include <unistd.h>
@@ -25,6 +33,12 @@
 
 static volatile sig_atomic_t g_stop = 0;
 static capture_ctx_t        *g_capture = NULL;
+
+/* Headless consumer progress: records emitted to stdout and records the
+   consumer never saw because the ring wrapped past it (published for the
+   --stats reporter). */
+static atomic_uint_fast64_t  g_emitted;
+static atomic_uint_fast64_t  g_missed;
 
 /* ── Signal handler ──────────────────────────────────────────── */
 
@@ -70,6 +84,8 @@ static void print_usage(const char *prog) {
            "  -q, --quiet       Silent mode (no terminal output, use with --syslog)\n"
            "  --syslog <h:p>   Send packet CSV to syslog server (UDP)\n"
            "  --syslog-iface <ip|dev>  Source interface/IP for syslog\n"
+           "  --stats[=FILE]    Report capture/drop counters every second and\n"
+           "                    at exit (stderr, or FILE; the TUI needs FILE)\n"
            "  --list-ifaces     List available interfaces and exit\n"
            "  -v                Print version and exit\n"
            "  -h, --help        Show this help\n",
@@ -128,8 +144,11 @@ static void run_headless(ringbuf_t *rb, capture_ctx_t *cap,
         uint32_t count = ringbuf_count(rb);
 
         /* if ring wrapped past us, jump to oldest available */
-        if (total > (uint64_t)count && last < total - count)
+        if (total > (uint64_t)count && last < total - count) {
+            atomic_fetch_add_explicit(&g_missed, (total - count) - last,
+                                      memory_order_relaxed);
             last = total - count;
+        }
 
         while (last < total) {
             uint64_t oldest_seq = (total > count) ? total - count : 0;
@@ -152,6 +171,9 @@ static void run_headless(ringbuf_t *rb, capture_ctx_t *cap,
                                s->protocol, s->info);
                 }
                 fflush(stdout);
+                atomic_fetch_add_explicit(&g_emitted, 1, memory_order_relaxed);
+            } else {
+                atomic_fetch_add_explicit(&g_missed, 1, memory_order_relaxed);
             }
             last++;
         }
@@ -162,6 +184,77 @@ static void run_headless(ringbuf_t *rb, capture_ctx_t *cap,
         if (!capture_is_running(cap) && ringbuf_total(rb) <= last)
             break;
     }
+}
+
+/* ── --stats reporter ────────────────────────────────────────── */
+
+typedef struct {
+    FILE               *out;
+    ringbuf_t          *rb;
+    capture_ctx_t      *cap;
+    session_table_t    *st;
+    struct timeval      t0;
+    atomic_int          stop;
+    ns_thread_t         thread;
+} stats_reporter_t;
+
+static double tv_secs(const struct timeval *a, const struct timeval *b) {
+    return (double)(a->tv_sec - b->tv_sec) + (double)(a->tv_usec - b->tv_usec) / 1e6;
+}
+
+static long rss_kb(void) {
+#ifdef __linux__
+    FILE *f = fopen("/proc/self/statm", "r");
+    if (!f) return -1;
+    long size = 0, res = 0;
+    int n = fscanf(f, "%ld %ld", &size, &res);
+    fclose(f);
+    return n == 2 ? res * (long)(sysconf(_SC_PAGESIZE) / 1024) : -1;
+#else
+    return -1;
+#endif
+}
+
+static void stats_report_line(stats_reporter_t *r, const char *tag) {
+    capture_stats_raw_t cs;
+    capture_get_stats(r->cap, &cs);
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    fprintf(r->out,
+            "%s t=%.3f captured=%llu kdrop=%llu ifdrop=%llu ring=%u "
+            "emitted=%llu missed=%llu syslog_sent=%llu syslog_fail=%llu "
+            "streamed=%llu sessions=%u rss_kb=%ld\n",
+            tag, tv_secs(&now, &r->t0),
+            (unsigned long long)cs.pkts_recv,
+            (unsigned long long)cs.pkts_drop,
+            (unsigned long long)cs.pkts_ifdrop,
+            ringbuf_count(r->rb),
+            (unsigned long long)atomic_load_explicit(&g_emitted, memory_order_relaxed),
+            (unsigned long long)atomic_load_explicit(&g_missed, memory_order_relaxed),
+            (unsigned long long)cs.syslog_sent,
+            (unsigned long long)cs.syslog_failed,
+            (unsigned long long)cs.stream_pkts,
+            r->st ? session_table_count(r->st) : 0u,
+            rss_kb());
+    fflush(r->out);
+}
+
+static void *stats_thread_fn(void *arg) {
+    stats_reporter_t *r = (stats_reporter_t *)arg;
+#ifdef __linux__
+    prctl(PR_SET_NAME, "snf-stats", 0, 0, 0);
+#endif
+    while (!atomic_load(&r->stop)) {
+#ifndef _WIN32
+        struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+        select(0, NULL, NULL, NULL, &tv);
+#else
+        Sleep(1000);
+#endif
+        if (atomic_load(&r->stop)) break;
+        stats_report_line(r, "stats");
+    }
+    return NULL;
 }
 
 /* ── Main ────────────────────────────────────────────────────── */
@@ -191,6 +284,7 @@ int main(int argc, char *argv[]) {
         {"list-ifaces", no_argument,       0, 'L'},
         {"syslog",       required_argument, 0, 'Y'},
         {"syslog-iface", required_argument, 0, 'Z'},
+        {"stats",        optional_argument, 0, 'S'},
         {"version",     no_argument,       0, 'v'},
         {"help",        no_argument,       0, 'h'},
         {0, 0, 0, 0}
@@ -198,6 +292,8 @@ int main(int argc, char *argv[]) {
 
     int opt;
     int ring_set = 0, snaplen_set = 0;
+    int stats_on = 0;
+    char stats_path[512] = "";
     while ((opt = getopt_long(argc, argv, "i:r:f:c:s:b:o:w:qvh", long_opts, NULL)) != -1) {
         switch (opt) {
             case 'i': snprintf(cfg.iface,      sizeof(cfg.iface),      "%s", optarg); break;
@@ -216,6 +312,9 @@ int main(int argc, char *argv[]) {
             case 'L': cfg.list_ifaces = 1; break;
             case 'Y': snprintf(cfg.syslog_target, sizeof(cfg.syslog_target), "%s", optarg); break;
             case 'Z': snprintf(cfg.syslog_iface, sizeof(cfg.syslog_iface), "%s", optarg); break;
+            case 'S': stats_on = 1;
+                      if (optarg) snprintf(stats_path, sizeof(stats_path), "%s", optarg);
+                      break;
             case 'v': print_version(); return 0;
             case 'h': print_usage(argv[0]); return 0;
             default:  print_usage(argv[0]); return 1;
@@ -253,6 +352,12 @@ int main(int argc, char *argv[]) {
             cfg.ring_size = 64;    /* tiny scratch buffer */
         if (!snaplen_set && cfg.snaplen > 256)
             cfg.snaplen = 256;     /* syslog only needs headers */
+    }
+
+    if (stats_on && !cfg.no_ui && !stats_path[0]) {
+        fprintf(stderr, "snuffles: --stats needs a file in TUI mode "
+                        "(--stats=FILE), stderr would corrupt the screen\n");
+        return 1;
     }
 
 #ifndef _WIN32
@@ -301,6 +406,23 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    stats_reporter_t rep;
+    memset(&rep, 0, sizeof(rep));
+    if (stats_on) {
+        rep.out = stats_path[0] ? fopen(stats_path, "w") : stderr;
+        if (!rep.out) {
+            fprintf(stderr, "snuffles: cannot open stats file '%s'\n", stats_path);
+            rep.out = stderr;
+        }
+        rep.rb = rb; rep.cap = cap; rep.st = sessions;
+        gettimeofday(&rep.t0, NULL);
+        atomic_store(&rep.stop, 0);
+        if (ns_thread_create(&rep.thread, stats_thread_fn, &rep) != 0) {
+            fprintf(stderr, "snuffles: cannot start stats thread\n");
+            stats_on = 0;
+        }
+    }
+
     if (cfg.no_ui) {
         run_headless(rb, cap, &cfg);
     } else {
@@ -319,6 +441,13 @@ int main(int argc, char *argv[]) {
 
     /* stop capture */
     capture_stop(cap);
+
+    if (stats_on) {
+        atomic_store(&rep.stop, 1);
+        ns_thread_join(rep.thread);
+        stats_report_line(&rep, "summary");
+        if (rep.out != stderr) fclose(rep.out);
+    }
 
     /* auto-export if -o specified */
     int exit_rc = 0;
