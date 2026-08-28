@@ -158,7 +158,7 @@ Options:
   -q, --quiet         Silent mode (no output, use with --syslog)
   --syslog <host:port> Forward packets via UDP syslog
   --syslog-iface <ip|dev>  Source interface/IP for syslog
-  --immediate         Per-packet delivery instead of 10 ms batches (libpcap build)
+  --immediate         Per-packet delivery instead of 10 ms batches
   --list-ifaces       List interfaces and exit
   -v                  Version info
   -h, --help          Help

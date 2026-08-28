@@ -91,7 +91,7 @@ static void print_usage(const char *prog) {
            "  --stats[=FILE]    Report capture/drop counters every second and\n"
            "                    at exit (stderr, or FILE; the TUI needs FILE)\n"
            "  --immediate       Deliver packets one at a time instead of in\n"
-           "                    10 ms batches (libpcap build; costs CPU)\n"
+           "                    10 ms batches (costs CPU)\n"
            "  --list-ifaces     List available interfaces and exit\n"
            "  -v                Print version and exit\n"
            "  -h, --help        Show this help\n",
