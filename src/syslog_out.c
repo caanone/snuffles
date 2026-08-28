@@ -98,8 +98,11 @@ static void set_sndbuf(syslog_out_t *sl) {
      * anything below the request means the kernel clipped it. */
     if (got < want)
         fprintf(stderr, "syslog: send buffer limited to %d KB by the "
-                        "kernel (wanted %d KB; raise net.core.wmem_max or "
-                        "run with CAP_NET_ADMIN)\n",
+                        "kernel (wanted %d KB"
+#ifdef __linux__
+                        "; raise net.core.wmem_max or run with CAP_NET_ADMIN"
+#endif
+                        ")\n",
                 got / 1024, want / 1024);
 }
 
@@ -341,7 +344,9 @@ void syslog_out_flush(syslog_out_t *sl) {
         if (r > 0) {
             atomic_fetch_add_explicit(&sl->sent, (uint64_t)r, memory_order_relaxed);
             off += (unsigned)r;
-            continue;   /* short count: the message at 'off' hit an error, retry it once */
+            continue;   /* short count: the message at 'off' failed; retry
+                           from there (a persisting error ends the batch
+                           below, so this loop is bounded by n) */
         }
         if (r < 0 && errno == EINTR) continue;
         /* EAGAIN/ENOBUFS (send queue full) or a hard error: drop the rest
