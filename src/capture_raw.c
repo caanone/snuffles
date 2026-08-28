@@ -675,6 +675,17 @@ static void drain_socket(capture_ctx_t *ctx) {
         if (recv(ctx->sock, &b, 1, MSG_DONTWAIT | MSG_TRUNC) <= 0) break;
 }
 
+/* Accepting return value for the kernel filter. With the ring it is the
+ * snaplen: the kernel copies that many bytes into the block and tp_len
+ * still carries the wire length. On the recvmmsg path it must be the
+ * whole frame, because packet_rcv() trims the skb to the return value
+ * and the wire length would be lost (MSG_TRUNC reports the trimmed
+ * length); truncation happens in user space there (bufsz). libpcap makes
+ * the same distinction between its mmap and read paths. */
+static inline uint32_t filter_snaplen(const capture_ctx_t *ctx) {
+    return ctx->ring ? (uint32_t)ctx->cfg.snaplen : 0xFFFFFFFFu;
+}
+
 static int attach_cbpf(int sock, const cbpf_insn_t *insns, int n) {
     struct sock_fprog prog = {
         .len    = (unsigned short)n,
@@ -868,12 +879,12 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
 
     /* -f: compile the subset syntax to classic BPF and attach in-kernel
      * (replacing the reject-all program). The program's accepting return
-     * is the snaplen, so the kernel copies at most -s bytes of a frame
-     * into the ring — as libpcap's filters do; without it a 64 KiB
-     * loopback segment under -s 128 costs a 64 KiB copy in the sender's
-     * context and fills a block every three frames. No -f therefore
-     * attaches an accept-all program with the same return instead of
-     * running unfiltered. */
+     * is the snaplen when the ring is in use (filter_snaplen), so the
+     * kernel copies at most -s bytes of a frame into the ring — as
+     * libpcap's filters do; without it a 64 KiB loopback segment under
+     * -s 128 costs a 64 KiB copy in the sender's context and fills a
+     * block every three frames. No -f therefore attaches an accept-all
+     * program with the same return instead of running unfiltered. */
     if (cfg->bpf_filter[0]) {
         cbpf_insn_t insns[CBPF_MAX_INSNS];
         char cerr[128];
@@ -888,7 +899,7 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
             free(ctx);
             return NULL;
         }
-        cbpf_set_snaplen(insns, n, (uint32_t)cfg->snaplen);
+        cbpf_set_snaplen(insns, n, filter_snaplen(ctx));
         if (attach_cbpf(ctx->sock, insns, n) != 0) {
             perror("SO_ATTACH_FILTER");
             linux_release(ctx);
@@ -899,7 +910,7 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
         snprintf(ctx->bpf_expr, sizeof(ctx->bpf_expr), "%s", cfg->bpf_filter);
     } else {
         cbpf_insn_t acc[1];
-        int n = cbpf_accept_all(acc, (uint32_t)cfg->snaplen);
+        int n = cbpf_accept_all(acc, filter_snaplen(ctx));
         if (attach_cbpf(ctx->sock, acc, n) != 0) {
             perror("SO_ATTACH_FILTER");
             linux_release(ctx);
@@ -1041,7 +1052,7 @@ int capture_set_bpf(capture_ctx_t *ctx, const char *expr,
     int n;
     if (!expr || !expr[0]) {
         /* clearing the filter: accept everything, still cut to -s */
-        n = cbpf_accept_all(insns, (uint32_t)ctx->cfg.snaplen);
+        n = cbpf_accept_all(insns, filter_snaplen(ctx));
         if (attach_cbpf(ctx->sock, insns, n) != 0) {
             snprintf(errbuf, errlen, "SO_ATTACH_FILTER failed");
             return -1;
@@ -1055,7 +1066,7 @@ int capture_set_bpf(capture_ctx_t *ctx, const char *expr,
         snprintf(errbuf, errlen, "%s (subset: proto, host, port, 'and')", cerr);
         return -1;
     }
-    cbpf_set_snaplen(insns, n, (uint32_t)ctx->cfg.snaplen);
+    cbpf_set_snaplen(insns, n, filter_snaplen(ctx));
     if (attach_cbpf(ctx->sock, insns, n) != 0) {
         snprintf(errbuf, errlen, "SO_ATTACH_FILTER failed");
         return -1;

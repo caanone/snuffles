@@ -37,10 +37,13 @@ Stop after \fIcount\fR packets.
 .TP
 .BI \-s " snaplen"
 Snapshot length in bytes (64\-65535, default 65535). Raw\-socket build
-(Linux): applied in the kernel through the filter program's return value,
-so at most \fIsnaplen\fR bytes of each frame are copied into the capture
-buffer, with or without
-.BR \-f .
+(Linux): with the TPACKET_V3 ring it is applied in the kernel through the
+filter program's return value, so at most \fIsnaplen\fR bytes of each
+frame are copied into the ring, with or without
+.BR \-f ;
+the
+.BR recvmmsg (2)
+path truncates in user space so the wire length stays known.
 .TP
 .BI \-b " ring"
 Ring buffer size in packets (16\-1000000, default 10000).
