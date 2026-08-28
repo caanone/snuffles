@@ -67,7 +67,7 @@ OBJS_DEBUG = $(SRCS_PCAP:src/%.c=$(OBJDIR)/debug/%.o)
 
 # ── Unit tests (also runnable via CTest; this target keeps them
 #    available on the make-only path, e.g. macOS release builds) ──
-TESTS      = filter ringbuf session dissect cbpf config
+TESTS      = filter ringbuf session dissect cbpf config syslog_out
 TEST_BINS  = $(TESTS:%=$(OBJDIR)/tests/test_%)
 # make test SAN=1 -> run the suite under ASan/UBSan
 ifdef SAN

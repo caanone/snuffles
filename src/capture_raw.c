@@ -97,8 +97,21 @@ static void *capture_thread_fn(void *arg) {
 #else
         /* already set via SO_RCVTIMEO in capture_create */
 #endif
-        int len = (int)recv(ctx->sock, (char *)buf, sizeof(buf), 0);
+        int rflags = 0;
 #ifdef __linux__
+        /* While syslog records are queued, only take what the socket
+         * already holds; once it runs dry, flush the batch and return to
+         * the blocking (100 ms timeout) read. Bounds syslog latency at
+         * "end of burst" without a send syscall per packet. */
+        if (syslog_out_pending(ctx->syslog))
+            rflags = MSG_DONTWAIT;
+#endif
+        int len = (int)recv(ctx->sock, (char *)buf, sizeof(buf), rflags);
+#ifdef __linux__
+        if (len < 0 && rflags && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            syslog_out_flush(ctx->syslog);
+            continue;
+        }
         /* Kernel-side drop counter. PACKET_STATISTICS resets on every read,
          * so accumulate. Polled on idle timeouts and every 4096 packets to
          * keep the syscall off the per-packet path. */
@@ -189,8 +202,14 @@ static void *capture_thread_fn(void *arg) {
         }
 
         /* syslog output (skip own traffic to prevent feedback loop) */
-        if (ctx->syslog && !syslog_out_is_self(ctx->syslog, &rec->summary))
+        if (ctx->syslog && !syslog_out_is_self(ctx->syslog, &rec->summary)) {
             syslog_out_send(ctx->syslog, &rec->summary);
+#ifndef __linux__
+            /* no MSG_DONTWAIT peek on Winsock: flush per packet so a
+             * record never waits for the batch to fill */
+            syslog_out_flush(ctx->syslog);
+#endif
+        }
 
         /* streaming -w write (before commit: the slot is still ours) */
         if (ctx->stream) {
@@ -211,6 +230,7 @@ static void *capture_thread_fn(void *arg) {
         }
     }
 
+    syslog_out_flush(ctx->syslog);   /* records queued by the last burst */
     atomic_store(&ctx->running, 0);
     return NULL;
 }
@@ -440,19 +460,21 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
     return NULL;
 #endif
 
+    /* open syslog output if configured: before the privilege drop, so the
+       16 MB send buffer (SO_SNDBUFFORCE) and --syslog-iface <dev>
+       (SO_BINDTODEVICE) get the capabilities they need */
+    if (cfg->syslog_target[0]) {
+        ctx->syslog = syslog_out_create(cfg->syslog_target, cfg->syslog_iface);
+        if (!ctx->syslog)
+            fprintf(stderr, "Warning: syslog output disabled\n");
+    }
+
     /* drop root privileges now that the raw socket is open */
 #ifndef _WIN32
     if (ns_drop_privileges() != 0)
         fprintf(stderr, "Warning: failed to drop root privileges; "
                         "continuing as root\n");
 #endif
-
-    /* open syslog output if configured */
-    if (cfg->syslog_target[0]) {
-        ctx->syslog = syslog_out_create(cfg->syslog_target, cfg->syslog_iface);
-        if (!ctx->syslog)
-            fprintf(stderr, "Warning: syslog output disabled\n");
-    }
 
     /* streaming -w writer (after the privilege drop: file owned by user) */
     if (cfg->stream_file[0]) {
