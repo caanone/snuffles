@@ -63,6 +63,10 @@ static void load_commit(load_t *l, uint32_t n) {
     snprintf(s.src_ip, sizeof(s.src_ip), "10.0.0.1");
     snprintf(s.dst_ip, sizeof(s.dst_ip), "10.0.0.2");
     snprintf(s.protocol, sizeof(s.protocol), "UDP");
+    /* the session table keys on the binary addresses */
+    s.addr_family = 4;
+    s.src_addr[0] = 10; s.src_addr[3] = 1;
+    s.dst_addr[0] = 10; s.dst_addr[3] = 2;
     s.l3_proto = PROTO_IPV4;
     s.l4_proto = s.highest_proto = PROTO_UDP;
     s.src_port = (uint16_t)(1024 + (l->nsessions ? n % (uint32_t)l->nsessions : 0));
