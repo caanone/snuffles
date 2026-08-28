@@ -274,6 +274,7 @@ typedef struct {
     int         promisc;
     int         snaplen;
     int         ring_size;
+    int         buffer_mb;      /* -B: kernel capture buffer, MiB (raw: SO_RCVBUF) */
     int         count;
     int         no_ui;
     int         quiet;          /* -q / --quiet: no terminal output at all */
@@ -290,6 +291,7 @@ static inline void capture_cfg_defaults(capture_cfg_t *cfg) {
     cfg->promisc   = 1;
     cfg->snaplen   = 65535;
     cfg->ring_size = 10000;
+    cfg->buffer_mb = 64;
     cfg->count     = 0;
 }
 

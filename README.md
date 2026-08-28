@@ -149,6 +149,7 @@ Options:
   -c <count>          Stop after N packets
   -s <snaplen>        Snapshot length (default: 65535)
   -b <ring_size>      Ring buffer size (default: 10000)
+  -B <MB>             Kernel capture buffer in MiB (default: 64)
   -o <file>           Export on exit (.pcap or .json)
   -w <file>           Stream packets to a pcap file while capturing
                       ('-w -' writes to stdout; combine with -q)
@@ -215,6 +216,7 @@ file is silently ignored. CLI flags always override config values.
 interface    = eth0
 snaplen      = 1500            # 64-65535
 ring_size    = 50000           # 16-1000000
+buffer_mb    = 64              # 1-1024, kernel capture buffer
 promisc      = 1               # 0 or 1
 syslog       = 10.0.0.100:514
 syslog_iface = 192.168.1.5
@@ -577,6 +579,7 @@ Packets to/from syslog destination excluded automatically.
 |---------|-------------------|---------------------|
 | Dependencies | libpcap / Npcap | None |
 | BPF kernel filter | Yes | Linux: subset (proto/host/port + and) |
+| Capture buffer `-B` | Accepted, not applied yet | Linux: SO_RCVBUF + recvmmsg batches, kernel timestamps |
 | Offline pcap | Yes | No |
 | Ethernet/ARP | Yes | Linux only |
 | Syslog | Yes | Yes |

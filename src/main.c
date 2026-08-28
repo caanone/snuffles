@@ -76,6 +76,8 @@ static void print_usage(const char *prog) {
            "  -c <count>        Stop after N packets\n"
            "  -s <snaplen>      Snapshot length (default: 65535)\n"
            "  -b <ring_size>    Ring buffer size (default: 10000)\n"
+           "  -B <MB>           Kernel capture buffer in MiB (default: 64;\n"
+           "                    raw-socket build: SO_RCVBUF, batched recvmmsg)\n"
            "  -o <file>         Auto-export on exit (.pcap or .json)\n"
            "  -w <file>         Stream packets to a pcap file while capturing\n"
            "                    ('-w -' writes to stdout; combine with -q)\n"
@@ -276,6 +278,7 @@ int main(int argc, char *argv[]) {
         {"count",       required_argument, 0, 'c'},
         {"snaplen",     required_argument, 0, 's'},
         {"ring-size",   required_argument, 0, 'b'},
+        {"buffer-mb",   required_argument, 0, 'B'},
         {"output",      required_argument, 0, 'o'},
         {"write",       required_argument, 0, 'w'},
         {"no-ui",       no_argument,       0, 'N'},
@@ -294,7 +297,7 @@ int main(int argc, char *argv[]) {
     int ring_set = 0, snaplen_set = 0;
     int stats_on = 0;
     char stats_path[512] = "";
-    while ((opt = getopt_long(argc, argv, "i:r:f:c:s:b:o:w:qvh", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "i:r:f:c:s:b:B:o:w:qvh", long_opts, NULL)) != -1) {
         switch (opt) {
             case 'i': snprintf(cfg.iface,      sizeof(cfg.iface),      "%s", optarg); break;
             case 'r': snprintf(cfg.pcap_file,   sizeof(cfg.pcap_file),  "%s", optarg); break;
@@ -306,6 +309,7 @@ int main(int argc, char *argv[]) {
                       snaplen_set = 1; break;
             case 'b': cfg.ring_size = (int)parse_num(optarg, "ring size", 16, 1000000);
                       ring_set    = 1; break;
+            case 'B': cfg.buffer_mb = (int)parse_num(optarg, "buffer MiB", 1, 1024); break;
             case 'N': cfg.no_ui       = 1; break;
             case 'q': cfg.quiet      = 1; cfg.no_ui = 1; break;
             case 'J': cfg.jsonl      = 1; cfg.no_ui = 1; break;
