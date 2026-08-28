@@ -28,6 +28,7 @@ $CC $CFLAGS -DNO_PCAP \
     -o "$OUT/snuffles.exe" -static -lws2_32 -liphlpapi -lpthread
 
 echo "== cross-compiling unit tests"
+# test_ui is POSIX-only (drives ui_run() through a pipe): not built here.
 for t in filter ringbuf session dissect cbpf config syslog_out; do
     $CC $CFLAGS "tests/test_$t.c" "src/$t.c" -o "$OUT/test_$t.exe" \
         -static -lws2_32 -lpthread
