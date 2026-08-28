@@ -146,17 +146,23 @@ else
 fi
 
 # ── 3. confirmation run ──────────────────────────────────────────────────────
+NDR_BELOW=0          # 1 = no positive rate sustained the loss criterion
 if [ "$NDR_IS_CEIL" = 1 ]; then
     run_trial 0 "$CONFIRM" "confirm"
-else
-    if [ "$NDR_RATEP" -le 0 ]; then
-        log "WARNING: no positive rate sustained the loss criterion; confirming at the lowest tried rate"
-    fi
+    CONFIRM_KDROP=$T_KDROP; CONFIRM_OFFER=$T_OFFER; NDR_PPS=$CONFIRM_OFFER
+elif [ "$NDR_RATEP" -gt 0 ]; then
     run_trial "$NDR_RATEP" "$CONFIRM" "confirm"
+    CONFIRM_KDROP=$T_KDROP; CONFIRM_OFFER=$T_OFFER; NDR_PPS=$CONFIRM_OFFER
+else
+    # No positive rate sustained loss<=$LOSS% — even the smallest probed rate
+    # dropped. The NDR is below the smallest rate we tried, i.e. ~0. Do NOT run a
+    # ratep=0 "confirm": ratep=0 means UNLIMITED, which would offer the ceiling
+    # and falsely report it as the NDR (at a kdrop that violates the criterion).
+    # Report NDR=0 and reuse the last (smallest, still-failing) trial's kdrop.
+    NDR_BELOW=1
+    log "WARNING: no positive rate sustained loss<=$LOSS%; NDR is below the smallest probed rate -> reporting NDR=0 pps (no confirm run)"
+    CONFIRM_KDROP=$T_KDROP; CONFIRM_OFFER=0; NDR_PPS=0
 fi
-CONFIRM_KDROP=$T_KDROP
-CONFIRM_OFFER=$T_OFFER
-NDR_PPS=$CONFIRM_OFFER
 
 # ── write ndr.json ───────────────────────────────────────────────────────────
 jq -n \
@@ -164,10 +170,12 @@ jq -n \
     --arg ceil "$CEIL_OFFER" --argjson ndr_ratep "$NDR_RATEP" \
     --arg ndr_pps "$NDR_PPS" --arg ck "$CONFIRM_KDROP" --arg co "$CONFIRM_OFFER" \
     --argjson is_ceil "$([ "$NDR_IS_CEIL" = 1 ] && echo true || echo false)" \
+    --argjson below "$([ "$NDR_BELOW" = 1 ] && echo true || echo false)" \
     --argjson iters "$ITER_JSON" \
     '{scenario:$scen, loss_criterion:$loss, threads:$threads,
       ceiling_offered_pps:($ceil|tonumber),
       ndr_is_ceiling:$is_ceil,
+      ndr_below_min_probed:$below,
       ndr_ratep_per_thread:$ndr_ratep,
       ndr_pps:($ndr_pps|tonumber),
       confirm_offered_pps:($co|tonumber),
@@ -185,10 +193,16 @@ SM="$RESULTS/$RUN_ID/summary.md"
     echo "- ceiling offered: **$(printf '%.0f' "$CEIL_OFFER") pps** (unlimited run)"
     if [ "$NDR_IS_CEIL" = 1 ]; then
         echo "- **NDR = ceiling** (sustained at the max offered rate)"
+    elif [ "$NDR_BELOW" = 1 ]; then
+        echo "- **NDR below the smallest probed rate** — no positive rate sustained loss<=$LOSS% (smallest-trial kdrop_pct_win $CONFIRM_KDROP%)"
     else
         echo "- NDR per-thread ratep: **$NDR_RATEP**"
     fi
-    echo "- **NDR (confirmed): $(printf '%.0f' "$NDR_PPS") pps** at confirm kdrop_pct_win **$CONFIRM_KDROP%**"
+    if [ "$NDR_BELOW" = 1 ]; then
+        echo "- **NDR (result): 0 pps** (no confirm run — see warning above)"
+    else
+        echo "- **NDR (confirmed): $(printf '%.0f' "$NDR_PPS") pps** at confirm kdrop_pct_win **$CONFIRM_KDROP%**"
+    fi
     echo "- iterations: $(jq '.iterations | length' "$RESULTS/$RUN_ID/ndr.json") (see ndr.json)"
 } >> "$SM" 2>/dev/null || log "warning: could not append to $SM"
 
