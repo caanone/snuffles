@@ -4,8 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>
-#include <sys/select.h>
+#ifndef _WIN32
+  #include <unistd.h>
+  #include <sys/select.h>
+#endif
 
 /* ── single-thread semantics ─────────────────────────────────── */
 
@@ -117,15 +119,48 @@ static void test_stress(void) {
 #define WAKE_N     100000ULL
 #define WAKE_PAUSE 10          /* producer naps this many times */
 
+static void wake_nap(void) {
+#ifdef _WIN32
+    Sleep(2);
+#else
+    struct timespec nap = { 0, 2000000 };   /* 2 ms */
+    nanosleep(&nap, NULL);
+#endif
+}
+
+/* Block on the wakeup channel (pipe on POSIX, auto-reset event on
+ * Windows) for at most ms. Returns 1 if woken, 0 on timeout. */
+static int wake_block(ringbuf_t *rb, int ms) {
+#ifdef _WIN32
+    return WaitForSingleObject(rb->notify_event, (DWORD)ms) == WAIT_OBJECT_0;
+#else
+    int fd = ringbuf_get_notify_fd(rb);
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(fd, &fds);
+    struct timeval tv = { .tv_sec = ms / 1000, .tv_usec = (ms % 1000) * 1000 };
+    return select(fd + 1, &fds, NULL, NULL, &tv) > 0;
+#endif
+}
+
+/* Consume one pending wakeup without blocking: 1 if there was one (one
+ * pipe byte / the event was signalled), 0 if the channel was quiet. */
+static int wake_take(ringbuf_t *rb) {
+#ifdef _WIN32
+    return WaitForSingleObject(rb->notify_event, 0) == WAIT_OBJECT_0;
+#else
+    char c;
+    return read(ringbuf_get_notify_fd(rb), &c, 1) == 1;
+#endif
+}
+
 static void *wake_producer(void *arg) {
     (void)arg;
     for (uint64_t s = 0; s < WAKE_N; s++) {
         /* Nap now and then so the consumer drains the ring and actually
          * blocks: those are the wakeups that must not be lost. */
-        if (s && s % (WAKE_N / WAKE_PAUSE) == 0) {
-            struct timespec nap = { 0, 2000000 };   /* 2 ms */
-            nanosleep(&nap, NULL);
-        }
+        if (s && s % (WAKE_N / WAKE_PAUSE) == 0)
+            wake_nap();
         pkt_record_t *r = ringbuf_producer_next(g_rb);
         r->summary.length = (uint32_t)s;
         r->raw_len = 0;
@@ -141,8 +176,9 @@ static void *wake_producer(void *arg) {
 static void test_wakeup(void) {
     g_rb = ringbuf_create(1024, 16);
     CHECK(g_rb != NULL);
-    int fd = ringbuf_get_notify_fd(g_rb);
-    CHECK(fd >= 0);
+#ifndef _WIN32
+    CHECK(ringbuf_get_notify_fd(g_rb) >= 0);
+#endif
 
     pthread_t t;
     pthread_create(&t, NULL, wake_producer, NULL);
@@ -155,12 +191,8 @@ static void test_wakeup(void) {
             ringbuf_consumer_will_wait(g_rb);
             waits++;
             if (ringbuf_total(g_rb) <= last) {
-                fd_set fds;
-                FD_ZERO(&fds);
-                FD_SET(fd, &fds);
-                struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
                 blocks++;
-                if (select(fd + 1, &fds, NULL, NULL, &tv) == 0) timeouts++;
+                if (!wake_block(g_rb, 2000)) timeouts++;
             }
         }
         ringbuf_drain_notify(g_rb);
@@ -202,8 +234,6 @@ static void test_wakeup(void) {
 static void test_wakeup_quiet(void) {
     ringbuf_t *rb = ringbuf_create(64, 16);
     CHECK(rb != NULL);
-    int fd = ringbuf_get_notify_fd(rb);
-    char buf[16];
 
     for (uint64_t s = 0; s < WAKE_N; s++) {
         pkt_record_t *r = ringbuf_producer_next(rb);
@@ -212,7 +242,7 @@ static void test_wakeup_quiet(void) {
     }
     CHECK(ringbuf_total(rb) == WAKE_N);
     CHECK(ringbuf_notify_sent(rb) == 0);
-    CHECK(read(fd, buf, sizeof(buf)) < 0);        /* pipe empty (EAGAIN) */
+    CHECK(!wake_take(rb));                        /* channel quiet */
 
     ringbuf_consumer_will_wait(rb);
     for (uint64_t s = 0; s < WAKE_N; s++) {
@@ -221,8 +251,8 @@ static void test_wakeup_quiet(void) {
         ringbuf_producer_commit(rb);
     }
     CHECK(ringbuf_notify_sent(rb) == 1);
-    CHECK(read(fd, buf, sizeof(buf)) == 1);       /* exactly one byte */
-    CHECK(read(fd, buf, sizeof(buf)) < 0);
+    CHECK(wake_take(rb));                         /* exactly one wakeup */
+    CHECK(!wake_take(rb));
 
     ringbuf_drain_notify(rb);                     /* withdraws the flag */
     for (int i = 0; i < 1000; i++) {
