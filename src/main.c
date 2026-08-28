@@ -151,11 +151,11 @@ static void run_headless(ringbuf_t *rb, capture_ctx_t *cap,
         }
 
         while (last < total) {
-            uint64_t oldest_seq = (total > count) ? total - count : 0;
-            uint32_t idx = (uint32_t)(last - oldest_seq);
-
+            /* Read by absolute sequence: the ring's floor keeps moving while
+             * we drain, so an index computed once per batch would silently
+             * shift to a different (newer) record after a lap. */
             pkt_record_t rec;
-            if (ringbuf_read(rb, idx, &rec, NULL)) {
+            if (ringbuf_read_seq(rb, last, &rec, NULL)) {
                 const pkt_summary_t *s = &rec.summary;
                 if (cfg->jsonl) {
                     json_line_write(stdout, s);
@@ -198,6 +198,19 @@ typedef struct {
     ns_thread_t         thread;
 } stats_reporter_t;
 
+static void wall_now(struct timeval *tv) {
+#ifdef _WIN32
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    uint64_t t = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    t -= 116444736000000000ULL;            /* 1601 -> 1970 epoch, 100 ns units */
+    tv->tv_sec  = (long)(t / 10000000);
+    tv->tv_usec = (long)((t / 10) % 1000000);
+#else
+    gettimeofday(tv, NULL);
+#endif
+}
+
 static double tv_secs(const struct timeval *a, const struct timeval *b) {
     return (double)(a->tv_sec - b->tv_sec) + (double)(a->tv_usec - b->tv_usec) / 1e6;
 }
@@ -219,7 +232,7 @@ static void stats_report_line(stats_reporter_t *r, const char *tag) {
     capture_stats_raw_t cs;
     capture_get_stats(r->cap, &cs);
     struct timeval now;
-    gettimeofday(&now, NULL);
+    wall_now(&now);
     fprintf(r->out,
             "%s t=%.3f captured=%llu kdrop=%llu ifdrop=%llu ring=%u "
             "emitted=%llu missed=%llu syslog_sent=%llu syslog_fail=%llu "
@@ -415,7 +428,7 @@ int main(int argc, char *argv[]) {
             rep.out = stderr;
         }
         rep.rb = rb; rep.cap = cap; rep.st = sessions;
-        gettimeofday(&rep.t0, NULL);
+        wall_now(&rep.t0);
         atomic_store(&rep.stop, 0);
         if (ns_thread_create(&rep.thread, stats_thread_fn, &rep) != 0) {
             fprintf(stderr, "snuffles: cannot start stats thread\n");
