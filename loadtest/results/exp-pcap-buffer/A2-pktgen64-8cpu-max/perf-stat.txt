@@ -1,0 +1,22 @@
+# started on Fri Aug 28 14:59:51 2026
+
+
+ Performance counter stats for process id '53457':
+
+           9993.00 msec task-clock                       #    0.999 CPUs utilized             
+               420      context-switches                 #   42.029 /sec                      
+                13      cpu-migrations                   #    1.301 /sec                      
+                 0      page-faults                      #    0.000 /sec                      
+       39708635177      cycles                           #    3.974 GHz                       
+       73424343749      instructions                     #    1.85  insn per cycle            
+          49893949      cache-misses                                                          
+         289551863      branch-misses                                                         
+           6342813      syscalls:sys_enter_write         #  634.726 K/sec                     
+                 0      syscalls:sys_enter_sendto        #    0.000 /sec                      
+                40      syscalls:sys_enter_getsockopt    #    4.003 /sec                      
+                 0      syscalls:sys_enter_recvfrom      #    0.000 /sec                      
+                 0      syscalls:sys_enter_select        #    0.000 /sec                      
+                 0      syscalls:sys_enter_poll          #    0.000 /sec                      
+
+      10.001391599 seconds time elapsed
+

@@ -1,0 +1,120 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 4K of event 'cycles:P'
+# Event count (approx.): 13604376874
+#
+# Overhead  Command      Shared Object      Symbol                                 
+# ........  ...........  .................  .......................................
+#
+    21.13%  snf-capture  snuffles           [.] session_table_update
+            |          
+            |--5.60%--session_table_update
+            |          capture_callback
+            |          0x7f3ab3244527
+            |          
+            |--2.01%--0x7f3ab30bc10b
+            |          capture_callback
+            |          0x7f3ab3244527
+            |          
+             --0.99%--dissect_packet
+                       capture_callback
+                       0x7f3ab3244527
+
+     5.49%  snf-capture  snuffles           [.] dissect_packet
+            |          
+             --0.97%--0x7f3ab30bc10b
+                       capture_callback
+                       0x7f3ab3244527
+
+     1.98%  snf-capture  snuffles           [.] key_hash
+            |          
+             --0.94%--session_table_update
+                       capture_callback
+                       0x7f3ab3244527
+
+     1.80%  snf-capture  libc.so.6          [.] 0x0000000000165131
+            |          
+            |--1.04%--session_table_update
+            |          capture_callback
+            |          0x7f3ab3244527
+            |          
+             --0.52%--0x7f3ab30bc10b
+                       capture_callback
+                       0x7f3ab3244527
+
+     1.24%  snf-capture  libc.so.6          [.] 0x0000000000165107
+            |          
+             --0.71%--session_table_update
+                       capture_callback
+                       0x7f3ab3244527
+
+     1.03%  snf-capture  libc.so.6          [.] 0x0000000000165430
+     0.99%  snf-capture  libc.so.6          [.] 0x0000000000062cff
+     0.95%  snf-capture  libc.so.6          [.] 0x000000000016510f
+     0.90%  snf-capture  snuffles           [.] strcmp@plt
+     0.89%  snf-capture  libc.so.6          [.] 0x0000000000165120
+            |          
+             --0.52%--session_table_update
+                       capture_callback
+                       0x7f3ab3244527
+
+     0.87%  snf-capture  libc.so.6          [.] snprintf
+     0.82%  snf-capture  libc.so.6          [.] 0x000000000016512e
+            |          
+             --0.55%--session_table_update
+                       capture_callback
+                       0x7f3ab3244527
+
+     0.79%  snf-capture  snuffles           [.] dissect_tcp.isra.0
+     0.76%  snf-capture  libc.so.6          [.] 0x00000000001650fc
+     0.73%  snf-capture  libc.so.6          [.] 0x0000000000165113
+     0.70%  snf-capture  libc.so.6          [.] 0x000000000016510b
+     0.70%  snf-capture  libc.so.6          [.] 0x000000000016543b
+     0.63%  snf-capture  libc.so.6          [.] 0x0000000000165128
+     0.62%  snf-capture  libc.so.6          [.] 0x0000000000165117
+     0.61%  snf-capture  libc.so.6          [.] 0x0000000000162b43
+     0.60%  snf-capture  libc.so.6          [.] 0x00000000001650f7
+     0.60%  snf-capture  libc.so.6          [.] memcpy@plt
+     0.57%  snf-capture  libc.so.6          [.] 0x000000000005a355
+     0.57%  snf-capture  libc.so.6          [.] 0x000000000016511b
+     0.56%  snf-capture  libc.so.6          [.] 0x0000000000062971
+     0.56%  snf-capture  libc.so.6          [.] 0x000000000005a2f3
+     0.55%  snf-capture  libc.so.6          [.] 0x000000000005a305
+     0.54%  snf-capture  libc.so.6          [.] 0x0000000000087daa
+     0.52%  snf-capture  libc.so.6          [.] 0x000000000016512c
+     0.52%  snf-capture  libc.so.6          [.] 0x00000000001650f0
+     0.50%  snf-capture  snuffles           [.] capture_callback
+     0.49%  snf-capture  snuffles           [.] dissect_ipv4.isra.0
+     0.49%  snf-capture  libc.so.6          [.] 0x000000000005a35a
+     0.49%  snf-capture  libc.so.6          [.] 0x0000000000062f24
+     0.46%  snf-capture  libc.so.6          [.] 0x000000000005a2d7
+     0.45%  snf-capture  libc.so.6          [.] 0x0000000000164f41
+     0.45%  snf-capture  libc.so.6          [.] 0x000000000005a2bb
+     0.45%  snf-capture  libc.so.6          [.] 0x0000000000062605
+     0.44%  snf-capture  libc.so.6          [.] 0x000000000005a2bd
+     0.43%  snf-capture  libc.so.6          [.] 0x0000000000165124
+     0.43%  snf-capture  libc.so.6          [.] strchrnul@plt
+     0.42%  snf-capture  libc.so.6          [.] 0x0000000000162b70
+     0.42%  snf-capture  libc.so.6          [.] 0x00000000000626f9
+     0.41%  snf-capture  libc.so.6          [.] 0x0000000000162b75
+     0.41%  snf-capture  libc.so.6          [.] 0x000000000005a2b3
+     0.40%  snf-capture  libc.so.6          [.] 0x0000000000062985
+     0.40%  snf-capture  libc.so.6          [.] 0x0000000000162b94
+     0.39%  snf-capture  libc.so.6          [.] 0x000000000016543d
+     0.38%  snf-capture  libc.so.6          [.] 0x000000000005a2c4
+     0.38%  snf-capture  libc.so.6          [.] 0x0000000000062600
+     0.36%  snf-capture  libc.so.6          [.] 0x0000000000062602
+     0.35%  snf-capture  libc.so.6          [.] 0x000000000005a350
+     0.34%  snf-capture  libc.so.6          [.] 0x00000000001650f5
+     0.33%  snf-capture  libc.so.6          [.] 0x000000000005a2f8
+     0.33%  snf-capture  libc.so.6          [.] 0x0000000000162b7a
+     0.33%  snf-capture  libc.so.6          [.] 0x000000000005a30f
+     0.33%  snf-capture  libc.so.6          [.] cfree
+     0.32%  snf-capture  libc.so.6          [.] 0x000000000005a2c8
+     0.32%  snf-capture  libc.so.6          [.] 0x0000000000162b86
+     0.32%  snf-capture  libc.so.6          [.] 0x000000000005a30a
+     0.32%  snf-capture  libc.so.6          [.] 0x0000000000063689
+     0.31%  snf-capture  libc.so.6          [.] 0x0000000000058a0a

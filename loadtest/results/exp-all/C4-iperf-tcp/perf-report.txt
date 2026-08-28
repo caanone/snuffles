@@ -1,0 +1,120 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 7K of event 'cycles:P'
+# Event count (approx.): 29876275052
+#
+# Overhead  Command      Shared Object      Symbol                                    
+# ........  ...........  .................  ..........................................
+#
+    15.07%  snf-capture  libc.so.6          [.] 0x0000000000162cf3
+            |          
+            |--3.29%--0x7ff8ca197cf3
+            |          0x7ff8ca322527
+            |          
+            |--3.06%--0x7ff8ca197ce9
+            |          0x7ff8ca322527
+            |          
+            |--2.49%--0x7ff8ca197cee
+            |          0x7ff8ca322527
+            |          
+            |--2.48%--0x7ff8ca197ce4
+            |          0x7ff8ca322527
+            |          
+            |--0.85%--0x7ff8ca197d05
+            |          0x7ff8ca322527
+            |          
+            |--0.84%--0x7ff8ca197d0a
+            |          0x7ff8ca322527
+            |          
+            |--0.72%--0x7ff8ca197cfb
+            |          0x7ff8ca322527
+            |          
+             --0.67%--0x7ff8ca197d00
+                       0x7ff8ca322527
+
+    10.94%  snf-capture  libc.so.6          [.] 0x0000000000162cf7
+            |          
+            |--2.43%--0x7ff8ca197cf3
+            |          0x7ff8ca322527
+            |          
+            |--2.24%--0x7ff8ca197ce9
+            |          0x7ff8ca322527
+            |          
+            |--1.78%--0x7ff8ca197cee
+            |          0x7ff8ca322527
+            |          
+            |--1.56%--0x7ff8ca197ce4
+            |          0x7ff8ca322527
+            |          
+            |--0.65%--0x7ff8ca197d05
+            |          0x7ff8ca322527
+            |          
+            |--0.61%--0x7ff8ca197d0a
+            |          0x7ff8ca322527
+            |          
+            |--0.55%--0x7ff8ca197d00
+            |          0x7ff8ca322527
+            |          
+             --0.50%--0x7ff8ca197cfb
+                       0x7ff8ca322527
+
+     9.90%  snf-capture  libc.so.6          [.] 0x0000000000162ce4
+            |          
+            |--2.33%--0x7ff8ca197cf3
+            |          0x7ff8ca322527
+            |          
+            |--2.05%--0x7ff8ca197ce9
+            |          0x7ff8ca322527
+            |          
+            |--1.85%--0x7ff8ca197ce4
+            |          0x7ff8ca322527
+            |          
+             --1.64%--0x7ff8ca197cee
+                       0x7ff8ca322527
+
+     9.71%  snf-capture  libc.so.6          [.] 0x0000000000162ce9
+            |          
+            |--2.21%--0x7ff8ca197ce9
+            |          0x7ff8ca322527
+            |          
+            |--2.06%--0x7ff8ca197ce4
+            |          0x7ff8ca322527
+            |          
+            |--1.98%--0x7ff8ca197cf3
+            |          0x7ff8ca322527
+            |          
+            |--1.51%--0x7ff8ca197cee
+            |          0x7ff8ca322527
+            |          
+             --0.51%--0x7ff8ca197d05
+                       0x7ff8ca322527
+
+     7.66%  snf-capture  libc.so.6          [.] 0x0000000000162cee
+            |          
+            |--1.75%--0x7ff8ca197cf3
+            |          0x7ff8ca322527
+            |          
+            |--1.39%--0x7ff8ca197ce9
+            |          0x7ff8ca322527
+            |          
+            |--1.21%--0x7ff8ca197ce4
+            |          0x7ff8ca322527
+            |          
+             --1.21%--0x7ff8ca197cee
+                       0x7ff8ca322527
+
+     7.22%  snf-capture  libc.so.6          [.] 0x0000000000162ce0
+            |          
+            |--1.58%--0x7ff8ca197cee
+            |          0x7ff8ca322527
+            |          
+            |--1.57%--0x7ff8ca197ce9
+            |          0x7ff8ca322527
+            |          
+            |--1.47%--0x7ff8ca197cf3
+            |          0x7ff8ca322527
+            |          
+             --0.96%--0x7ff8ca197ce4
