@@ -12,7 +12,9 @@ loadtest/rig.sh up                          # tune host, containers, topology, s
 loadtest/rig.sh smoke                        # 10 s end-to-end sanity run (scenario S0-smoke)
 loadtest/matrix.sh nightly loadtest/scenarios/A*.json loadtest/scenarios/B*.json
 loadtest/matrix.sh apps    loadtest/scenarios/C*.json      # one run-id, continues past failures
+loadtest/matrix.sh --repeat 5 spread loadtest/scenarios/A2-pktgen64-8cpu-max.json  # N runs + summary-median.md
 loadtest/run-scenario.sh loadtest/scenarios/A2-pktgen64-8cpu-max.json myrun   # a single scenario
+loadtest/ndr.sh loadtest/scenarios/A2-pktgen64-8cpu-max.json --loss 0 --run-id ndr1  # no-drop-rate search
 python3 loadtest/analyze.py nightly          # (re)build summary.csv/summary.md for a run
 cat loadtest/results/nightly/summary.md      # the sorted results table
 loadtest/rig.sh down                         # remove everything, restore host sysctls
@@ -39,7 +41,11 @@ Unspecified fields fall back to defaults; the generated files are fully explicit
 except `snaplen`/`ring`, which are omitted to mean "snuffles' own default".
 Groups: **A** pktgen rate/size/flow/knob matrix, **B** consumer modes
 (headless/jsonl/syslog/stream/tui/…), **C** application + attack traffic
-(http/iperf/replay/synflood/udpflood/frag), **D** a 5-minute soak.
+(http/iperf/replay/synflood/udpflood/frag), **D** a 5-minute soak, **I** an IMIX
+size mix (`I1-imix`: 64/570/1518 B at the 7:4:1 ratio via per-thread pktgen
+sizes), **L** capture-to-output latency (`L1-jsonl-latency-500k`: jsonl-latency
+mode). Newer C scenarios: `C7r2-udpflood-churn-1m` (AF_PACKET flow churn),
+`C9-replay-unique-ip` (tcpreplay `--unique-ip`).
 
 ## Per-run procedure (run-scenario.sh)
 
@@ -54,6 +60,24 @@ human summary is printed at the end.
 
 Addressing: `dst=sink` → `02:53:4e:46:00:05` / `10.77.0.5`, `dst=sut` →
 `02:53:4e:46:00:01` / `10.77.0.1`, UDP dport 9.
+
+## NDR search and repeats
+
+`ndr.sh <scenario.json> [--loss 0|0.1] [--precision 2] [--trial 20] [--confirm
+60] [--run-id X]` finds the highest offered rate a **pktgen** scenario sustains
+at ≤ the loss criterion (steady-window `kdrop_pct_win`). It runs one unlimited
+trial for the ceiling, then binary-searches the per-thread `ratep` (each step a
+`--trial`-second run) until the bracket is within `--precision` percent, then a
+`--confirm`-second run at the found rate. Each trial is a full run-scenario.sh
+run under `<run-id>` (its own `<name>-ndr-<label>/` dir, preserved), so every
+trial's telemetry/perf/accounting is on disk. Output: `results/<run-id>/ndr.json`
+`{scenario, loss_criterion, ndr_pps, confirm_kdrop_pct, iterations:[...]}` plus an
+appended NDR section in `summary.md`.
+
+`matrix.sh --repeat N …` runs each scenario N times (`<name>-r1..-rN`, distinct
+dirs); `analyze.py` then also writes `summary-median.md` with per-base
+median/min/max of `captured_pps` and `kdrop_pct_win` — the right lens for the
+run-to-run spread this shared host produces.
 
 ## Measurement validity (what the numbers mean)
 
@@ -106,7 +130,14 @@ Addressing: `dst=sink` → `02:53:4e:46:00:05` / `10.77.0.5`, `dst=sut` →
 `analyze.py <run-id>` writes per-scenario `summary.json` (every SPEC step-8
 field) and per-run `summary.csv` + `summary.md` (sorted by name; pps in k/M with
 3 sig. figs, percentages 2 dp). Tolerant of missing inputs (writes `null`) and
-safe to re-run. Thread CPU% = `(Δ(utime+stime)/CLK_TCK)/Δwall·100` over the
+safe to re-run. Extra columns: **cyc/pkt** (capture CPU% x SUT MHz x 1e4 /
+captured_pps — the capture thread's cycles per packet, from telemetry's
+per-second `cpu_mhz`), **sinks** (missed + syslog_fail + stream write failures =
+the app-side output-sink losses that close the accounting chain), **sys/pkt**
+(now also counts openat+read), and, for jsonl-latency runs,
+`latency_p50/p95/p99_ms`. When a run holds repeated scenarios (`matrix.sh
+--repeat N` → `<name>-r1..-rN`) it also writes `summary-median.md`: one row per
+base scenario with the median/min/max of captured_pps and kdrop_pct_win. Thread CPU% = `(Δ(utime+stime)/CLK_TCK)/Δwall·100` over the
 traffic window; `captured_pps`/`kdrop` are measured over the same window (from
 `snuffles.stats`, whose relative `t` is mapped to epoch via
 `manifest.snuffles_start`); `loss_pct_total = 1 − captured/sent`.
@@ -118,7 +149,7 @@ Inside each `snf-gen-N`, in `$GEN_BIN_DIR` (default `/opt/gen`):
 | kind | invocation |
 |------|------------|
 | pktgen | `pktgen.sh start\|stop\|result -d eth0 --cpus <list> --size <wire> --dst-mac M --dst-ip I --pps P --flows N --src-ip 10.77.0.1N` (all gens started/stopped concurrently) |
-| udpflood | `udpflood -d <dstip> -p 9 -s <payload> -t <threads> -T <secs> [-r]` (payload = pkt_size − 42) |
+| udpflood | `udpflood -d <dstip> -p 9 -s <payload> -t <threads> -T <secs> -i eth0 --dst-mac <M> [-r]` (payload = pkt_size − 42; `-r` = AF_PACKET flow churn with random src IP+port) |
 | frag | `udpflood -d <dstip> -p 9 -s 4000 -t <threads> -T <secs>` |
 | synflood | `synflood -t <threads> -T <secs>` |
 | http | `http.sh --threads N --conns C --duration D --url U --keepalive true\|false` → JSON |

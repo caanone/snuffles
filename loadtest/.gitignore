@@ -4,6 +4,8 @@ results/*
 results/*/*
 !results/*/summary.csv
 !results/*/summary.md
+!results/*/summary-median.md
+!results/*/ndr.json
 !results/*/*/
 results/*/*/*
 !results/*/*/summary.json

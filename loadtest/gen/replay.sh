@@ -8,6 +8,9 @@
 # then parse the final "Actual:" / "Rated:" stats.
 #   tcpreplay -i IFACE -K --loop=0 --topspeed --stats=1 <pcap>
 # --mbps N (optional) replaces --topspeed with a rate cap (tcpreplay --mbps).
+# --unique-ip (optional) adds tcpreplay --unique-ip: each loop iteration rewrites
+#   the source/destination IPs so the corpus churns unique flows (real 5-tuple
+#   turnover through a fixed corpus, for the session-table stress scenario).
 # Emits one JSON object as its last stdout line:
 #   {"tool":"replay","sent":N,"bytes":N,"seconds":F,"pps":F,"mbps":F,
 #    "loops":N,"pcap":"..."}
@@ -17,6 +20,7 @@ IFACE=eth0
 DURATION=10
 PCAP="${PCAP:-/opt/gen/corpus.pcap}"
 MBPS=""
+UNIQUE_IP=0
 TR_BIN="${TCPREPLAY_BIN:-tcpreplay}"
 
 die() { echo "replay.sh: $*" >&2; exit 1; }
@@ -27,6 +31,7 @@ while [ $# -gt 0 ]; do
         --duration) DURATION=$2; shift 2;;
         --pcap) PCAP=$2; shift 2;;
         --mbps) MBPS=$2; shift 2;;
+        --unique-ip) UNIQUE_IP=1; shift;;
         *) die "unknown flag: $1";;
     esac
 done
@@ -37,11 +42,14 @@ command -v "$TR_BIN" >/dev/null 2>&1 || die "tcpreplay not found ($TR_BIN)"
 rate=(--topspeed)
 [ -n "$MBPS" ] && rate=(--mbps="$MBPS")
 
+extra=()
+[ "$UNIQUE_IP" = 1 ] && extra+=(--unique-ip)
+
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 
 # run tcpreplay in the background, looping forever, then stop it after DURATION
-"$TR_BIN" -i "$IFACE" -K --loop=0 "${rate[@]}" --stats=1 "$PCAP" \
+"$TR_BIN" -i "$IFACE" -K --loop=0 "${rate[@]}" "${extra[@]}" --stats=1 "$PCAP" \
     >"$tmp" 2>&1 &
 pid=$!
 

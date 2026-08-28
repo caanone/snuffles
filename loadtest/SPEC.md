@@ -110,7 +110,8 @@ Writes go through `sudo sh -c 'echo V > /proc/sys/...'` (no sysctl binary).
   "name": "A2-pktgen64-8t-max",
   "build": "pcap",                 // pcap | raw
   "mode": "quiet",                 // quiet | headless | headless-pipe | jsonl |
-                                   // syslog | stream-null | stream-disk | tui | tui-sessions
+                                   // jsonl-latency | syslog | stream-null |
+                                   // stream-disk | tui | tui-sessions
   "snaplen": 65535, "ring": 10000, // omitted => snuffles defaults
   "iface": "br0",                  // br0 | p1..p5
   "bpf": "",                       // -f filter
@@ -129,10 +130,21 @@ Writes go through `sudo sh -c 'echo V > /proc/sys/...'` (no sysctl binary).
     "conns": 256,                  // http: wrk -c per gen
     "keepalive": true,             // http: false adds 'Connection: close'
     "url": "/",                    // http: / or /big
-    "extra": ""                    // free-form passthrough to the driver
+    "extra": "",                   // free-form passthrough to the driver
+    "imix": [ {"size":64,"weight":7}, {"size":570,"weight":4},
+              {"size":1518,"weight":1} ],   // pktgen only, optional
+    "imix_base": 100000            // imix: per-weight-unit total pps (default 100000)
   }
 }
 ```
+
+**IMIX (pktgen size mix).** pktgen has no per-packet size mix, so `traffic.imix`
+approximates one: the sizes are assigned round-robin across `traffic.cpus` and
+each thread's `ratep` is set so the aggregate packet counts come out in the
+weight ratio (aggregate pps for a size = weight x `imix_base`; per-thread ratep =
+weight x base / #cpus-with-that-size). With sizes 64/570/1518 at 7:4:1 and the
+default base, the offered mix is 700k/400k/100k pps. `traffic.pps` is ignored
+when `imix` is present; `traffic.pkt_size` is then only a nominal manifest label.
 
 Modes map to snuffles argv (always add `--stats=/results/<run>/<name>/snuffles.stats`
 and `-i <iface>`; run as root inside snf-sut; stdout as noted):
@@ -143,6 +155,7 @@ and `-i <iface>`; run as root inside snf-sut; stdout as noted):
 | headless       | `--no-ui`                                    | /dev/null |
 | headless-pipe  | `--no-ui`                                    | `\| wc -l > out.count` (slow consumer) |
 | jsonl          | `--jsonl`                                    | /dev/null |
+| jsonl-latency  | `--jsonl`                                    | `\| sut/latency.py -o latency.json` (times now - packet.ts per line) |
 | syslog         | `-q --syslog 10.78.0.5:514`                  | /dev/null; udpsink counts on the sink |
 | stream-null    | `-q -w /dev/null`                            | /dev/null |
 | stream-disk    | `-q -w /results/<run>/<name>/stream.pcap`    | /dev/null (file deleted after size is recorded) |
@@ -152,7 +165,18 @@ and `-i <iface>`; run as root inside snf-sut; stdout as noted):
 ## Per-run procedure (`loadtest/run-scenario.sh <scenario.json> [run-id]`)
 
 Results dir: `loadtest/results/<run-id>/<name>/` (run-id default: `$(date +%Y%m%d-%H%M%S)`;
-`loadtest/matrix.sh <run-id> scenarios...` runs many with one run-id).
+`loadtest/matrix.sh [--repeat N] <run-id> scenarios...` runs many with one run-id,
+each scenario N times as `<name>-r1..-rN` when `--repeat N` is given).
+
+`loadtest/ndr.sh <scenario.json> [--loss 0|0.1] [--precision 2] [--trial 20]
+[--confirm 60] [--run-id X]` runs an RFC 2544-style no-drop-rate search for a
+pktgen scenario: an unlimited ceiling trial, then a binary search on the
+per-thread `ratep` (each step a `--trial`-second run whose steady-window
+kdrop_pct_win is compared to `--loss`) until the bracket is within `--precision`
+percent, then one `--confirm`-second run at the found rate. Each trial is a
+normal run-scenario.sh run (own results dir, preserved). Writes
+`results/<run-id>/ndr.json` {scenario, loss_criterion, ndr_pps,
+confirm_kdrop_pct, iterations:[...]} and appends an NDR section to summary.md.
 
 1. Prepare: kill stray snuffles / generators / udpsink / perf; `pgctrl reset` in
    every gen; apply scenario mtu/offloads/rps; nothing else changes.
@@ -168,7 +192,8 @@ Results dir: `loadtest/results/<run-id>/<name>/` (run-id default: `$(date +%Y%m%
    task-clock,context-switches,cpu-migrations,page-faults,cycles,instructions,
    cache-misses,branch-misses,syscalls:sys_enter_write,syscalls:sys_enter_sendto,
    syscalls:sys_enter_getsockopt,syscalls:sys_enter_recvfrom,syscalls:sys_enter_select,
-   syscalls:sys_enter_poll -- sleep 10 > perf-stat.txt` then at +19 s
+   syscalls:sys_enter_poll,syscalls:sys_enter_openat,syscalls:sys_enter_read
+   -- sleep 10 > perf-stat.txt` then at +19 s
    `perf record -F 999 -g -p PID -o perf.data -- sleep 8`; afterwards
    `perf report --stdio --no-children -i perf.data | head -120 > perf-report.txt`,
    `perf script | stackcollapse` is NOT required (no flamegraph tools); keep
@@ -188,9 +213,14 @@ Results dir: `loadtest/results/<run-id>/<name>/` (run-id default: `$(date +%Y%m%
    (consumer), emitted, syslog_sent, syslog_fail, syslog_delivered
    (udpsink), streamed, sessions_final, rss_max_kb, cpu_capture_pct,
    cpu_main_pct, cpu_stats_pct (from per-thread telemetry, % of one CPU),
-   ctxsw_per_s, syscalls_per_pkt (perf stat), ipc, exit_latency_ms,
+   ctxsw_per_s, syscalls_per_pkt (perf stat; now includes openat+read),
+   cycles_per_pkt (capture CPU% x SUT MHz x 1e4 / captured_pps), sinks
+   (missed + syslog_fail + stream write failures = app-side output losses),
+   latency_p50/p95/p99_ms (jsonl-latency mode), ipc, exit_latency_ms,
    exit_code, killed, softnet_dropped_delta, softnet_squeezed_delta,
-   br0_rx_pkts_delta, packet_socket_drops (ss).
+   br0_rx_pkts_delta, packet_socket_drops (ss). A repeated run (matrix.sh
+   --repeat N, scenarios named <base>-r1..-rN) also yields summary-median.md:
+   per-base median/min/max of captured_pps and kdrop_pct_win.
 
 ## Telemetry sampler (`loadtest/sut/telemetry.sh <pid> <outfile>`; runs in snf-sut)
 
@@ -201,7 +231,9 @@ processed, dropped, time_squeeze) from /proc/net/softnet_stat,
 `ifaces` {name: {rx_packets, rx_bytes, rx_dropped, tx_packets, tx_bytes,
 tx_dropped}} for br0, p1..p5, mgmt0, `pktsock` {rmem, rcvbuf, drops} from
 `ss -0 -e -m -H` (the `d<N>` field in skmem), `mem_current` from the
-container's cgroup (`/sys/fs/cgroup/memory.current`), `loadavg`.
+container's cgroup (`/sys/fs/cgroup/memory.current`), `cpu_mhz` (mean "cpu MHz"
+in /proc/cpuinfo over the SUT cpuset, for the cycles/packet estimate; null if
+the kernel does not expose per-core MHz), `loadavg`.
 utime/stime are raw clock ticks; analyze.py converts using CLK_TCK=100.
 
 ## Generators (`loadtest/gen/`, executed inside snf-gen-N via docker exec)
@@ -215,17 +247,25 @@ utime/stime are raw clock ticks; analyze.py converts using CLK_TCK=100.
   10.77.128.0+flows-1 capped at 10.77.255.254 with `flag IPSRC_RND`),
   `udp_src_min 1024 udp_src_max 65535` + `flag UDPSRC_RND` when flows>1,
   `udp_dst_min 9 udp_dst_max 9`, `flag NO_TIMESTAMP`, `ratep <pps>` if
-  pps>0, `burst 8`? — NO burst (veth path; keep default). `start` writes
+  pps>0, `burst 8`? — NO burst (veth path; keep default). `--size` and `--pps`
+  may each be a comma list mapped positionally onto `--cpus` (per-thread size /
+  rate mix; a single value applies to every cpu) — this is what the IMIX
+  scenario uses. `start` writes
   `start` to pgctrl in the background and returns; `stop` writes `stop`;
   `result` parses each `/proc/net/pktgen/eth0@<cpu>` into JSON
   {cpu, sofar, pps, bps, errors, seconds}. IMPORTANT: pktgen's counters are
   only final after `stop`.
-- `udpflood.c`: `udpflood -d IP -p PORT -s SIZE -t THREADS -T SECONDS [-r]`
-  connected UDP sockets, one per thread, sendmmsg batches of 64, SO_SNDBUF
-  32 MB, prints JSON {sent, bytes, seconds, pps, errors}. `-r` = random source
-  port per batch (new socket every 64 messages is too slow; instead bind
-  THREADS*16 sockets up front and round-robin). Payload SIZE is UDP payload
-  bytes; `-s 4000` produces IP fragments (3 per datagram at MTU 1500).
+- `udpflood.c`: `udpflood -d IP -p PORT -s SIZE -t THREADS -T SECONDS [-r]
+  [-i IFACE] [--dst-mac MAC]`. Default (no `-r`): connected UDP sockets, one per
+  thread (fixed source IP+port), sendmmsg batches of 64, SO_SNDBUF 32 MB. Payload
+  SIZE is UDP payload bytes; `-s 4000` produces IP fragments (3 per datagram at
+  MTU 1500) — this is the `frag` path. `-r` = AF_PACKET SOCK_RAW flow churn: every
+  frame is built by hand and gets a fresh random source IP in 10.77.128.0/17 and
+  random source port 1024..65535 (~2.1e9 unique 5-tuples), source MAC = IFACE's,
+  dst MAC = `--dst-mac` (rig sink by default); a real per-packet flow-churn
+  generator for the session table (the old `-r` only varied the source port
+  behind one bound IP). Prints JSON {sent, bytes, seconds, pps, mbps, errors,
+  threads, size, rand_src}.
 - `synflood.c`: AF_PACKET SOCK_RAW sendmmsg TCP SYN generator, random
   source IP in 10.77.128.0/17 and random source port, dst 10.77.0.5:80 (sink
   nginx; nginx answers SYN-ACK so both directions and RST/… flow), fixed
@@ -236,7 +276,10 @@ utime/stime are raw clock ticks; analyze.py converts using CLK_TCK=100.
   bits_per_second, retransmits.
 - `replay.sh`: `tcpreplay -i eth0 --topspeed --loop=0 --duration=<d>`
   is not available in all versions — use `--loop=0` and kill after duration,
-  `-K --preload-pcap`; corpus at `/opt/gen/corpus.pcap`, built by
+  `-K --preload-pcap`; `--unique-ip` (optional) adds tcpreplay `--unique-ip` so
+  each loop iteration rewrites the corpus' source/dest IPs (real 5-tuple churn
+  through a fixed corpus, for the session-table stress scenario). corpus at
+  `/opt/gen/corpus.pcap`, built by
   `loadtest/gen/make-corpus.py` (scapy, at image build time): ~20k packets:
   DNS query/response (A/AAAA/TXT), HTTP GET/200, TLS ClientHello with SNI,
   DHCP discover/offer, mDNS, NTP, QUIC initial, ICMP echo, ICMPv6, IPv6
@@ -268,6 +311,7 @@ scenario `S0-smoke` end-to-end, prints summary line).
 ## Results hygiene
 
 `loadtest/results/` is gitignored EXCEPT `*/summary.csv`, `*/summary.md`,
-`*/*/summary.json`, `*/*/manifest.json`, `*/*/snuffles.stats`,
-`*/*/perf-report.txt`, `*/*/perf-stat.txt` (small text; kept in git).
-perf.data, stream.pcap, telemetry.jsonl are never committed.
+`*/summary-median.md`, `*/ndr.json`, `*/*/summary.json`, `*/*/manifest.json`,
+`*/*/snuffles.stats`, `*/*/perf-report.txt`, `*/*/perf-stat.txt` (small text;
+kept in git). perf.data, stream.pcap, telemetry.jsonl, latency.json are never
+committed.

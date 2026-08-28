@@ -1,0 +1,26 @@
+{
+  "name": "I1-imix",
+  "build": "pcap",
+  "mode": "quiet",
+  "iface": "br0",
+  "bpf": "",
+  "duration": 30,
+  "perf": false,
+  "mtu": 1500,
+  "offloads": "on",
+  "rps": "off",
+  "traffic": {
+    "kind": "pktgen",
+    "gens": [1, 2, 3, 4],
+    "cpus": [4, 5, 6, 7, 12, 13, 14, 15],
+    "pkt_size": 570,
+    "flows": 1,
+    "dst": "sink",
+    "imix": [
+      { "size": 64,   "weight": 7 },
+      { "size": 570,  "weight": 4 },
+      { "size": 1518, "weight": 1 }
+    ],
+    "imix_base": 100000
+  }
+}

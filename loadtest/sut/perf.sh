@@ -24,7 +24,7 @@ FREQ=${SNF_PERF_FREQ:-999}
 EVENTS=task-clock,context-switches,cpu-migrations,page-faults,cycles,instructions
 EVENTS+=,cache-misses,branch-misses,syscalls:sys_enter_write,syscalls:sys_enter_sendto
 EVENTS+=,syscalls:sys_enter_getsockopt,syscalls:sys_enter_recvfrom,syscalls:sys_enter_select
-EVENTS+=,syscalls:sys_enter_poll
+EVENTS+=,syscalls:sys_enter_poll,syscalls:sys_enter_openat,syscalls:sys_enter_read
 log=$res/perf.log
 
 note() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "$log" >&2; }
