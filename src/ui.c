@@ -47,6 +47,30 @@
 
 #define OUTBUF_MAX_SIZE  (4 * 1024 * 1024)  /* 4 MB cap on render buffer */
 
+/* ── Frame pacing ────────────────────────────────────────────── */
+
+/* The loop used to redraw after every wake-up: under load that was
+ * ~14 000 full-screen write()s per second, and the sessions view copied
+ * and sorted the whole session table under its lock on each of them,
+ * stalling the capture thread. Now a frame is drawn at most every
+ * UI_FRAME_US when something changed, immediately on a key, and at the
+ * heartbeat otherwise (clock, rates, capture state, resize). */
+#define UI_FRAME_US       33000u    /* ~30 frames/s cap */
+#define UI_HEARTBEAT_US  250000u    /* idle redraw interval */
+#define UI_SNAPSHOT_US   250000u    /* session-table snapshot interval */
+#define UI_WAIT_MAX_US    50000u    /* wait bound: stop/capture-state latency */
+#define UI_WAIT_MIN_US     1000u    /* floor for the ring-wrap bound below */
+
+static uint64_t ui_now_us(void) {
+#ifdef _WIN32
+    return (uint64_t)GetTickCount64() * 1000u;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+#endif
+}
+
 /* ── Input mode ──────────────────────────────────────────────── */
 
 typedef enum {
@@ -88,14 +112,27 @@ struct ui_ctx {
     int                 input_pos;
 
     char                bpf_msg[128];   /* feedback after BPF apply */
-    int                 bpf_msg_frames; /* frames to show message */
+    uint64_t            bpf_msg_until_us; /* show the message until then */
+
+    /* frame pacing (ui_run) */
+    uint64_t            last_frame_us;  /* when the last frame was drawn */
+    int                 dirty;          /* something to draw at the next tick */
+    uint64_t            frames_rendered;/* debug counter (tests) */
 
     /* session view state */
     int                 sess_scroll;
     int                 sess_selected;
     session_sort_t      sess_sort;
-    session_entry_t    *sess_snap;      /* value copies (see session.h) */
+    /* Cached snapshot: value copies (see session.h), refreshed at most
+     * every UI_SNAPSHOT_US or at once when sess_snap_stale is set (view
+     * switch, sort change, page jump, clear). The array is the one
+     * session_table_snapshot() returns; it lives until the next refresh,
+     * so nothing is allocated or freed per frame. */
+    session_entry_t    *sess_snap;
     uint32_t            sess_snap_count;
+    uint64_t            sess_snap_us;   /* when sess_snap was taken */
+    int                 sess_snap_stale;
+    uint64_t            snapshots_taken;/* debug counter (tests) */
 
     /* follow-stream overlay: copies taken on open, freed on close */
     uint8_t            *follow_a;       /* a->b bytes (SESSION_STREAM_CAP) */
@@ -470,7 +507,7 @@ static void do_search(ui_ctx_t *ctx, int dir) {
 miss:
     snprintf(ctx->bpf_msg, sizeof(ctx->bpf_msg),
              "\033[33mNot found: %s\033[0m", ctx->search);
-    ctx->bpf_msg_frames = 60;
+    ctx->bpf_msg_until_us = ui_now_us() + 3000000u;
 }
 
 /* ── Follow-stream overlay ───────────────────────────────────── */
@@ -500,6 +537,7 @@ static void follow_close(ui_ctx_t *ctx) {
 /* ── Render ──────────────────────────────────────────────────── */
 
 static void render_frame(ui_ctx_t *ctx) {
+    uint64_t now_us = ui_now_us();
     get_term_size(&ctx->rows, &ctx->cols);
     if (ctx->cols < 40) ctx->cols = 40;
     if (ctx->rows < 10) ctx->rows = 10;
@@ -737,11 +775,20 @@ static void render_frame(ui_ctx_t *ctx) {
                   "Bytes", "State", "Duration");
         ob_str(ctx, ESC_RESET);
 
-        /* refresh snapshot */
-        free(ctx->sess_snap);
-        ctx->sess_snap = session_table_snapshot(ctx->sessions,
-                                                 &ctx->sess_snap_count,
-                                                 ctx->sess_sort);
+        /* Refresh the cached snapshot at most every UI_SNAPSHOT_US, or
+         * at once after a view switch / sort change / page jump / clear.
+         * The copy runs under the table lock and the sort over all
+         * entries, so per-frame refreshes stalled the capture thread. */
+        if (ctx->sess_snap_stale ||
+            now_us - ctx->sess_snap_us >= UI_SNAPSHOT_US) {
+            free(ctx->sess_snap);
+            ctx->sess_snap = session_table_snapshot(ctx->sessions,
+                                                     &ctx->sess_snap_count,
+                                                     ctx->sess_sort);
+            ctx->sess_snap_us    = now_us;
+            ctx->sess_snap_stale = 0;
+            ctx->snapshots_taken++;
+        }
 
         uint32_t stotal = ctx->sess_snap_count;
 
@@ -1067,11 +1114,12 @@ static void render_frame(ui_ctx_t *ctx) {
         if (ctx->paused)
             ob_str(ctx, "  [PAUSED]");
 
-        /* show BPF apply feedback briefly */
-        if (ctx->bpf_msg[0] && ctx->bpf_msg_frames > 0) {
-            ob_printf(ctx, "  %s", ctx->bpf_msg);
-            ctx->bpf_msg_frames--;
-            if (ctx->bpf_msg_frames <= 0)
+        /* show BPF apply feedback briefly (the heartbeat redraw clears
+         * it once it expires) */
+        if (ctx->bpf_msg[0]) {
+            if (now_us < ctx->bpf_msg_until_us)
+                ob_printf(ctx, "  %s", ctx->bpf_msg);
+            else
                 ctx->bpf_msg[0] = '\0';
         }
     }
@@ -1118,10 +1166,17 @@ static void navigate(ui_ctx_t *ctx, int key) {
             case KEY_DOWN: ctx->sess_selected++; break;
             case KEY_PGUP: ctx->sess_selected -= 20;
                            if (ctx->sess_selected < 0) ctx->sess_selected = 0;
+                           ctx->sess_snap_stale = 1;
                            break;
-            case KEY_PGDN: ctx->sess_selected += 20; break;
-            case KEY_HOME: ctx->sess_selected = 0; break;
-            case KEY_END:  ctx->sess_selected = (int)ctx->sess_snap_count - 1; break;
+            case KEY_PGDN: ctx->sess_selected += 20;
+                           ctx->sess_snap_stale = 1;
+                           break;
+            case KEY_HOME: ctx->sess_selected = 0;
+                           ctx->sess_snap_stale = 1;
+                           break;
+            case KEY_END:  ctx->sess_selected = (int)ctx->sess_snap_count - 1;
+                           ctx->sess_snap_stale = 1;
+                           break;
         }
     } else {
         switch (key) {
@@ -1169,10 +1224,7 @@ static int read_key(void) {
 #endif
 }
 
-static void handle_input(ui_ctx_t *ctx) {
-    int c = read_key();
-    if (c < 0) return;
-
+static void handle_key(ui_ctx_t *ctx, int c) {
     if (ctx->mode == MODE_FOLLOW) {
         int page = ctx->rows - 3;      /* matches the overlay's line count */
         if (page < 1) page = 1;
@@ -1237,7 +1289,7 @@ static void handle_input(ui_ctx_t *ctx) {
                         snprintf(ctx->bpf_msg, sizeof(ctx->bpf_msg),
                                  "\033[31mUnknown preset: %.40s\033[0m",
                                  ctx->input_buf);
-                        ctx->bpf_msg_frames = 80;
+                        ctx->bpf_msg_until_us = ui_now_us() + 4000000u;
                         expr = NULL;   /* keep the current display filter */
                     }
                 }
@@ -1259,11 +1311,11 @@ static void handle_input(ui_ctx_t *ctx) {
                     else
                         snprintf(ctx->bpf_msg, sizeof(ctx->bpf_msg),
                                  "\033[32mBPF cleared (accept all)\033[0m");
-                    ctx->bpf_msg_frames = 60; /* show for ~3 seconds */
+                    ctx->bpf_msg_until_us = ui_now_us() + 3000000u;
                 } else {
                     snprintf(ctx->bpf_msg, sizeof(ctx->bpf_msg),
                              "\033[31mBPF error: %s\033[0m", errbuf);
-                    ctx->bpf_msg_frames = 80;
+                    ctx->bpf_msg_until_us = ui_now_us() + 4000000u;
                 }
             } else if (ctx->mode == MODE_EXPORT) {
                 const char *path = ctx->input_buf;
@@ -1286,7 +1338,7 @@ static void handle_input(ui_ctx_t *ctx) {
                         snprintf(ctx->bpf_msg, sizeof(ctx->bpf_msg),
                                  "\033[31mExport failed: %s (%s)\033[0m",
                                  path, strerror(errno));
-                    ctx->bpf_msg_frames = 80;
+                    ctx->bpf_msg_until_us = ui_now_us() + 4000000u;
                 }
             }
             ctx->mode = MODE_NORMAL;
@@ -1314,6 +1366,7 @@ static void handle_input(ui_ctx_t *ctx) {
             ctx->view = VIEW_SESSIONS;
             ctx->sess_selected = 0;
             ctx->sess_scroll = 0;
+            ctx->sess_snap_stale = 1;
         }
     } else if (c == 'f' || c == 'F') {
         ctx->mode = MODE_FILTER;
@@ -1366,6 +1419,7 @@ static void handle_input(ui_ctx_t *ctx) {
         ctx->last_total = ringbuf_total(ctx->rb);
         ctx->selected = 0;
         ctx->scroll_off = 0;
+        ctx->sess_snap_stale = 1;
     } else if (c == 'p' || c == 'P') {
         ctx->paused = !ctx->paused;
     } else if (c == 'h' || c == 'H' || c == '?') {
@@ -1403,6 +1457,7 @@ static void handle_input(ui_ctx_t *ctx) {
         /* cycle session sort in session view */
         if (ctx->view == VIEW_SESSIONS) {
             ctx->sess_sort = (session_sort_t)((ctx->sess_sort + 1) % 4);
+            ctx->sess_snap_stale = 1;
         }
     } else if (c == 'o' || c == 'O') {
         /* follow the selected session's reassembled TCP stream */
@@ -1431,6 +1486,54 @@ static void handle_input(ui_ctx_t *ctx) {
     } else if (c >= KEY_UP && c <= KEY_RIGHT) {
         navigate(ctx, c);   /* Windows extended keys */
     }
+}
+
+/* Consumes at most one key; returns 1 if one was handled. */
+static int handle_input(ui_ctx_t *ctx) {
+    int c = read_key();
+    if (c < 0) return 0;
+    handle_key(ctx, c);
+    return 1;
+}
+
+/* ── Main loop ───────────────────────────────────────────────── */
+
+#ifndef _WIN32
+/* Block until stdin is readable, the ring's notify fd (if >= 0) fires,
+ * or timeout_us (< 1 s) elapses. */
+static void ui_wait(int notify_fd, uint64_t timeout_us) {
+    fd_set fds;
+    struct timeval tv = { .tv_sec = 0, .tv_usec = (long)timeout_us };
+    FD_ZERO(&fds);
+    FD_SET(STDIN_FILENO, &fds);
+    int maxfd = STDIN_FILENO;
+    if (notify_fd >= 0) {
+        FD_SET(notify_fd, &fds);
+        if (notify_fd > maxfd) maxfd = notify_fd;
+    }
+    select(maxfd + 1, &fds, NULL, NULL, &tv);
+}
+#endif
+
+/* How long the loop may sleep before the next frame is due. While
+ * packets are flowing the sleep is also bounded so that, at the rate seen
+ * over the previous iteration, the ring cannot lap more than half its
+ * capacity: sync_stats reads records by sequence and would otherwise skip
+ * whatever the producer overwrote in the meantime. */
+static uint64_t ui_wait_budget(const ui_ctx_t *ctx, uint64_t now_us,
+                               int scheduled, uint64_t rate_pkts,
+                               uint64_t rate_span_us) {
+    uint64_t deadline = ctx->last_frame_us +
+                        (scheduled ? UI_FRAME_US : UI_HEARTBEAT_US);
+    uint64_t wait = deadline > now_us ? deadline - now_us : 0;
+    if (wait > UI_WAIT_MAX_US) wait = UI_WAIT_MAX_US;
+    if (scheduled && rate_pkts > 0 && rate_span_us > 0) {
+        uint64_t wrap_us = (uint64_t)ctx->rb->capacity * rate_span_us / rate_pkts;
+        uint64_t bound   = wrap_us / 2;
+        if (bound < UI_WAIT_MIN_US) bound = UI_WAIT_MIN_US;
+        if (wait > bound) wait = bound;
+    }
+    return wait;
 }
 
 /* ── Public API ──────────────────────────────────────────────── */
@@ -1485,42 +1588,76 @@ void ui_run(ui_ctx_t *ctx) {
 
 #ifndef _WIN32
     int notify_fd = ringbuf_get_notify_fd(ctx->rb);
-    uint64_t seen_total = 0;
 #endif
+    uint64_t seen_total   = 0;      /* ring total at the last iteration */
+    uint64_t last_iter_us = ui_now_us();
+    uint64_t rate_pkts    = 0;      /* records seen by the last iteration */
+    uint64_t rate_span_us = 0;      /* ... over this much time */
+
+    ctx->last_frame_us = 0;         /* first frame right away */
+    ctx->dirty         = 1;
 
     while (!ctx->stop) {
         if (g_async_stop) break;
+
+        /* ── Wait ──
+         * Three cases. Idle (nothing pending, nothing to draw): announce
+         * a wait and block on the notify fd, stdin and the heartbeat, so
+         * the first packet after a lull is drawn at once — the producer
+         * pays one wakeup per lull, not one per packet. A frame already
+         * scheduled (packets pending or state dirty): sleep on stdin only
+         * until it is due; nothing to announce, the producer never wakes
+         * us, and whatever arrives meanwhile is picked up in one batch.
+         * A frame due now: no wait. A key interrupts any of them. */
+        uint64_t now       = ui_now_us();
+        int      pending   = ringbuf_total(ctx->rb) != seen_total;
+        int      scheduled = pending || ctx->dirty;
+        uint64_t wait_us   = ui_wait_budget(ctx, now, scheduled,
+                                            rate_pkts, rate_span_us);
 #ifdef _WIN32
-        Sleep(50);
+        if (wait_us > 0)
+            Sleep((DWORD)((wait_us + 999) / 1000));
 #else
-        /* Only announce a wait when nothing is pending, then re-check: a
-         * commit that raced the announcement gets no wakeup, so it must
-         * be caught here (see ringbuf.h). Keys still get polled: the
-         * select is skipped only when there are packets to render. */
-        if (ringbuf_total(ctx->rb) == seen_total) {
+        if (!scheduled) {
+            /* Re-check after announcing: a commit that raced the
+             * announcement gets no wakeup (see ringbuf.h). */
             ringbuf_consumer_will_wait(ctx->rb);
-            if (ringbuf_total(ctx->rb) == seen_total) {
-                fd_set fds;
-                struct timeval tv = { .tv_sec = 0, .tv_usec = 50000 };
-                FD_ZERO(&fds);
-                FD_SET(STDIN_FILENO, &fds);
-                int maxfd = STDIN_FILENO;
-                if (notify_fd >= 0) {
-                    FD_SET(notify_fd, &fds);
-                    if (notify_fd > maxfd) maxfd = notify_fd;
-                }
-                select(maxfd + 1, &fds, NULL, NULL, &tv);
-            }
+            if (ringbuf_total(ctx->rb) == seen_total)
+                ui_wait(notify_fd, wait_us);
+        } else if (wait_us > 0) {
+            ui_wait(-1, wait_us);
         }
         ringbuf_drain_notify(ctx->rb);
-        seen_total = ringbuf_total(ctx->rb);
 #endif
+
+        /* ── Work: stats and input every iteration ── */
+        now = ui_now_us();
+        uint64_t total = ringbuf_total(ctx->rb);
+        rate_pkts    = total - seen_total;
+        rate_span_us = now - last_iter_us;
+        last_iter_us = now;
+        if (total != seen_total) {
+            seen_total = total;
+            ctx->dirty = 1;             /* list and counters changed */
+        }
 
         if (!ctx->paused)
             sync_stats(ctx);
 
-        handle_input(ctx);
-        render_frame(ctx);
+        int key = handle_input(ctx);
+        if (ctx->stop) break;
+
+        /* ── Render: on a key at once, otherwise at the frame tick when
+         * something changed, or at the heartbeat regardless ── */
+        now = ui_now_us();
+        uint64_t since = now - ctx->last_frame_us;
+        if (key || (ctx->dirty && since >= UI_FRAME_US) ||
+            since >= UI_HEARTBEAT_US) {
+            ctx->last_frame_us = now;
+            ctx->dirty = 0;
+            render_frame(ctx);
+            ctx->frames_rendered++;
+        }
     }
 
 #ifdef _WIN32
