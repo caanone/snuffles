@@ -149,7 +149,7 @@ Options:
   -c <count>          Stop after N packets
   -s <snaplen>        Snapshot length (default: 65535)
   -b <ring_size>      Ring buffer size (default: 10000)
-  -B <MB>             Kernel capture buffer in MB (default: 64, libpcap build only)
+  -B <MB>             Kernel capture buffer in MB, 1-2047 (default: 64)
   -o <file>           Export on exit (.pcap or .json)
   -w <file>           Stream packets to a pcap file while capturing
                       ('-w -' writes to stdout; combine with -q)
@@ -217,7 +217,7 @@ file is silently ignored. CLI flags always override config values.
 interface    = eth0
 snaplen      = 1500            # 64-65535
 ring_size    = 50000           # 16-1000000
-buffer_mb    = 64              # 1-4096, kernel capture buffer (libpcap build)
+buffer_mb    = 64              # 1-2047, kernel capture buffer
 promisc      = 1               # 0 or 1
 syslog       = 10.0.0.100:514
 syslog_iface = 192.168.1.5
@@ -437,7 +437,9 @@ capture (and the kernel drop counters) carry on unaffected.
 These figures cover snuffles' own buffers. The libpcap build also maps the
 kernel capture buffer into the process (64 MB by default, so RSS shows
 ~70 MB even in `-q` mode); shrink it with `-B 1` or `buffer_mb` in the
-config file where memory matters more than burst tolerance.
+config file where memory matters more than burst tolerance. The raw build
+sizes the packet socket's receive queue with the same option; that memory
+stays in the kernel and does not show up in RSS.
 
 ---
 
@@ -558,11 +560,11 @@ Drops from root to original user (sudo) or `nobody` after opening capture device
 |----------|-------|
 | snaplen | 64 - 65,535 bytes |
 | ring_size | 16 - 1,000,000 packets |
-| buffer_mb | 1 - 4,096 MB kernel capture buffer (libpcap build, default 64; >2047 clamps to 2 GB) |
+| buffer_mb | 1 - 2,047 MB kernel capture buffer (default 64; libpcap: TPACKET ring, raw: socket receive buffer) |
 | Session table | 100,000 (LRU eviction) |
 | UI render buffer | 4 MB |
 | Filter preview | 2,000 packet scan |
-| Quiet + syslog mode | ~16 KB user-space + kernel capture buffer (`-B`, libpcap build) |
+| Quiet + syslog mode | ~16 KB user-space + kernel capture buffer (`-B`) |
 
 ### Parser Hardening
 
@@ -600,6 +602,7 @@ Packets to/from syslog destination excluded automatically.
 |---------|-------------------|---------------------|
 | Dependencies | libpcap / Npcap | None |
 | BPF kernel filter | Yes | Linux: subset (proto/host/port + and) |
+| Capture buffer `-B` | Kernel TPACKET ring (mmap'd) | Linux: SO_RCVBUF + recvmmsg batches, kernel timestamps |
 | Offline pcap | Yes | No |
 | Ethernet/ARP | Yes | Linux only |
 | Syslog | Yes | Yes |

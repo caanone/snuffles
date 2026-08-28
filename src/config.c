@@ -116,8 +116,8 @@ static void parse_keyval(const char *path, int lineno, char *line,
         if (!cfg_num(val, 16, 1000000, &cfg->ring_size))
             warn_line(path, lineno, "ring_size out of range (16-1000000)", val);
     } else if (strcmp(key, "buffer_mb") == 0) {
-        if (!cfg_num(val, 1, 4096, &cfg->buffer_mb))
-            warn_line(path, lineno, "buffer_mb out of range (1-4096)", val);
+        if (!cfg_num(val, 1, 2047, &cfg->buffer_mb))
+            warn_line(path, lineno, "buffer_mb out of range (1-2047)", val);
     } else if (strcmp(key, "promisc") == 0) {
         if (!cfg_num(val, 0, 1, &cfg->promisc))
             warn_line(path, lineno, "promisc must be 0 or 1", val);

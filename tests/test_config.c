@@ -36,7 +36,7 @@ int main(void) {
         "snaplen = 999999\n"             /* out of range: keep 128 */
         "ring_size = banana\n"           /* not a number: keep 512 */
         "buffer_mb = 0\n"                /* out of range: keep 256 */
-        "buffer_mb = 4097\n"             /* out of range: keep 256 */
+        "buffer_mb = 2048\n"             /* out of range: keep 256 */
         "this line has no equals sign\n" /* warn + skip */
         "preset web = tcp and port 443\n"
         "  preset   DNS-Fast  =  udp and port 53  \n"
