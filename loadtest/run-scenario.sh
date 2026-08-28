@@ -89,7 +89,7 @@ FLOWS=$(jq -r '.traffic.flows // 1' "$SCEN")
 DST=$(jq -r '.traffic.dst // "sink"' "$SCEN")
 THREADS=$(jq -r '.traffic.threads // 2' "$SCEN")
 CONNS=$(jq -r '.traffic.conns // 256' "$SCEN")
-KEEPALIVE=$(jq -r '.traffic.keepalive // true' "$SCEN")
+KEEPALIVE=$(jq -r 'if .traffic.keepalive == null then true else .traffic.keepalive end' "$SCEN")
 URL=$(jq -r '.traffic.url // "/"' "$SCEN")
 EXTRA=$(jq -r '.traffic.extra // ""' "$SCEN")
 
