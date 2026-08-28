@@ -7,7 +7,8 @@ snuffles \- lightweight terminal network packet analyzer
 [\fB\-c\fR \fIcount\fR] [\fB\-s\fR \fIsnaplen\fR] [\fB\-b\fR \fIring\fR]
 [\fB\-B\fR \fIMB\fR] [\fB\-\-immediate\fR]
 [\fB\-o\fR \fIfile\fR] [\fB\-w\fR \fIfile\fR] [\fB\-\-no\-ui\fR] [\fB\-\-jsonl\fR]
-[\fB\-q\fR] [\fB\-\-syslog\fR \fIhost:port\fR] [\fB\-\-list\-ifaces\fR]
+[\fB\-q\fR] [\fB\-\-syslog\fR \fIhost:port\fR] [\fB\-\-stats\fR[=\fIfile\fR]]
+[\fB\-\-no\-summary\fR] [\fB\-\-cpu\fR \fIN\fR] [\fB\-\-rt\fR] [\fB\-\-list\-ifaces\fR]
 .SH DESCRIPTION
 .B snuffles
 captures and dissects network traffic with an interactive terminal UI:
@@ -25,7 +26,10 @@ capture socket is open.
 Capture interface (default: auto\-detect).
 .TP
 .BI \-r " file.pcap"
-Read packets from a pcap file (libpcap build only).
+Read packets from a pcap file (libpcap build only). Into a headless
+consumer (\fB\-\-no\-ui\fR, \fB\-\-jsonl\fR) the reader waits for the
+consumer instead of overwriting records it has not emitted yet, so every
+packet of the file is output whatever the ring size.
 .TP
 .BI \-f " filter"
 BPF capture filter. libpcap build: full pcap syntax. Raw\-socket build
@@ -95,6 +99,39 @@ by
 .BI \-\-syslog\-iface " ip|dev"
 Source address or device for syslog datagrams.
 .TP
+.BR \-\-stats [=\fIfile\fR]
+Print a counters line (captured, kernel and interface drops, ring
+occupancy, records emitted and missed by the consumer, syslog and stream
+counts, sessions, wake\-ups, RSS) every second and a
+.B summary
+line at exit, to stderr or to \fIfile\fR (the TUI requires \fIfile\fR).
+.TP
+.B \-\-no\-summary
+Headless modes print the
+.B summary
+line at exit even without \fB\-\-stats\fR, followed by a hint when the
+kernel dropped packets; this flag turns both off.
+.B SIGUSR1
+prints one
+.B stats
+line at any time (headless modes; with \fB\-\-stats=\fIfile\fR also in
+the TUI). A frame longer than 1518 bytes on a non\-jumbo interface warns
+once about GRO/GSO super\-frames (headless modes).
+.TP
+.BI \-\-cpu " N"
+Pin the capture thread to CPU \fIN\fR (Linux). In headless modes the
+consumer and the stats thread are kept on the remaining CPUs of the
+process's affinity mask. Config key
+.BR cpu .
+.TP
+.B \-\-rt
+Run the capture thread under SCHED_FIFO at priority 1 so a busy consumer
+or display never deschedules it during a burst. Applied before privileges
+are dropped, so it needs root or CAP_SYS_NICE; otherwise a warning is
+printed and capture continues at normal priority. Combine with
+\fB\-\-cpu\fR on machines with spare cores. Config key
+.BR rt .
+.TP
 .B \-\-list\-ifaces
 List capture interfaces and exit.
 .TP
@@ -130,6 +167,8 @@ shows help.
 sudo snuffles \-i eth0
 sudo snuffles \-i eth0 \-f "tcp port 443" \-w capture.pcap
 sudo snuffles \-i eth0 \-\-jsonl | jq \-r .dst_ip
+sudo snuffles \-i eth0 \-\-jsonl \-\-cpu 3 \-\-rt > packets.jsonl
+kill \-USR1 $(pidof snuffles)
 snuffles \-r traffic.pcap
 .fi
 .SH FILES
@@ -146,8 +185,10 @@ pairs with the keys
 .BR ring_size " (16\-1000000),"
 .BR buffer_mb " (1\-2047),"
 .BR promisc " (0/1),"
-.BR syslog ", and"
-.BR syslog_iface .
+.BR syslog ,
+.BR syslog_iface ,
+.BR cpu " (0\-8191), and"
+.BR rt " (0/1)."
 Saved display\-filter presets are declared as
 .B preset
 .I name

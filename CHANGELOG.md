@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Added
+- **Telemetry on by default in headless modes.** `--no-ui`, `--jsonl` and
+  `-q` print the `summary ...` counters line to stderr at exit even
+  without `--stats` (`--no-summary` turns it off), `SIGUSR1` prints one
+  `stats ...` line on demand, a hint follows the summary when the kernel
+  dropped packets, and a frame longer than 1518 bytes on a non-jumbo
+  interface warns once about GRO/GSO super-frames (libpcap build).
+- **`--cpu N` and `--rt`** (config keys `cpu`, `rt`): pin the capture thread
+  to one CPU — headless consumers and the stats thread stay on the other
+  CPUs — and run it under `SCHED_FIFO` priority 1 (set before the privilege
+  drop; warns and continues without root/CAP_SYS_NICE).
+- **Offline replay back-pressure.** `-r file` into a headless consumer waits
+  for the consumer instead of lapping the ring, so every packet of the
+  file is emitted with `missed=0` whatever `-b` is (a blocked stdout used
+  to lose most of a 200 k-packet file). Ring buffer: `ringbuf_consumer_*`
+  position hook and `ringbuf_producer_may_write()`.
+
 ### Changed
 - **Ring buffer producer no longer pays a wakeup per packet.** Every commit
   used to lock/signal an unused condition variable and `write()` one byte
