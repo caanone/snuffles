@@ -42,11 +42,19 @@ Snapshot length in bytes (64\-65535, default 65535).
 Ring buffer size in packets (16\-1000000, default 10000).
 .TP
 .BI \-B " MB"
-Kernel capture buffer size in megabytes (1\-4096, default 64; libpcap build
-only). This is the buffer the kernel fills while the capture thread is not
-scheduled, so it decides how much burst or scheduling jitter can be absorbed
-before the kernel drops packets. Values above 2047 are clamped to libpcap's
-2\ GB limit, and the kernel may cap or shrink the request further.
+Kernel capture buffer size in megabytes (1\-2047, default 64). This is the
+buffer the kernel fills while the capture thread is not scheduled, so it
+decides how much burst or scheduling jitter can be absorbed before the
+kernel drops packets; the kernel may cap or shrink the request.
+libpcap build: the TPACKET ring mapped into the process.
+Raw\-socket build (Linux): the packet socket's receive queue, set with
+SO_RCVBUFFORCE before privileges are dropped (falls back to SO_RCVBUF,
+capped by
+.BR net.core.rmem_max ,
+with a warning; the kernel itself caps a socket buffer at 1024\ MiB); frames
+are read in batches of 64 with
+.BR recvmmsg (2)
+and timestamped by the kernel.
 .TP
 .B \-\-immediate
 Deliver every packet as soon as it arrives instead of in 10\ ms batches
@@ -136,7 +144,7 @@ pairs with the keys
 .BR interface ,
 .BR snaplen " (64\-65535),"
 .BR ring_size " (16\-1000000),"
-.BR buffer_mb " (1\-4096),"
+.BR buffer_mb " (1\-2047),"
 .BR promisc " (0/1),"
 .BR syslog ", and"
 .BR syslog_iface .

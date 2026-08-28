@@ -78,8 +78,8 @@ static void print_usage(const char *prog) {
            "  -c <count>        Stop after N packets\n"
            "  -s <snaplen>      Snapshot length (default: 65535)\n"
            "  -b <ring_size>    Ring buffer size (default: 10000)\n"
-           "  -B <MB>           Kernel capture buffer in MB (default: 64,\n"
-           "                    libpcap build only)\n"
+           "  -B <MB>           Kernel capture buffer in MB, 1-2047 (default: 64;\n"
+           "                    libpcap: TPACKET ring, raw: socket receive buffer)\n"
            "  -o <file>         Auto-export on exit (.pcap or .json)\n"
            "  -w <file>         Stream packets to a pcap file while capturing\n"
            "                    ('-w -' writes to stdout; combine with -q)\n"
@@ -343,7 +343,7 @@ int main(int argc, char *argv[]) {
                       snaplen_set = 1; break;
             case 'b': cfg.ring_size = (int)parse_num(optarg, "ring size", 16, 1000000);
                       ring_set    = 1; break;
-            case 'B': cfg.buffer_mb = (int)parse_num(optarg, "buffer size (MB)", 1, 4096); break;
+            case 'B': cfg.buffer_mb = (int)parse_num(optarg, "buffer size (MB)", 1, 2047); break;
             case 'I': cfg.immediate = 1; break;
             case 'N': cfg.no_ui       = 1; break;
             case 'q': cfg.quiet      = 1; cfg.no_ui = 1; break;

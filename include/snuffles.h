@@ -283,7 +283,7 @@ typedef struct {
     int         verbose;
     char        syslog_target[256];
     char        syslog_iface[64];
-    int         buffer_mb;      /* -B: kernel capture buffer in MB (libpcap) */
+    int         buffer_mb;      /* -B: kernel capture buffer in MB (libpcap ring / raw SO_RCVBUF) */
     int         immediate;      /* --immediate: per-packet delivery (libpcap) */
 } capture_cfg_t;
 

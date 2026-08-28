@@ -10,7 +10,15 @@
  *   - Windows: captures IP-level only (no Ethernet header, no ARP)
  *   - No kernel BPF filters (capture_set_bpf is a no-op; use display filters)
  *   - No offline pcap file reading (use the pcap backend for that)
+ *
+ * Linux receive path: recvmmsg() batches of RAW_BATCH frames into
+ * preallocated buffers, kernel SO_TIMESTAMP per frame, socket receive
+ * queue sized by -B (SO_RCVBUFFORCE while still root).
  */
+
+#ifndef _GNU_SOURCE
+  #define _GNU_SOURCE   /* recvmmsg, struct mmsghdr, MSG_WAITFORONE */
+#endif
 
 #include "capture.h"
 #include "dissect.h"
@@ -42,6 +50,7 @@
 #else
   #include <unistd.h>
   #include <sys/socket.h>
+  #include <sys/uio.h>
   #include <sys/ioctl.h>
   #include <net/if.h>
   #include <netinet/in.h>
@@ -76,53 +85,245 @@ struct capture_ctx {
     char                bpf_expr[512]; /* stored but not kernel-applied */
     syslog_out_t       *syslog;
     pcap_writer_t      *stream;     /* -w: capture thread only */
+#ifdef __linux__
+    uint8_t            *bufs;       /* RAW_BATCH x bufsz recvmmsg buffers */
+    uint32_t            bufsz;      /* max(snaplen, RAW_MIN_BUFSZ) */
+#endif
 };
 
+#ifdef __linux__
+  #define RAW_BATCH     64      /* frames per recvmmsg() */
+  #define RAW_MIN_BUFSZ 2048    /* per-frame buffer floor (headers fit) */
+#endif
+
+/* ── Per-packet processing ───────────────────────────────────── */
+
+/* Shared by the Linux recvmmsg loop and the recv() loop: pkt/caplen are
+ * the bytes we hold, wirelen the on-the-wire length, ts the capture
+ * timestamp. Returns 1 when the -c limit has been reached. */
+static int process_packet(capture_ctx_t *ctx, const uint8_t *pkt,
+                          uint32_t caplen, uint32_t wirelen,
+                          struct timeval ts) {
+    pkt_record_t *rec = ringbuf_producer_next(ctx->rb);
+
+    uint32_t copylen = caplen;
+    if (copylen > (uint32_t)ctx->cfg.snaplen)
+        copylen = (uint32_t)ctx->cfg.snaplen;
+    memcpy(rec->raw_data, pkt, copylen);
+    rec->raw_len = copylen;
+
+    /* dissect */
+    if (ctx->has_eth) {
+        /* Linux AF_PACKET: full Ethernet frame */
+        dissect_packet(pkt, caplen, 1 /* DLT_EN10MB */, &rec->summary);
+    } else {
+        /* Windows raw socket: IP header only, no Ethernet.
+         * Fake an Ethernet header isn't needed — just dissect from IP.
+         * We call dissect with datalink=228 (DLT_IPV4) but our dissect
+         * only handles DLT_EN10MB (1). So we manually call IPv4/IPv6. */
+        memset(&rec->summary, 0, sizeof(rec->summary));
+        if (caplen >= 1) {
+            uint8_t ver = (pkt[0] >> 4) & 0x0F;
+            if (ver == 4 && caplen >= 20) {
+                /* manually extract IPs and call dissect chain */
+                dissect_packet(pkt, caplen, 228 /* DLT_IPV4 */, &rec->summary);
+            } else if (ver == 6 && caplen >= 40) {
+                dissect_packet(pkt, caplen, 229 /* DLT_IPV6 */, &rec->summary);
+            } else {
+                snprintf(rec->summary.protocol, sizeof(rec->summary.protocol), "RAW");
+                snprintf(rec->summary.info, sizeof(rec->summary.info),
+                         "Raw IP (ver=%d, len=%u)", ver, caplen);
+            }
+        }
+    }
+    rec->summary.length = wirelen;
+    rec->summary.ts     = ts;
+
+    /* session tracking (TCP payload bytes clamped to what we copied) */
+    if (ctx->st) {
+        const uint8_t *pl = NULL;
+        uint32_t pln = 0;
+        if (rec->summary.l4_proto == PROTO_TCP && rec->summary.l7_len > 0 &&
+            rec->summary.l7_off < rec->raw_len) {
+            pl  = rec->raw_data + rec->summary.l7_off;
+            pln = rec->summary.l7_len;
+            if (pln > rec->raw_len - rec->summary.l7_off)
+                pln = rec->raw_len - rec->summary.l7_off;
+        }
+        uint32_t sid = session_table_update(ctx->st, &rec->summary, pl, pln);
+        if (sid) rec->summary.session_id = sid;
+    }
+
+    /* syslog output (skip own traffic to prevent feedback loop) */
+    if (ctx->syslog && !syslog_out_is_self(ctx->syslog, &rec->summary)) {
+        syslog_out_send(ctx->syslog, &rec->summary);
+#ifndef __linux__
+        /* no MSG_DONTWAIT drain on Winsock: flush per packet so a record
+         * never waits for the batch to fill */
+        syslog_out_flush(ctx->syslog);
+#endif
+    }
+
+    /* streaming -w write (before commit: the slot is still ours) */
+    if (ctx->stream) {
+        if (pcap_writer_write(ctx->stream, rec) != 0) {
+            fprintf(stderr, "stream write failed; disabling -w output\n");
+            pcap_writer_close(ctx->stream);
+            ctx->stream = NULL;
+        } else {
+            atomic_fetch_add_explicit(&ctx->stream_pkts, 1, memory_order_relaxed);
+        }
+    }
+
+    ringbuf_producer_commit(ctx->rb);
+
+    uint64_t n = atomic_fetch_add(&ctx->pkt_count, 1) + 1;
+    return ctx->cfg.count > 0 && n >= (uint64_t)ctx->cfg.count;
+}
+
 /* ── Capture thread ──────────────────────────────────────────── */
+
+#ifdef __linux__
+
+/* Kernel-side drop counter. PACKET_STATISTICS resets on every read, so
+ * accumulate. Polled on idle timeouts and every ~4096 packets to keep
+ * the syscall off the per-packet path. */
+static void poll_kernel_drops(capture_ctx_t *ctx) {
+    struct { unsigned int tp_packets, tp_drops; } st; /* struct tpacket_stats */
+    socklen_t sl = sizeof(st);
+    if (getsockopt(ctx->sock, SOL_PACKET, PACKET_STATISTICS, &st, &sl) == 0)
+        atomic_fetch_add(&ctx->drops, (uint64_t)st.tp_drops);
+}
+
+/* SO_TIMESTAMP delivers the kernel receive time as an SCM_TIMESTAMP
+ * control message. Returns 1 and fills *ts if present. */
+static int cmsg_timestamp(struct msghdr *mh, struct timeval *ts) {
+    for (struct cmsghdr *c = CMSG_FIRSTHDR(mh); c; c = CMSG_NXTHDR(mh, c)) {
+        if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_TIMESTAMP &&
+            c->cmsg_len >= CMSG_LEN(sizeof(struct timeval))) {
+            memcpy(ts, CMSG_DATA(c), sizeof(*ts));
+            return 1;
+        }
+    }
+    return 0;
+}
 
 static void *capture_thread_fn(void *arg) {
     capture_ctx_t *ctx = (capture_ctx_t *)arg;
     atomic_store(&ctx->running, 1);
-#ifdef __linux__
     prctl(PR_SET_NAME, "snf-capture", 0, 0, 0);
-#endif
 
-    uint8_t buf[65536];
+    /* recvmmsg batch: one iovec + one cmsg slot per preallocated buffer.
+     * Everything is set up once; only msg_controllen (shrunk by the
+     * kernel to what it filled) is restored per call. */
+    struct mmsghdr msgs[RAW_BATCH];
+    struct iovec   iov[RAW_BATCH];
+    union {
+        struct cmsghdr hdr;
+        uint8_t        raw[CMSG_SPACE(sizeof(struct timeval))];
+    } cmsg[RAW_BATCH];
+    memset(msgs, 0, sizeof(msgs));
+    for (int i = 0; i < RAW_BATCH; i++) {
+        iov[i].iov_base = ctx->bufs + (size_t)i * ctx->bufsz;
+        iov[i].iov_len  = ctx->bufsz;
+        msgs[i].msg_hdr.msg_iov        = &iov[i];
+        msgs[i].msg_hdr.msg_iovlen     = 1;
+        msgs[i].msg_hdr.msg_control    = cmsg[i].raw;
+        msgs[i].msg_hdr.msg_controllen = sizeof(cmsg[i].raw);
+    }
+
+    uint32_t since_poll = 0;
 
     while (!atomic_load(&ctx->stop_req)) {
-        /* use a timeout so we can check stop_req periodically */
-#ifdef _WIN32
-        /* Winsock SO_RCVTIMEO is in milliseconds (DWORD) */
-        /* already set in capture_create */
-#else
-        /* already set via SO_RCVTIMEO in capture_create */
-#endif
-        int rflags = 0;
-#ifdef __linux__
+        /* -c: never pull more frames from the kernel than we will keep */
+        unsigned vlen = RAW_BATCH;
+        if (ctx->cfg.count > 0) {
+            uint64_t done = atomic_load_explicit(&ctx->pkt_count,
+                                                 memory_order_relaxed);
+            uint64_t left = (uint64_t)ctx->cfg.count - done;
+            if (left < vlen) vlen = left ? (unsigned)left : 1u;
+        }
+
         /* While syslog records are queued, only take what the socket
          * already holds; once it runs dry, flush the batch and return to
          * the blocking (100 ms timeout) read. Bounds syslog latency at
          * "end of burst" without a send syscall per packet. */
+        int rflags = 0;
         if (syslog_out_pending(ctx->syslog))
             rflags = MSG_DONTWAIT;
-#endif
-        int len = (int)recv(ctx->sock, (char *)buf, sizeof(buf), rflags);
-#ifdef __linux__
-        if (len < 0 && rflags && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            syslog_out_flush(ctx->syslog);
+
+        /* MSG_WAITFORONE: block (bounded by SO_RCVTIMEO, so stop_req is
+         * still honoured) for the first frame, then drain whatever else
+         * is queued without waiting — one syscall per burst, no added
+         * latency at low rates. MSG_TRUNC: msg_len reports the wire
+         * length even when the frame was cut to the buffer. */
+        int n = recvmmsg(ctx->sock, msgs, vlen,
+                         MSG_WAITFORONE | MSG_TRUNC | rflags, NULL);
+        int err = errno;   /* poll_kernel_drops() below may clobber it */
+
+        if (n <= 0) {
+            if (rflags && (n == 0 || err == EAGAIN || err == EWOULDBLOCK)) {
+                syslog_out_flush(ctx->syslog);   /* socket drained: end of burst */
+                continue;
+            }
+            poll_kernel_drops(ctx);
+            since_poll = 0;
+            if (atomic_load(&ctx->stop_req)) break;
+            if (n < 0 && err != EAGAIN && err != EWOULDBLOCK && err != EINTR) {
+                struct timeval nap = { .tv_sec = 0, .tv_usec = 100000 };
+                select(0, NULL, NULL, NULL, &nap);   /* hard error: don't spin */
+            }
             continue;
         }
-        /* Kernel-side drop counter. PACKET_STATISTICS resets on every read,
-         * so accumulate. Polled on idle timeouts and every 4096 packets to
-         * keep the syscall off the per-packet path. */
-        if (len <= 0 || (atomic_load_explicit(&ctx->pkt_count,
-                                              memory_order_relaxed) & 4095) == 0) {
-            struct { unsigned int tp_packets, tp_drops; } st; /* struct tpacket_stats */
-            socklen_t sl = sizeof(st);
-            if (getsockopt(ctx->sock, SOL_PACKET, PACKET_STATISTICS, &st, &sl) == 0)
-                atomic_fetch_add(&ctx->drops, (uint64_t)st.tp_drops);
+
+        struct timeval now = { 0, 0 };
+        int have_now = 0, done = 0;
+        for (int i = 0; i < n && !done; i++) {
+            struct msghdr *mh = &msgs[i].msg_hdr;
+            uint32_t wirelen = msgs[i].msg_len;
+            uint32_t caplen  = wirelen > ctx->bufsz ? ctx->bufsz : wirelen;
+
+            struct timeval ts;
+            if (!cmsg_timestamp(mh, &ts)) {
+                if (!have_now) { gettimeofday(&now, NULL); have_now = 1; }
+                ts = now;
+            }
+            mh->msg_controllen = sizeof(cmsg[i].raw);
+
+            if (caplen == 0) continue;   /* mirrors recv() == 0 */
+            done = process_packet(ctx, (const uint8_t *)iov[i].iov_base,
+                                  caplen, wirelen, ts);
         }
-#endif
+        if (done) break;
+
+        since_poll += (uint32_t)n;
+        if (since_poll >= 4096) {
+            poll_kernel_drops(ctx);
+            since_poll = 0;
+        }
+    }
+
+    /* final read so a -c run's summary carries the drops since the last
+     * 4096-frame poll (up to a few thousand under load) */
+    poll_kernel_drops(ctx);
+
+    syslog_out_flush(ctx->syslog);   /* records queued by the last burst */
+    atomic_store(&ctx->running, 0);
+    return NULL;
+}
+
+#else /* !__linux__ */
+
+static void *capture_thread_fn(void *arg) {
+    capture_ctx_t *ctx = (capture_ctx_t *)arg;
+    atomic_store(&ctx->running, 1);
+
+    uint8_t buf[65536];
+
+    while (!atomic_load(&ctx->stop_req)) {
+        /* SO_RCVTIMEO (set in capture_create) bounds this so stop_req is
+         * checked periodically */
+        int len = (int)recv(ctx->sock, (char *)buf, sizeof(buf), 0);
         if (len <= 0) {
             if (atomic_load(&ctx->stop_req)) break;
 #ifdef _WIN32
@@ -138,41 +339,6 @@ static void *capture_thread_fn(void *arg) {
             continue; /* timeout or error */
         }
 
-        pkt_record_t *rec = ringbuf_producer_next(ctx->rb);
-
-        uint32_t copylen = (uint32_t)len;
-        if (copylen > (uint32_t)ctx->cfg.snaplen)
-            copylen = (uint32_t)ctx->cfg.snaplen;
-        memcpy(rec->raw_data, buf, copylen);
-        rec->raw_len = copylen;
-
-        /* dissect */
-        if (ctx->has_eth) {
-            /* Linux AF_PACKET: full Ethernet frame */
-            dissect_packet(buf, (uint32_t)len, 1 /* DLT_EN10MB */, &rec->summary);
-        } else {
-            /* Windows raw socket: IP header only, no Ethernet.
-             * Fake an Ethernet header isn't needed — just dissect from IP.
-             * We call dissect with datalink=228 (DLT_IPV4) but our dissect
-             * only handles DLT_EN10MB (1). So we manually call IPv4/IPv6. */
-            memset(&rec->summary, 0, sizeof(rec->summary));
-            rec->summary.length = (uint32_t)len;
-            if (len >= 1) {
-                uint8_t ver = (buf[0] >> 4) & 0x0F;
-                if (ver == 4 && len >= 20) {
-                    /* manually extract IPs and call dissect chain */
-                    dissect_packet(buf, (uint32_t)len, 228 /* DLT_IPV4 */, &rec->summary);
-                } else if (ver == 6 && len >= 40) {
-                    dissect_packet(buf, (uint32_t)len, 229 /* DLT_IPV6 */, &rec->summary);
-                } else {
-                    snprintf(rec->summary.protocol, sizeof(rec->summary.protocol), "RAW");
-                    snprintf(rec->summary.info, sizeof(rec->summary.info),
-                             "Raw IP (ver=%d, len=%d)", ver, len);
-                }
-            }
-        }
-
-        /* timestamp */
         struct timeval tv;
 #ifdef _WIN32
         FILETIME ft;
@@ -184,56 +350,16 @@ static void *capture_thread_fn(void *arg) {
 #else
         gettimeofday(&tv, NULL);
 #endif
-        rec->summary.ts = tv;
-
-        /* session tracking (TCP payload bytes clamped to what we copied) */
-        if (ctx->st) {
-            const uint8_t *pl = NULL;
-            uint32_t pln = 0;
-            if (rec->summary.l4_proto == PROTO_TCP && rec->summary.l7_len > 0 &&
-                rec->summary.l7_off < rec->raw_len) {
-                pl  = rec->raw_data + rec->summary.l7_off;
-                pln = rec->summary.l7_len;
-                if (pln > rec->raw_len - rec->summary.l7_off)
-                    pln = rec->raw_len - rec->summary.l7_off;
-            }
-            uint32_t sid = session_table_update(ctx->st, &rec->summary, pl, pln);
-            if (sid) rec->summary.session_id = sid;
-        }
-
-        /* syslog output (skip own traffic to prevent feedback loop) */
-        if (ctx->syslog && !syslog_out_is_self(ctx->syslog, &rec->summary)) {
-            syslog_out_send(ctx->syslog, &rec->summary);
-#ifndef __linux__
-            /* no MSG_DONTWAIT peek on Winsock: flush per packet so a
-             * record never waits for the batch to fill */
-            syslog_out_flush(ctx->syslog);
-#endif
-        }
-
-        /* streaming -w write (before commit: the slot is still ours) */
-        if (ctx->stream) {
-            if (pcap_writer_write(ctx->stream, rec) != 0) {
-                fprintf(stderr, "stream write failed; disabling -w output\n");
-                pcap_writer_close(ctx->stream);
-                ctx->stream = NULL;
-            } else {
-                atomic_fetch_add_explicit(&ctx->stream_pkts, 1, memory_order_relaxed);
-            }
-        }
-
-        ringbuf_producer_commit(ctx->rb);
-
-        uint64_t n = atomic_fetch_add(&ctx->pkt_count, 1) + 1;
-        if (ctx->cfg.count > 0 && n >= (uint64_t)ctx->cfg.count) {
+        if (process_packet(ctx, buf, (uint32_t)len, (uint32_t)len, tv))
             break;
-        }
     }
 
     syslog_out_flush(ctx->syslog);   /* records queued by the last burst */
     atomic_store(&ctx->running, 0);
     return NULL;
 }
+
+#endif /* __linux__ */
 
 /* ── Interface listing ───────────────────────────────────────── */
 
@@ -418,6 +544,52 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
                     cfg->iface);
     }
 
+    /* Socket receive queue (-B). The default, net.core.rmem_default
+     * (~208 KB), holds only ~100 small frames, so any consumer hiccup
+     * drops packets. SO_RCVBUFFORCE ignores net.core.rmem_max but needs
+     * CAP_NET_ADMIN, which we still hold before the privilege drop; fall
+     * back to SO_RCVBUF (silently capped at rmem_max) otherwise. */
+    {
+        int want = cfg->buffer_mb * 1024 * 1024;
+        if (setsockopt(ctx->sock, SOL_SOCKET, SO_RCVBUFFORCE,
+                       &want, sizeof(want)) != 0)
+            (void)setsockopt(ctx->sock, SOL_SOCKET, SO_RCVBUF,
+                             &want, sizeof(want));
+        int got = 0;
+        socklen_t gl = sizeof(got);
+        if (getsockopt(ctx->sock, SOL_SOCKET, SO_RCVBUF, &got, &gl) == 0) {
+            /* the kernel reports double the requested size (bookkeeping) */
+            long got_kb = (long)got / 2 / 1024;
+            int  got_mb = (int)((got_kb + 512) / 1024);
+            if (got_mb < cfg->buffer_mb) {
+                if (got_mb >= 1)
+                    fprintf(stderr, "Warning: kernel capped the capture buffer "
+                            "at %d MiB (-B %d); raise net.core.rmem_max or run "
+                            "as root\n", got_mb, cfg->buffer_mb);
+                else    /* default rmem_max (208 KiB) lands here */
+                    fprintf(stderr, "Warning: kernel capped the capture buffer "
+                            "at %ld KiB (-B %d); raise net.core.rmem_max or run "
+                            "as root\n", got_kb, cfg->buffer_mb);
+            }
+        }
+    }
+
+    /* kernel receive timestamps as SCM_TIMESTAMP cmsg (else gettimeofday) */
+    int one = 1;
+    (void)setsockopt(ctx->sock, SOL_SOCKET, SO_TIMESTAMP, &one, sizeof(one));
+
+    /* recvmmsg batch buffers: RAW_BATCH x max(snaplen, RAW_MIN_BUFSZ) */
+    ctx->bufsz = (uint32_t)cfg->snaplen;
+    if (ctx->bufsz < RAW_MIN_BUFSZ) ctx->bufsz = RAW_MIN_BUFSZ;
+    ctx->bufs = malloc((size_t)RAW_BATCH * ctx->bufsz);
+    if (!ctx->bufs) {
+        fprintf(stderr, "Cannot allocate receive buffers (%u x %u bytes)\n",
+                RAW_BATCH, ctx->bufsz);
+        RAW_CLOSE(ctx->sock);
+        free(ctx);
+        return NULL;
+    }
+
     /* receive timeout */
     struct timeval tv = { .tv_sec = 0, .tv_usec = 100000 };
     setsockopt(ctx->sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -433,6 +605,7 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
                     "Supported: tcp/udp/icmp/sctp/ip/arp, [src|dst] host A.B.C.D, "
                     "[src|dst] port N, joined with 'and'\n", cerr);
             RAW_CLOSE(ctx->sock);
+            free(ctx->bufs);
             free(ctx);
             return NULL;
         }
@@ -444,6 +617,7 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
                        &prog, sizeof(prog)) != 0) {
             perror("SO_ATTACH_FILTER");
             RAW_CLOSE(ctx->sock);
+            free(ctx->bufs);
             free(ctx);
             return NULL;
         }
@@ -519,6 +693,9 @@ void capture_destroy(capture_ctx_t *ctx) {
     syslog_out_destroy(ctx->syslog);
     if (ctx->sock != RAW_INVALID)
         RAW_CLOSE(ctx->sock);
+#ifdef __linux__
+    free(ctx->bufs);
+#endif
 #ifdef _WIN32
     WSACleanup();
 #endif
