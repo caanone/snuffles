@@ -156,6 +156,36 @@ int ringbuf_read(ringbuf_t *rb, uint32_t idx, pkt_record_t *out, uint8_t *data) 
     return 0;
 }
 
+int ringbuf_read_seq(ringbuf_t *rb, uint64_t seq, pkt_record_t *out,
+                     uint8_t *data) {
+    for (int attempt = 0; attempt < 4; attempt++) {
+        uint64_t total  = atomic_load(&rb->commit_seq);
+        uint64_t oldest = ringbuf_oldest(rb);
+        if (seq < oldest || seq >= total) return 0;
+
+        uint32_t slot = (uint32_t)(seq % rb->capacity);
+
+        uint64_t g1 = atomic_load(&rb->slot_gen[slot]);
+        if (g1 & 1) continue;   /* producer mid-write, retry */
+
+        *out = rb->records[slot];
+        uint32_t rl = out->raw_len;
+        if (rl > rb->snaplen) rl = rb->snaplen;   /* torn read paranoia */
+        out->raw_len = rl;
+        if (data) {
+            memcpy(data, rb->data_pool + (size_t)slot * rb->snaplen, rl);
+            out->raw_data = data;
+        } else {
+            out->raw_data = NULL;
+        }
+
+        atomic_thread_fence(memory_order_acquire);
+        if (atomic_load(&rb->slot_gen[slot]) == g1 && out->seq_num == seq)
+            return 1;
+    }
+    return 0;
+}
+
 void ringbuf_clear(ringbuf_t *rb) {
     /* Never reset the producer counters (the capture thread may be between
      * its write_seq/commit_seq updates); just raise the visibility floor. */
