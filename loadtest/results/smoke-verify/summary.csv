@@ -1,0 +1,2 @@
+name,build,mode,traffic_kind,pkt_size,status,sent_pps,sent_total,captured_total,captured_pps,kdrop_total,kdrop_pct,ifdrop,missed,emitted,syslog_sent,syslog_fail,syslog_delivered,streamed,sessions_final,loss_pct_total,rss_max_kb,cpu_capture_pct,cpu_main_pct,cpu_stats_pct,ctxsw_per_s,syscalls_per_pkt,ipc,exit_latency_ms,exit_code,killed,softnet_dropped_delta,softnet_squeezed_delta,br0_rx_pkts_delta,packet_socket_drops
+S0-smoke,pcap,quiet,pktgen,64,ok,215055,2625886,2625886,215390.9,0,0.0,0,0,0,0,0,,0,1,0.0,647588,44.29,0.0,0.0,142.5,,,519,0,False,0,0,2370135,0

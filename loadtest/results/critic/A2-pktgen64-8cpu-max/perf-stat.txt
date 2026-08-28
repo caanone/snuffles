@@ -1,0 +1,22 @@
+# started on Fri Aug 28 13:44:34 2026
+
+
+ Performance counter stats for process id '7939':
+
+           3999.66 msec task-clock                       #    1.000 CPUs utilized             
+                83      context-switches                 #   20.752 /sec                      
+                 4      cpu-migrations                   #    1.000 /sec                      
+                 0      page-faults                      #    0.000 /sec                      
+       15895151302      cycles                           #    3.974 GHz                       
+       24723008573      instructions                     #    1.56  insn per cycle            
+          25344610      cache-misses                                                          
+         139886532      branch-misses                                                         
+           1997211      syscalls:sys_enter_write         #  499.345 K/sec                     
+                 0      syscalls:sys_enter_sendto        #    0.000 /sec                      
+             31206      syscalls:sys_enter_getsockopt    #    7.802 K/sec                     
+                 0      syscalls:sys_enter_recvfrom      #    0.000 /sec                      
+                 0      syscalls:sys_enter_select        #    0.000 /sec                      
+                 0      syscalls:sys_enter_poll          #    0.000 /sec                      
+
+       4.001488898 seconds time elapsed
+
