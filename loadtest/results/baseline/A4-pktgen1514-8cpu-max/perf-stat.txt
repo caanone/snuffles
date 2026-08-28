@@ -1,0 +1,22 @@
+# started on Fri Aug 28 14:15:41 2026
+
+
+ Performance counter stats for process id '20825':
+
+           9998.29 msec task-clock                       #    1.000 CPUs utilized             
+               186      context-switches                 #   18.603 /sec                      
+                12      cpu-migrations                   #    1.200 /sec                      
+                 0      page-faults                      #    0.000 /sec                      
+       39735721610      cycles                           #    3.974 GHz                       
+       65527823283      instructions                     #    1.65  insn per cycle            
+         234068433      cache-misses                                                          
+         364246029      branch-misses                                                         
+           5210899      syscalls:sys_enter_write         #  521.179 K/sec                     
+                 0      syscalls:sys_enter_sendto        #    0.000 /sec                      
+             81420      syscalls:sys_enter_getsockopt    #    8.143 K/sec                     
+                 0      syscalls:sys_enter_recvfrom      #    0.000 /sec                      
+                 0      syscalls:sys_enter_select        #    0.000 /sec                      
+                 0      syscalls:sys_enter_poll          #    0.000 /sec                      
+
+      10.001417687 seconds time elapsed
+

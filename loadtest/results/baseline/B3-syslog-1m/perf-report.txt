@@ -1,0 +1,120 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 7K of event 'cycles:P'
+# Event count (approx.): 31340320827
+#
+# Overhead  Command      Shared Object                                   Symbol                                            
+# ........  ...........  ..............................................  ..................................................
+#
+     5.94%  snf-capture  [kernel.kallsyms]                               [k] entry_SYSRETQ_unsafe_stack
+            |          
+             --1.00%--entry_SYSRETQ_unsafe_stack
+                       |          
+                        --0.99%--0x7f7a2b9d49ee
+                                  capture_callback
+                                  0x7f7a2bc27527
+
+     2.80%  snf-capture  [kernel.kallsyms]                               [k] native_queued_spin_lock_slowpath
+            |          
+             --0.70%--native_queued_spin_lock_slowpath
+                       _raw_spin_lock
+                       __task_rq_lock
+                       try_to_wake_up
+                       pollwake
+                       __wake_up_common
+                       __wake_up_sync_key
+                       sock_def_readable
+                       __udp_enqueue_schedule_skb
+                       udp_queue_rcv_one_skb
+                       udp_unicast_rcv_skb
+                       __udp4_lib_rcv
+                       ip_protocol_deliver_rcu
+                       ip_local_deliver_finish
+                       ip_local_deliver
+                       __netif_receive_skb_one_core
+                       process_backlog
+                       __napi_poll
+                       net_rx_action
+                       handle_softirqs
+                       do_softirq.part.0
+                       __local_bh_enable_ip
+                       __dev_queue_xmit
+                       ip_finish_output2
+                       ip_output
+                       ip_send_skb
+                       udp_send_skb
+                       udp_sendmsg
+                       __sys_sendto
+                       __x64_sys_sendto
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7f7a2b9d49ee
+                       capture_callback
+                       0x7f7a2bc27527
+
+     1.83%  snf-capture  [kernel.kallsyms]                               [k] srso_alias_safe_ret
+     1.77%  snf-capture  [kernel.kallsyms]                               [k] udp_sendmsg
+            |          
+             --0.53%--__ip_make_skb
+                       ip_make_skb
+                       udp_sendmsg
+                       __sys_sendto
+                       __x64_sys_sendto
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7f7a2b9d49ee
+                       capture_callback
+                       0x7f7a2bc27527
+
+     1.59%  snf-capture  [kernel.kallsyms]                               [k] fib_table_lookup
+     1.52%  snf-capture  [kernel.kallsyms]                               [k] ip_route_input_slow
+     1.42%  snf-capture  [kernel.kallsyms]                               [k] srso_alias_return_thunk
+     1.29%  snf-capture  [kernel.kallsyms]                               [k] __dev_queue_xmit
+     1.23%  snf-capture  [kernel.kallsyms]                               [k] __ip_make_skb
+     1.21%  snf-capture  [kernel.kallsyms]                               [k] __fib_validate_source
+     1.20%  snf-capture  snuffles                                        [.] dissect_packet
+     1.18%  snf-capture  [kernel.kallsyms]                               [k] process_backlog
+     1.07%  snf-capture  [kernel.kallsyms]                               [k] __sys_sendto
+     1.00%  snf-capture  [kernel.kallsyms]                               [k] ip_route_output_key_hash_rcu
+     0.98%  snf-capture  [kernel.kallsyms]                               [k] net_rx_action
+     0.93%  snf-capture  [kernel.kallsyms]                               [k] __memset
+     0.89%  snf-capture  [kernel.kallsyms]                               [k] __ip_append_data
+     0.85%  snf-capture  [kernel.kallsyms]                               [k] __skb_flow_dissect
+     0.83%  snf-capture  [kernel.kallsyms]                               [k] kmem_cache_alloc_node_noprof
+     0.79%  snf-capture  [kernel.kallsyms]                               [k] __netif_receive_skb_core.constprop.0
+     0.78%  snf-capture  [kernel.kallsyms]                               [k] ip_output
+     0.75%  snf-capture  [kernel.kallsyms]                               [k] __check_object_size
+     0.73%  snf-capture  [kernel.kallsyms]                               [k] enqueue_to_backlog
+     0.71%  snf-capture  [kernel.kallsyms]                               [k] srso_alias_untrain_ret
+     0.70%  snf-capture  [kernel.kallsyms]                               [k] udp_queue_rcv_one_skb
+     0.69%  snf-capture  [kernel.kallsyms]                               [k] pipe_write
+     0.67%  snf-capture  [kernel.kallsyms]                               [k] do_syscall_64
+     0.65%  snf-capture  [kernel.kallsyms]                               [k] try_to_wake_up
+     0.65%  snf-capture  [kernel.kallsyms]                               [k] packet_rcv
+     0.65%  snf-capture  [kernel.kallsyms]                               [k] __alloc_skb
+     0.64%  snf-capture  [kernel.kallsyms]                               [k] veth_xmit
+     0.64%  snf-capture  [kernel.kallsyms]                               [k] ip_finish_output2
+     0.62%  snf-capture  [kernel.kallsyms]                               [k] pollwake
+     0.62%  snf-capture  [kernel.kallsyms]                               [k] ip_local_deliver
+     0.61%  snf-capture  [kernel.kallsyms]                               [k] __udp4_lib_rcv
+     0.60%  snf-capture  [kernel.kallsyms]                               [k] vfs_write
+     0.59%  snf-capture  [kernel.kallsyms]                               [k] select_task_rq_fair
+     0.57%  snf-capture  [kernel.kallsyms]                               [k] security_socket_sendmsg
+     0.57%  snf-capture  [kernel.kallsyms]                               [k] __udp_enqueue_schedule_skb
+     0.57%  snf-capture  [kernel.kallsyms]                               [k] syscall_exit_to_user_mode
+     0.56%  snf-capture  [kernel.kallsyms]                               [k] entry_SYSCALL_64
+     0.55%  snf-capture  [kernel.kallsyms]                               [k] ip_make_skb
+     0.55%  snf-capture  [kernel.kallsyms]                               [k] ksys_write
+     0.54%  snf-capture  [kernel.kallsyms]                               [k] __skb_get_hash_net
+     0.54%  snf-capture  [kernel.kallsyms]                               [k] ip_rcv
+     0.52%  snf-capture  [kernel.kallsyms]                               [k] sk_filter_trim_cap
+     0.52%  snf-capture  snuffles                                        [.] capture_callback
+     0.51%  snf-capture  [kernel.kallsyms]                               [k] entry_SYSCALL_64_after_hwframe
+     0.50%  snf-capture  [kernel.kallsyms]                               [k] _copy_from_iter
+     0.49%  snf-capture  [kernel.kallsyms]                               [k] ip_rcv_finish_core.isra.0
+     0.49%  snf-capture  [kernel.kallsyms]                               [k] __ip_local_out
+     0.48%  snf-capture  [kernel.kallsyms]                               [k] __siphash_unaligned
+     0.48%  snf-capture  [kernel.kallsyms]                               [k] sock_wfree
