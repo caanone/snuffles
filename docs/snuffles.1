@@ -5,6 +5,7 @@ snuffles \- lightweight terminal network packet analyzer
 .B snuffles
 [\fB\-i\fR \fIiface\fR] [\fB\-r\fR \fIfile.pcap\fR] [\fB\-f\fR \fIfilter\fR]
 [\fB\-c\fR \fIcount\fR] [\fB\-s\fR \fIsnaplen\fR] [\fB\-b\fR \fIring\fR]
+[\fB\-B\fR \fIMB\fR]
 [\fB\-o\fR \fIfile\fR] [\fB\-w\fR \fIfile\fR] [\fB\-\-no\-ui\fR] [\fB\-\-jsonl\fR]
 [\fB\-q\fR] [\fB\-\-syslog\fR \fIhost:port\fR] [\fB\-\-list\-ifaces\fR]
 .SH DESCRIPTION
@@ -39,6 +40,16 @@ Snapshot length in bytes (64\-65535, default 65535).
 .TP
 .BI \-b " ring"
 Ring buffer size in packets (16\-1000000, default 10000).
+.TP
+.BI \-B " MB"
+Kernel capture buffer in MiB (1\-1024, default 64). Raw\-socket build
+(Linux): the packet socket's receive queue, set with SO_RCVBUFFORCE before
+privileges are dropped (falls back to SO_RCVBUF, capped by
+.BR net.core.rmem_max ,
+with a warning); frames are read in batches of 64 with
+.BR recvmmsg (2)
+and timestamped by the kernel. The libpcap build accepts the option but
+does not act on it yet.
 .TP
 .BI \-o " file"
 Export the ring buffer on exit; format chosen by extension
@@ -114,6 +125,7 @@ pairs with the keys
 .BR interface ,
 .BR snaplen " (64\-65535),"
 .BR ring_size " (16\-1000000),"
+.BR buffer_mb " (1\-1024),"
 .BR promisc " (0/1),"
 .BR syslog ", and"
 .BR syslog_iface .
