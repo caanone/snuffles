@@ -1,0 +1,120 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 15K of event 'cycles:P'
+# Event count (approx.): 61734595096
+#
+# Overhead  Command      Shared Object                                   Symbol                                            
+# ........  ...........  ..............................................  ..................................................
+#
+    17.33%  snuffles     [kernel.kallsyms]                               [k] n_tty_write
+            |          
+             --14.30%--n_tty_write
+                       file_tty_write.isra.0
+                       vfs_write
+                       ksys_write
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7f73a12aa9ee
+                       ui_run
+                       main
+                       0x7f73a1239ca8
+
+     5.17%  snf-capture  [kernel.kallsyms]                               [k] entry_SYSRETQ_unsafe_stack
+     1.80%  snf-capture  snuffles                                        [.] dissect_packet
+     1.38%  snf-capture  [kernel.kallsyms]                               [k] pipe_write
+     1.09%  snuffles     [kernel.kallsyms]                               [k] entry_SYSRETQ_unsafe_stack
+     0.96%  snuffles     snuffles                                        [.] ringbuf_read
+     0.94%  snf-capture  [kernel.kallsyms]                               [k] vfs_write
+     0.78%  snf-capture  [kernel.kallsyms]                               [k] _copy_from_iter
+     0.75%  snf-capture  [kernel.kallsyms]                               [k] srso_alias_safe_ret
+     0.72%  snuffles     snuffles                                        [.] ob_str
+     0.70%  snf-capture  [kernel.kallsyms]                               [k] entry_SYSCALL_64
+     0.67%  snf-capture  snuffles                                        [.] session_table_update
+     0.63%  snuffles     snuffles                                        [.] ringbuf_read_seq
+     0.58%  snuffles     [kernel.kallsyms]                               [k] __memset
+     0.56%  snuffles     snuffles                                        [.] render_frame
+     0.52%  snf-capture  [kernel.kallsyms]                               [k] srso_alias_return_thunk
+     0.52%  snf-capture  [kernel.kallsyms]                               [k] srso_alias_untrain_ret
+     0.50%  snf-capture  snuffles                                        [.] capture_callback
+     0.48%  snf-capture  [kernel.kallsyms]                               [k] do_syscall_64
+     0.48%  snf-capture  [kernel.kallsyms]                               [k] ksys_write
+     0.46%  snf-capture  libc.so.6                                       [.] snprintf
+     0.45%  snf-capture  [kernel.kallsyms]                               [k] fdget_pos
+     0.43%  snf-capture  libc.so.6                                       [.] 0x0000000000062cff
+     0.42%  snf-capture  [kernel.kallsyms]                               [k] security_file_permission
+     0.41%  snf-capture  [kernel.kallsyms]                               [k] aa_file_perm
+     0.39%  snf-capture  [kernel.kallsyms]                               [k] syscall_exit_to_user_mode
+     0.38%  snf-capture  libc.so.6                                       [.] 0x000000000009a9ee
+     0.38%  snf-capture  snuffles                                        [.] key_hash
+     0.36%  snf-capture  [kernel.kallsyms]                               [k] entry_SYSCALL_64_after_hwframe
+     0.35%  snf-capture  [kernel.kallsyms]                               [k] __wake_up_sync_key
+     0.35%  snf-capture  [kernel.kallsyms]                               [k] inode_needs_update_time
+     0.34%  snf-capture  snuffles                                        [.] dissect_ipv4.isra.0
+     0.34%  snf-capture  [kernel.kallsyms]                               [k] __memset
+     0.33%  snf-capture  libc.so.6                                       [.] 0x000000000005a35a
+     0.33%  snf-capture  libc.so.6                                       [.] write
+     0.31%  snf-capture  libc.so.6                                       [.] memcpy@plt
+     0.31%  snf-capture  [kernel.kallsyms]                               [k] arch_exit_to_user_mode_prepare.isra.0
+     0.31%  snuffles     [kernel.kallsyms]                               [k] srso_alias_safe_ret
+     0.30%  snuffles     [kernel.kallsyms]                               [k] select_task_rq_fair
+     0.29%  snf-capture  [kernel.kallsyms]                               [k] rw_verify_area
+     0.29%  snuffles     [kernel.kallsyms]                               [k] file_tty_write.isra.0
+     0.28%  snf-capture  libpcap.so.1.10.5                               [.] 0x0000000000009527
+     0.27%  snf-capture  snuffles                                        [.] ringbuf_producer_commit
+     0.27%  snf-capture  [kernel.kallsyms]                               [k] copy_page_from_iter
+     0.26%  snuffles     [kernel.kallsyms]                               [k] _copy_from_iter
+     0.26%  snf-capture  [kernel.kallsyms]                               [k] kernfs_iop_permission
+     0.26%  snuffles     libc.so.6                                       [.] snprintf
+     0.25%  snuffles     snuffles                                        [.] ob_append
+     0.24%  snf-capture  [kernel.kallsyms]                               [k] apparmor_file_permission
+     0.24%  snf-capture  libc.so.6                                       [.] pthread_mutex_lock
+     0.23%  snf-capture  libc.so.6                                       [.] 0x0000000000162b43
+     0.23%  snuffles     libc.so.6                                       [.] 0x000000000005a2f3
+     0.23%  snuffles     [kernel.kallsyms]                               [k] __memcpy
+     0.23%  snuffles     libc.so.6                                       [.] vsnprintf
+     0.23%  snuffles     libc.so.6                                       [.] 0x0000000000162b43
+     0.23%  snuffles     libc.so.6                                       [.] memcpy@plt
+     0.23%  snuffles     [kernel.kallsyms]                               [k] try_to_wake_up
+     0.23%  snf-capture  libc.so.6                                       [.] 0x000000000005a2f3
+     0.23%  snf-capture  libc.so.6                                       [.] 0x0000000000162b86
+     0.22%  snuffles     libc.so.6                                       [.] 0x0000000000162b7a
+     0.22%  snf-capture  libc.so.6                                       [.] 0x0000000000162b94
+     0.21%  snuffles     [kernel.kallsyms]                               [k] __queue_work.part.0
+     0.21%  snf-capture  libc.so.6                                       [.] 0x000000000005a2bb
+     0.21%  snuffles     libc.so.6                                       [.] 0x000000000005a2c4
+     0.20%  snf-capture  snuffles                                        [.] dissect_udp.isra.0
+     0.20%  snuffles     snuffles                                        [.] ob_printf
+     0.20%  snuffles     libc.so.6                                       [.] 0x0000000000162b70
+     0.20%  snuffles     libc.so.6                                       [.] 0x0000000000162b40
+     0.20%  snuffles     [kernel.kallsyms]                               [k] srso_alias_return_thunk
+     0.20%  snf-capture  libc.so.6                                       [.] 0x000000000005a350
+     0.20%  snf-capture  [kernel.kallsyms]                               [k] dput
+     0.19%  snuffles     [kernel.kallsyms]                               [k] _raw_spin_lock_irqsave
+     0.19%  snuffles     libc.so.6                                       [.] 0x0000000000062971
+     0.18%  snf-capture  libc.so.6                                       [.] 0x0000000000162b70
+     0.18%  snuffles     libc.so.6                                       [.] 0x0000000000162b75
+     0.18%  snf-capture  libc.so.6                                       [.] 0x0000000000162b75
+     0.18%  snf-capture  libc.so.6                                       [.] 0x000000000005a2c4
+     0.18%  snuffles     [kernel.kallsyms]                               [k] __check_object_size
+     0.17%  snuffles     [kernel.kallsyms]                               [k] tty_insert_flip_string_and_push_buffer
+     0.17%  snf-capture  libc.so.6                                       [.] 0x0000000000162b7a
+     0.17%  snf-capture  [kernel.kallsyms]                               [k] _raw_spin_lock_irqsave
+     0.17%  snf-capture  libc.so.6                                       [.] strchrnul@plt
+     0.17%  snuffles     snuffles                                        [.] memcpy@plt
+     0.17%  snf-capture  libc.so.6                                       [.] 0x0000000000162b84
+     0.17%  snf-capture  libc.so.6                                       [.] 0x000000000005a305
+     0.17%  snf-capture  libc.so.6                                       [.] 0x0000000000162b40
+     0.17%  snuffles     libc.so.6                                       [.] 0x000000000005a2b3
+     0.17%  snf-capture  libc.so.6                                       [.] 0x000000000005a2b3
+     0.17%  snf-capture  libc.so.6                                       [.] 0x000000000005a2f8
+     0.17%  snf-capture  libc.so.6                                       [.] 0x0000000000062971
+     0.16%  snf-capture  [kernel.kallsyms]                               [k] __d_lookup
+     0.16%  snuffles     libc.so.6                                       [.] 0x0000000000162b84
+     0.16%  snuffles     [kernel.kallsyms]                               [k] vfs_read
+     0.16%  snf-capture  libc.so.6                                       [.] 0x000000000005a354
+     0.16%  snf-capture  [kernel.kallsyms]                               [k] file_update_time
+     0.16%  snf-capture  libc.so.6                                       [.] 0x00000000000626f9
+     0.16%  snuffles     libc.so.6                                       [.] 0x000000000005a300
