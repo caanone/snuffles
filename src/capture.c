@@ -17,6 +17,9 @@
 #ifndef _WIN32
   #include <unistd.h>
   #include <sys/types.h>
+  #include <sys/socket.h>
+  #include <sys/ioctl.h>
+  #include <net/if.h>
   #include <pwd.h>
 #endif
 
@@ -30,6 +33,8 @@ struct capture_ctx {
     atomic_int          stop_req;
     int                 datalink;
     int                 offline;
+    int                 iface_mtu;      /* live: MTU of the interface, 0 unknown */
+    int                 superframe_warned;  /* capture thread only */
     uint64_t            pkt_count;      /* capture thread only */
     atomic_uint_fast64_t drops;         /* published by capture thread */
     atomic_uint_fast64_t ifdrops;       /* pcap ps_ifdrop */
@@ -52,6 +57,36 @@ struct capture_ctx {
     char                err_msg[256]; /* written before had_error is set */
 };
 
+/* ── Helpers ─────────────────────────────────────────────────── */
+
+/* 100 us pause while the offline producer waits for the consumer. */
+static void offline_nap(void) {
+#ifdef _WIN32
+    Sleep(1);
+#else
+    struct timespec ts = { 0, 100000 };
+    nanosleep(&ts, NULL);
+#endif
+}
+
+/* MTU of a live interface, 0 if unknown (pseudo-devices, non-POSIX). */
+static int iface_mtu(const char *name) {
+#if defined(_WIN32) || !defined(SIOCGIFMTU)
+    (void)name;
+    return 0;
+#else
+    struct ifreq ifr;
+    if (strlen(name) >= sizeof(ifr.ifr_name)) return 0;
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return 0;
+    memset(&ifr, 0, sizeof(ifr));
+    snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "%s", name);
+    int mtu = (ioctl(fd, SIOCGIFMTU, &ifr) == 0) ? ifr.ifr_mtu : 0;
+    close(fd);
+    return mtu;
+#endif
+}
+
 /* ── Capture callback ────────────────────────────────────────── */
 
 static void capture_callback(u_char *user, const struct pcap_pkthdr *hdr,
@@ -61,6 +96,35 @@ static void capture_callback(u_char *user, const struct pcap_pkthdr *hdr,
     if (atomic_load(&ctx->stop_req)) {
         pcap_breakloop(ctx->handle);
         return;
+    }
+
+    /* Offline replay back-pressure: a file read has no reason to lose
+     * records, so when a streaming consumer is attached to the ring, wait
+     * for it instead of lapping it. Live capture never waits here (the
+     * kernel buffer is the only place a live burst can be absorbed). */
+    if (ctx->offline) {
+        while (!ringbuf_producer_may_write(ctx->rb)) {
+            if (atomic_load(&ctx->stop_req)) {
+                pcap_breakloop(ctx->handle);
+                return;
+            }
+            offline_nap();
+        }
+    }
+
+    /* GRO/GSO super-frames: a frame longer than a standard Ethernet MTU
+     * frame on a non-jumbo interface was coalesced by the kernel before
+     * the tap saw it. Harmless for dissection, but each one costs a large
+     * memcpy and the -s/ring math assumes wire-sized frames. Warn once,
+     * headless modes only (stderr would scribble over the TUI). */
+    if (hdr->len > 1518 && !ctx->superframe_warned) {
+        ctx->superframe_warned = 1;
+        if (ctx->cfg.no_ui && ctx->iface_mtu > 0 && ctx->iface_mtu <= 1500)
+            fprintf(stderr, "snuffles: %u-byte frame on %s (MTU %d): the kernel "
+                    "is coalescing packets (GRO/GSO super-frames); "
+                    "for wire-sized frames try: ethtool -K %s gro off gso off "
+                    "tso off\n", hdr->len, ctx->iface_name, ctx->iface_mtu,
+                    ctx->iface_name);
     }
 
     pkt_record_t *rec = ringbuf_producer_next(ctx->rb);
@@ -332,6 +396,7 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
         }
 
         snprintf(ctx->iface_name, sizeof(ctx->iface_name), "%s", iface);
+        ctx->iface_mtu = iface_mtu(iface);
     }
 
     ctx->datalink = pcap_datalink(ctx->handle);
