@@ -1485,24 +1485,34 @@ void ui_run(ui_ctx_t *ctx) {
 #endif
 
     int notify_fd = ringbuf_get_notify_fd(ctx->rb);
+    uint64_t seen_total = 0;
 
     while (!ctx->stop) {
         if (g_async_stop) break;
 #ifdef _WIN32
         Sleep(50);
 #else
-        fd_set fds;
-        struct timeval tv = { .tv_sec = 0, .tv_usec = 50000 };
-        FD_ZERO(&fds);
-        FD_SET(STDIN_FILENO, &fds);
-        int maxfd = STDIN_FILENO;
-        if (notify_fd >= 0) {
-            FD_SET(notify_fd, &fds);
-            if (notify_fd > maxfd) maxfd = notify_fd;
+        /* Only announce a wait when nothing is pending, then re-check: a
+         * commit that raced the announcement gets no wakeup, so it must
+         * be caught here (see ringbuf.h). Keys still get polled: the
+         * select is skipped only when there are packets to render. */
+        if (ringbuf_total(ctx->rb) == seen_total) {
+            ringbuf_consumer_will_wait(ctx->rb);
+            if (ringbuf_total(ctx->rb) == seen_total) {
+                fd_set fds;
+                struct timeval tv = { .tv_sec = 0, .tv_usec = 50000 };
+                FD_ZERO(&fds);
+                FD_SET(STDIN_FILENO, &fds);
+                int maxfd = STDIN_FILENO;
+                if (notify_fd >= 0) {
+                    FD_SET(notify_fd, &fds);
+                    if (notify_fd > maxfd) maxfd = notify_fd;
+                }
+                select(maxfd + 1, &fds, NULL, NULL, &tv);
+            }
         }
-        select(maxfd + 1, &fds, NULL, NULL, &tv);
-        if (notify_fd >= 0 && FD_ISSET(notify_fd, &fds))
-            ringbuf_drain_notify(ctx->rb);
+        ringbuf_drain_notify(ctx->rb);
+        seen_total = ringbuf_total(ctx->rb);
 #endif
 
         if (!ctx->paused)

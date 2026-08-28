@@ -35,8 +35,8 @@ ringbuf_t *ringbuf_create(uint32_t capacity, uint32_t snaplen) {
     atomic_store(&rb->write_seq, 0);
     atomic_store(&rb->commit_seq, 0);
     atomic_store(&rb->clear_seq, 0);
-    ns_mutex_init(&rb->mtx);
-    ns_cond_init(&rb->cond);
+    atomic_store(&rb->consumer_waiting, 0);
+    atomic_store(&rb->notify_sent, 0);
 
 #ifdef _WIN32
     rb->notify_event = CreateEvent(NULL, FALSE, FALSE, NULL);
@@ -63,8 +63,6 @@ void ringbuf_destroy(ringbuf_t *rb) {
     close(rb->notify_pipe[0]);
     close(rb->notify_pipe[1]);
 #endif
-    ns_mutex_destroy(&rb->mtx);
-    ns_cond_destroy(&rb->cond);
     free(rb->slot_gen);
     free(rb->data_pool);
     free(rb->records);
@@ -91,17 +89,22 @@ void ringbuf_producer_commit(ringbuf_t *rb) {
     atomic_store(&rb->write_seq, seq + 1);
     atomic_fetch_add(&rb->commit_seq, 1);
 
-    /* wake consumer */
-    ns_mutex_lock(&rb->mtx);
-    ns_cond_signal(&rb->cond);
-    ns_mutex_unlock(&rb->mtx);
-
+    /* Wake the consumer only if it announced it is about to block. Both
+     * this load and the consumer's flag store are seq_cst, and so are the
+     * commit_seq RMW above and the consumer's re-check load: in the
+     * single total order either we see the flag (and deliver a wakeup)
+     * or the consumer's re-check sees this commit (and doesn't block).
+     * The exchange claims the wakeup so a burst costs one syscall. */
+    if (atomic_load(&rb->consumer_waiting) &&
+        atomic_exchange(&rb->consumer_waiting, 0)) {
+        atomic_fetch_add_explicit(&rb->notify_sent, 1, memory_order_relaxed);
 #ifdef _WIN32
-    SetEvent(rb->notify_event);
+        SetEvent(rb->notify_event);
 #else
-    char c = 1;
-    (void)write(rb->notify_pipe[1], &c, 1);
+        char c = 1;
+        (void)write(rb->notify_pipe[1], &c, 1);
 #endif
+    }
 }
 
 uint64_t ringbuf_oldest(const ringbuf_t *rb) {
@@ -168,7 +171,15 @@ int ringbuf_get_notify_fd(ringbuf_t *rb) {
 #endif
 }
 
+void ringbuf_consumer_will_wait(ringbuf_t *rb) {
+    atomic_store(&rb->consumer_waiting, 1);
+}
+
 void ringbuf_drain_notify(ringbuf_t *rb) {
+    /* Awake now: withdraw the announcement so commits that land while we
+     * process this batch don't queue a stale wakeup. */
+    if (atomic_load_explicit(&rb->consumer_waiting, memory_order_relaxed))
+        atomic_store(&rb->consumer_waiting, 0);
 #ifdef _WIN32
     (void)rb;
 #else
@@ -176,4 +187,8 @@ void ringbuf_drain_notify(ringbuf_t *rb) {
     while (read(rb->notify_pipe[0], buf, sizeof(buf)) > 0)
         ;
 #endif
+}
+
+uint64_t ringbuf_notify_sent(const ringbuf_t *rb) {
+    return atomic_load_explicit(&rb->notify_sent, memory_order_relaxed);
 }

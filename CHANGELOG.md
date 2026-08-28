@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- **Ring buffer producer no longer pays a wakeup per packet.** Every commit
+  used to lock/signal an unused condition variable and `write()` one byte
+  to the consumer's notify pipe (a syscall per packet, `EAGAIN` once the
+  pipe filled). Consumers now announce that they are about to block
+  (`ringbuf_consumer_will_wait`) and re-check the ring before sleeping;
+  the producer writes to the pipe (or signals the Win32 event) only when
+  it finds that flag set, and claims it, so an idle period costs one
+  syscall instead of one per packet. Under sustained load the capture
+  thread makes no wakeup syscalls at all. `--stats` reports the delivered
+  wakeups as `wakeups=`.
+
 ## [1.3.1] — 2026-08-27
 
 ### Fixed

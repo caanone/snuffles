@@ -125,14 +125,22 @@ static void run_headless(ringbuf_t *rb, capture_ctx_t *cap,
 
     while (!g_stop) {
 #ifndef _WIN32
-        fd_set fds;
         struct timeval tv = { .tv_sec = 0, .tv_usec = 100000 };
-        FD_ZERO(&fds);
         if (notify_fd >= 0) {
-            FD_SET(notify_fd, &fds);
-            select(notify_fd + 1, &fds, NULL, NULL, &tv);
-            if (FD_ISSET(notify_fd, &fds))
-                ringbuf_drain_notify(rb);
+            /* Only announce a wait when nothing is pending, then re-check:
+             * a commit that raced the announcement gets no wakeup, so it
+             * must be caught here. Under sustained load the announcement
+             * never happens and the producer never touches the pipe. */
+            if (ringbuf_total(rb) <= last) {
+                ringbuf_consumer_will_wait(rb);
+                if (ringbuf_total(rb) <= last) {
+                    fd_set fds;
+                    FD_ZERO(&fds);
+                    FD_SET(notify_fd, &fds);
+                    select(notify_fd + 1, &fds, NULL, NULL, &tv);
+                }
+            }
+            ringbuf_drain_notify(rb);
         } else {
             select(0, NULL, NULL, NULL, &tv);
         }
@@ -223,7 +231,7 @@ static void stats_report_line(stats_reporter_t *r, const char *tag) {
     fprintf(r->out,
             "%s t=%.3f captured=%llu kdrop=%llu ifdrop=%llu ring=%u "
             "emitted=%llu missed=%llu syslog_sent=%llu syslog_fail=%llu "
-            "streamed=%llu sessions=%u rss_kb=%ld\n",
+            "streamed=%llu sessions=%u wakeups=%llu rss_kb=%ld\n",
             tag, tv_secs(&now, &r->t0),
             (unsigned long long)cs.pkts_recv,
             (unsigned long long)cs.pkts_drop,
@@ -235,6 +243,7 @@ static void stats_report_line(stats_reporter_t *r, const char *tag) {
             (unsigned long long)cs.syslog_failed,
             (unsigned long long)cs.stream_pkts,
             r->st ? session_table_count(r->st) : 0u,
+            (unsigned long long)ringbuf_notify_sent(r->rb),
             rss_kb());
     fflush(r->out);
 }
