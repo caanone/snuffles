@@ -23,6 +23,11 @@ typedef struct ringbuf {
      * per idle period pays for a syscall instead of every commit. */
     atomic_int      consumer_waiting;
     atomic_uint_fast64_t notify_sent;   /* wakeups actually delivered */
+    /* Position of the (single) streaming consumer: the next sequence it
+     * will read, or RINGBUF_NO_CONSUMER when none is attached. Only used
+     * for back-pressure by producers that can afford to wait (offline
+     * replay); live capture never blocks on it. */
+    atomic_uint_fast64_t consumer_seq;
 #ifdef _WIN32
     HANDLE          notify_event;
 #else
@@ -70,5 +75,27 @@ int                 ringbuf_get_notify_fd(ringbuf_t *rb);
 void                ringbuf_consumer_will_wait(ringbuf_t *rb);
 void                ringbuf_drain_notify(ringbuf_t *rb);
 uint64_t            ringbuf_notify_sent(const ringbuf_t *rb);
+
+/* Consumer-position hook (offline replay back-pressure).
+ *   ringbuf_consumer_attach   registers a streaming consumer at sequence 0;
+ *                             call it before the producer starts so the
+ *                             producer can never lap the consumer's start.
+ *   ringbuf_consumer_publish  the consumer stores the next sequence it will
+ *                             read (release: its copies of earlier records
+ *                             are complete before the producer may reuse
+ *                             their slots).
+ *   ringbuf_producer_may_write  1 if taking the next slot cannot overwrite a
+ *                             record the attached consumer has not read yet
+ *                             (commit_seq - consumer_seq < capacity - 1: one
+ *                             slot of slack because the record at
+ *                             commit_seq - capacity is still visible while
+ *                             it is being overwritten); always 1 without an
+ *                             attached consumer. A producer that must not
+ *                             lose records waits until this returns 1. */
+#define RINGBUF_NO_CONSUMER UINT64_MAX
+void                ringbuf_consumer_attach(ringbuf_t *rb);
+void                ringbuf_consumer_publish(ringbuf_t *rb, uint64_t next_seq);
+uint64_t            ringbuf_consumer_seq(const ringbuf_t *rb);
+int                 ringbuf_producer_may_write(const ringbuf_t *rb);
 
 #endif /* RINGBUF_H */

@@ -291,6 +291,9 @@ typedef struct {
     char        syslog_iface[64];
     int         buffer_mb;      /* -B: kernel capture buffer in MB (libpcap ring / raw SO_RCVBUF) */
     int         immediate;      /* --immediate: per-packet delivery (libpcap) */
+    int         no_summary;     /* --no-summary: no exit counters in headless modes */
+    int         cpu;            /* --cpu: pin the capture thread to this CPU (-1: unset) */
+    int         rt;             /* --rt: SCHED_FIFO for the capture thread */
 } capture_cfg_t;
 
 static inline void capture_cfg_defaults(capture_cfg_t *cfg) {
@@ -300,6 +303,7 @@ static inline void capture_cfg_defaults(capture_cfg_t *cfg) {
     cfg->ring_size = 10000;
     cfg->count     = 0;
     cfg->buffer_mb = 64;
+    cfg->cpu       = -1;
 }
 
 /* ── Default interface ───────────────────────────────────────── */

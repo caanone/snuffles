@@ -37,6 +37,7 @@ ringbuf_t *ringbuf_create(uint32_t capacity, uint32_t snaplen) {
     atomic_store(&rb->clear_seq, 0);
     atomic_store(&rb->consumer_waiting, 0);
     atomic_store(&rb->notify_sent, 0);
+    atomic_store(&rb->consumer_seq, RINGBUF_NO_CONSUMER);
 
 #ifdef _WIN32
     rb->notify_event = CreateEvent(NULL, FALSE, FALSE, NULL);
@@ -221,4 +222,28 @@ void ringbuf_drain_notify(ringbuf_t *rb) {
 
 uint64_t ringbuf_notify_sent(const ringbuf_t *rb) {
     return atomic_load_explicit(&rb->notify_sent, memory_order_relaxed);
+}
+
+/* ── consumer position (offline back-pressure) ───────────────── */
+
+void ringbuf_consumer_attach(ringbuf_t *rb) {
+    atomic_store(&rb->consumer_seq, 0);
+}
+
+void ringbuf_consumer_publish(ringbuf_t *rb, uint64_t next_seq) {
+    atomic_store_explicit(&rb->consumer_seq, next_seq, memory_order_release);
+}
+
+uint64_t ringbuf_consumer_seq(const ringbuf_t *rb) {
+    return atomic_load_explicit(&rb->consumer_seq, memory_order_acquire);
+}
+
+int ringbuf_producer_may_write(const ringbuf_t *rb) {
+    uint64_t c = atomic_load_explicit(&rb->consumer_seq, memory_order_acquire);
+    if (c == RINGBUF_NO_CONSUMER) return 1;
+    uint64_t total = atomic_load_explicit(&rb->commit_seq, memory_order_relaxed);
+    /* c can run ahead of total only transiently (consumer published a
+     * sequence it expects next): no back-pressure in that case. */
+    if (c >= total) return 1;
+    return (total - c) < (uint64_t)rb->capacity - 1;
 }
