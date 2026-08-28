@@ -27,6 +27,8 @@
 #ifndef _WIN32
   #include <unistd.h>
   #include <sys/select.h>
+#else
+  #include <io.h>          /* _isatty, _fileno */
 #endif
 
 /* ── Globals (minimal, per spec) ─────────────────────────────── */
@@ -120,6 +122,19 @@ static void run_headless(ringbuf_t *rb, capture_ctx_t *cap,
         return;
     }
 
+    /* A file or pipe consumer gets a 1 MiB fully-buffered stdout and one
+       flush per drain batch (below, before every wait): a write() per
+       record made this loop the bottleneck under load, so the ring
+       wrapped past it (missed= in --stats). A terminal keeps stdio's
+       line buffering so interactive output looks the same as before. */
+#ifdef _WIN32
+    int stdout_tty = _isatty(_fileno(stdout));
+#else
+    int stdout_tty = isatty(STDOUT_FILENO);
+#endif
+    if (!stdout_tty)
+        setvbuf(stdout, NULL, _IOFBF, 1 << 20);
+
     uint64_t last = 0;
     int notify_fd = ringbuf_get_notify_fd(rb);
 
@@ -170,7 +185,6 @@ static void run_headless(ringbuf_t *rb, capture_ctx_t *cap,
                                s->dst_ip[0] ? s->dst_ip : s->dst_mac,
                                s->protocol, s->info);
                 }
-                fflush(stdout);
                 atomic_fetch_add_explicit(&g_emitted, 1, memory_order_relaxed);
             } else {
                 atomic_fetch_add_explicit(&g_missed, 1, memory_order_relaxed);
@@ -178,6 +192,9 @@ static void run_headless(ringbuf_t *rb, capture_ctx_t *cap,
             last++;
         }
 
+        /* One flush per batch, before blocking in select() above. SIGPIPE
+           is ignored, so a closed pipe surfaces here as a write error. */
+        fflush(stdout);
         if (ferror(stdout))   /* reader went away (pipe closed) */
             break;
 
