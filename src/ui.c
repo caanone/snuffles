@@ -1096,8 +1096,7 @@ static void sync_stats(ui_ctx_t *ctx) {
 
     pkt_record_t rec;
     while (ctx->last_total < total) {
-        uint32_t idx = (uint32_t)(ctx->last_total - oldest);
-        if (ringbuf_read(ctx->rb, idx, &rec, NULL))
+        if (ringbuf_read_seq(ctx->rb, ctx->last_total, &rec, NULL))
             stats_update(&ctx->stats, &rec.summary);
         ctx->last_total++;
     }
