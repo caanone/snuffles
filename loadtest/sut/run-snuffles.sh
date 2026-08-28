@@ -4,8 +4,8 @@
 #   run-snuffles.sh <mode> <build> <iface> <resultsdir> [extra snuffles args...]
 #   run-snuffles.sh stop <resultsdir>
 #
-# mode  : quiet | headless | headless-pipe | jsonl | syslog | stream-null |
-#         stream-disk | tui | tui-sessions
+# mode  : quiet | headless | headless-pipe | jsonl | jsonl-latency | syslog |
+#         stream-null | stream-disk | tui | tui-sessions
 # build : pcap | raw   (binary: /opt/snuffles/<build>/snuffles)
 #
 # Always adds  -i <iface> --stats=<resultsdir>/snuffles.stats ; extra args are
@@ -16,6 +16,8 @@
 #   snuffles.stderr   snuffles' stderr
 #   snuffles.cmdline  exact argv, one arg per line;  snuffles.mode  the mode
 #   out.count         headless-pipe: `wc -l` of stdout (complete after stop)
+#   latency.json      jsonl-latency: capture-to-output p50/p95/p99 ms (latency.py)
+#   latency.log       jsonl-latency: latency.py's own stderr
 #   stream.pcap       stream-disk: written while running; deleted by `stop`
 #                     after its size is recorded (keep it with SNF_KEEP_STREAM=1)
 #   tui.log           tui modes: tui.py event log
@@ -40,7 +42,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=${SNF_SNUFFLES_ROOT:-/opt/snuffles}
 SYSLOG_TARGET=${SNF_SYSLOG_TARGET:-10.78.0.5:514}
 STOP_TIMEOUT=${SNF_STOP_TIMEOUT:-30}
-MODES="quiet headless headless-pipe jsonl syslog stream-null stream-disk tui tui-sessions"
+MODES="quiet headless headless-pipe jsonl jsonl-latency syslog stream-null stream-disk tui tui-sessions"
 
 usage() {
     sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//' | sed '$d' >&2
@@ -80,6 +82,16 @@ supervise() {
         headless-pipe)
             rm -f "$res/.out.fifo"; mkfifo "$res/.out.fifo"
             wc -l < "$res/.out.fifo" > "$res/out.count" & wcpid=$!
+            "${argv[@]}" </dev/null >"$res/.out.fifo" 2>"$res/snuffles.stderr" & pid=$!
+            echo "$pid" > "$res/snuffles.pid"
+            ;;
+        jsonl-latency)
+            # snuffles --jsonl -> latency.py, which times now - packet.ts per
+            # line and writes latency.json. Like headless-pipe: the fifo lets us
+            # keep snuffles.pid = the snuffles process (perf/telemetry target).
+            rm -f "$res/.out.fifo"; mkfifo "$res/.out.fifo"
+            python3 "$HERE/latency.py" -o "$res/latency.json" \
+                <"$res/.out.fifo" >"$res/latency.log" 2>&1 & wcpid=$!
             "${argv[@]}" </dev/null >"$res/.out.fifo" 2>"$res/snuffles.stderr" & pid=$!
             echo "$pid" > "$res/snuffles.pid"
             ;;
@@ -165,7 +177,8 @@ do_start() {
         alive "$old" && { echo "start: snuffles already running in $res (pid $old)" >&2; exit 1; }
     fi
     rm -f "$res/snuffles.pid" "$res/tui.pid" "$res/exit.status" "$res/exit.json" \
-          "$res/out.count" "$res/.out.fifo" "$res/tui.log" "$res/snuffles.stderr"
+          "$res/out.count" "$res/.out.fifo" "$res/tui.log" "$res/snuffles.stderr" \
+          "$res/latency.json" "$res/latency.log"
 
     argv=("$bin" -i "$iface" "--stats=$res/snuffles.stats")
     case $mode in
@@ -173,6 +186,7 @@ do_start() {
         headless)      argv+=(--no-ui) ;;
         headless-pipe) argv+=(--no-ui) ;;
         jsonl)         argv+=(--jsonl) ;;
+        jsonl-latency) argv+=(--jsonl) ;;
         syslog)        argv+=(-q --syslog "$SYSLOG_TARGET") ;;
         stream-null)   argv+=(-q -w /dev/null) ;;
         stream-disk)   argv+=(-q -w "$res/stream.pcap") ;;

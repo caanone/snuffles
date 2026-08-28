@@ -5,6 +5,8 @@ Everything here runs **inside** the `snf-sut` container (image `snuffles-sut`,
 `/opt/snuffles/{build.sh,telemetry.sh,run-snuffles.sh,perf.sh,tui.py}` are thin
 wrappers that `exec` the live copies under `/repo/loadtest/sut/`, so editing a
 script here never needs an image rebuild (only the package list does).
+`latency.py` (jsonl-latency mode) is not wrapped — run-snuffles.sh runs it from
+its own `/repo/loadtest/sut/` directory, so it too is always live.
 
 ```
 docker build -f loadtest/docker/sut.Dockerfile -t snuffles-sut .   # any context works
@@ -38,6 +40,7 @@ run-snuffles.sh stop <resultsdir>
 | headless      | `--no-ui`                                         | /dev/null |
 | headless-pipe | `--no-ui`                                         | FIFO → `wc -l > out.count` |
 | jsonl         | `--jsonl`                                         | /dev/null |
+| jsonl-latency | `--jsonl`                                          | FIFO → `latency.py -o latency.json` |
 | syslog        | `-q --syslog 10.78.0.5:514` (`SNF_SYSLOG_TARGET`) | /dev/null |
 | stream-null   | `-q -w /dev/null`                                 | /dev/null |
 | stream-disk   | `-q -w <resultsdir>/stream.pcap`                  | /dev/null |
@@ -56,6 +59,7 @@ Files in `<resultsdir>`:
 | `snuffles.stderr` | snuffles' stderr (the TUI never writes to the pty's stderr) |
 | `snuffles.cmdline`, `snuffles.mode` | exact argv (one per line) and the mode |
 | `out.count` | headless-pipe: number of stdout lines (complete once `exit.status` exists) |
+| `latency.json`, `latency.log` | jsonl-latency: capture-to-output p50/p95/p99 ms (`latency.py`) and its stderr |
 | `stream.pcap` | stream-disk: exists while running; `stop` records its size and **deletes** it (`SNF_KEEP_STREAM=1` keeps it) |
 | `exit.status` | `<rc> <epoch_ms>` written by the supervisor when snuffles exits (rc=128+N for signal N) |
 | `exit.json` | written by `stop`: `{"mode","pid","exit_code","exit_latency_ms","killed","stop_signal","stream_bytes"}` |
@@ -96,7 +100,10 @@ summed over CPUs, `ifaces` for br0 p1..p5 mgmt0 (missing ones skipped),
 `pktsock` {rmem, rcvbuf, drops} from `ss -0 -e -m -p -H` (only the packet
 sockets owned by `<pid>`; all packet sockets in the netns if it owns none),
 `mem_current` (`/sys/fs/cgroup/memory.current`, `null` if unreadable),
-`loadavg` [1,5,15]. utime/stime raw ticks (CLK_TCK=100); nvcsw/nivcsw summed
+`cpu_mhz` (mean "cpu MHz" in `/proc/cpuinfo` over the SUT cpuset — from
+`cpuset.cpus.effective`, else 2,3,10,11 — for analyze.py's cycles/packet;
+`null` if the kernel exposes no per-core MHz), `loadavg` [1,5,15].
+utime/stime raw ticks (CLK_TCK=100); nvcsw/nivcsw summed
 over tasks. Pure bash; the only fork per sample is `ss`. When the pid exits
 (or turns zombie) it writes one last line with `"proc":null,"threads":{}` and
 exits 0; SIGTERM/SIGINT also exit 0 promptly. A non-numeric first argument is
@@ -107,7 +114,8 @@ treated as a pid file and polled for up to 15 s.
 ```
 perf.sh <pid> <resultsdir>        # blocks ~19 s — background it
 ```
-`perf stat -p PID -e <SPEC event list> -o perf-stat.txt -- sleep 10`, 1 s pause,
+`perf stat -p PID -e <SPEC event list, incl. syscalls:sys_enter_openat and
+_read> -o perf-stat.txt -- sleep 10`, 1 s pause,
 `perf record -F 999 -g -p PID -o perf.data -- sleep 8`,
 `perf report --stdio --no-children | head -120 > perf-report.txt`. Mounts
 tracefs inside the container's own mount namespace if `/sys/kernel/tracing`
@@ -116,6 +124,21 @@ steps skip with a note in `perf.log` and placeholder files; exit status 0.
 Host settings: `perf_event_paranoid=3` and `kptr_restrict=0` are fine because
 the container is `--privileged` (CAP_PERFMON/CAP_SYS_ADMIN bypass paranoid);
 kernel symbols resolve via `/proc/kallsyms`.
+
+## latency.py
+
+```
+snuffles --jsonl | latency.py -o latency.json [--bucket-us 20] [--max-ms 2000]
+```
+The jsonl-latency-mode consumer. Reads snuffles' JSON-Lines stream, and for each
+packet records `now - ts` (ms) — the capture-to-output latency (the packet's
+capture timestamp `ts` to the line reaching this reader through the ring and the
+pipe). Samples go into a fixed-resolution histogram (memory O(buckets)), and on
+EOF / SIGINT / SIGTERM it writes `{count,p50_ms,p95_ms,p99_ms,min_ms,max_ms,
+mean_ms,...}`. `ts` is parsed with a cheap string scan so the probe keeps up
+with high rates; a slow Python consumer will make snuffles' ring wrap (visible
+as `missed`/`sinks` in the summary), so latency is reported for the packets that
+do get through.
 
 ## Things the integrator should know
 

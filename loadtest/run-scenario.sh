@@ -92,6 +92,14 @@ CONNS=$(jq -r '.traffic.conns // 256' "$SCEN")
 KEEPALIVE=$(jq -r 'if .traffic.keepalive == null then true else .traffic.keepalive end' "$SCEN")
 URL=$(jq -r '.traffic.url // "/"' "$SCEN")
 EXTRA=$(jq -r '.traffic.extra // ""' "$SCEN")
+# IMIX (pktgen only): a per-thread packet-size mix. .traffic.imix is an array of
+# {"size":wire,"weight":w}; pktgen has no per-packet size mix, so we approximate
+# by assigning the sizes round-robin across the pktgen CPUs and setting each
+# thread's ratep so the aggregate packet counts come out in the weight ratio
+# (e.g. 64/570/1518 at 7:4:1). .traffic.imix_base is the per-weight-unit total
+# pps (aggregate for a size = weight * base; default 100000).
+IMIX=$(jq -c '.traffic.imix // empty' "$SCEN")
+IMIX_BASE=$(jq -r '.traffic.imix_base // 100000' "$SCEN")
 
 OUTDIR="$RESULTS/$RUN_ID/$NAME"
 COUT="/results/$RUN_ID/$NAME"          # same dir seen inside the containers
@@ -106,6 +114,7 @@ rm -f "$OUTDIR"/telemetry.jsonl "$OUTDIR"/snuffles.stats "$OUTDIR"/snuffles.stde
       "$OUTDIR"/sink.json "$OUTDIR"/out.count "$OUTDIR"/exit.json "$OUTDIR"/.stop.json \
       "$OUTDIR"/exit.status "$OUTDIR"/perf-stat.txt "$OUTDIR"/perf-report.txt \
       "$OUTDIR"/perf-window.json "$OUTDIR"/perf.log "$OUTDIR"/perf.data "$OUTDIR"/tui.log \
+      "$OUTDIR"/latency.json "$OUTDIR"/latency.log \
       "$OUTDIR"/summary.json "$OUTDIR"/stream.pcap 2>/dev/null || true
 
 # ── docker exec helpers ─────────────────────────────────────────────────────
@@ -332,10 +341,44 @@ log "snuffles up (pid=$SNUF_PID); first stats line seen"
 # Each writes gen-<N>.json into $OUTDIR. pktgen aggregates per-cpu result;
 # the others capture the driver's JSON stdout verbatim as .raw and normalise.
 
+# IMIX: assign each pktgen CPU a size + ratep so the aggregate packet counts
+# match the weight ratio. Fills IMIX_SIZE[cpu]/IMIX_PPS[cpu]; IMIX_ON=1 when set.
+IMIX_ON=0
+declare -A IMIX_SIZE=() IMIX_PPS=()
+setup_imix() {
+    [ -n "$IMIX" ] || return 0
+    IMIX_ON=1
+    local -a isz iwt
+    mapfile -t isz < <(jq -r '.[].size' <<<"$IMIX")
+    mapfile -t iwt < <(jq -r '.[].weight' <<<"$IMIX")
+    local nsizes=${#isz[@]} i idx cpu
+    [ "$nsizes" -ge 1 ] || die "imix has no sizes"
+    declare -A cnt=()
+    for ((i=0; i<${#CPUS[@]}; i++)); do idx=$(( i % nsizes )); cnt[$idx]=$(( ${cnt[$idx]:-0} + 1 )); done
+    for ((i=0; i<${#CPUS[@]}; i++)); do
+        idx=$(( i % nsizes )); cpu=${CPUS[$i]}
+        IMIX_SIZE[$cpu]=${isz[$idx]}
+        # ratep = weight*base / (#cpus with this size)  => aggregate = weight*base
+        IMIX_PPS[$cpu]=$(( iwt[$idx] * IMIX_BASE / cnt[$idx] ))
+    done
+    log "imix: sizes=$(IFS=,; echo "${isz[*]}") weights=$(IFS=,; echo "${iwt[*]}") base=$IMIX_BASE over ${#CPUS[@]} cpus"
+}
+
+# build comma lists of per-cpu size/ratep for one gen's cpu set (in order)
+imix_lists_for() {                        # imix_lists_for <cpu,csv>  -> sets IMIX_SIZE_CSV IMIX_PPS_CSV
+    local cpus=$1 c; IMIX_SIZE_CSV=""; IMIX_PPS_CSV=""
+    local IFS=,
+    for c in $cpus; do
+        IMIX_SIZE_CSV="${IMIX_SIZE_CSV:+$IMIX_SIZE_CSV,}${IMIX_SIZE[$c]}"
+        IMIX_PPS_CSV="${IMIX_PPS_CSV:+$IMIX_PPS_CSV,}${IMIX_PPS[$c]}"
+    done
+}
+
 # pktgen: split CPUS round-robin across GENS
 start_pktgen() {
     local i g cpu dmac dip
     dmac=$(dst_mac "$DST"); dip=$(dst_ip "$DST")
+    setup_imix
     declare -gA PG_CPUS=()
     i=0
     for cpu in "${CPUS[@]}"; do
@@ -352,10 +395,15 @@ start_pktgen() {
         [ -n "${PG_CPUS[$g]:-}" ] || continue
         PG_GENS+=("$g")
         local sip="10.77.0.1$g"
-        log "pktgen gen-$g cpus=${PG_CPUS[$g]} size=$PKT_SIZE pps=$PPS flows=$FLOWS dst=$DST"
+        local size_arg=$PKT_SIZE pps_arg=$PPS
+        if [ "$IMIX_ON" = 1 ]; then
+            imix_lists_for "${PG_CPUS[$g]}"
+            size_arg=$IMIX_SIZE_CSV; pps_arg=$IMIX_PPS_CSV
+        fi
+        log "pktgen gen-$g cpus=${PG_CPUS[$g]} size=$size_arg pps=$pps_arg flows=$FLOWS dst=$DST"
         ( dex "gen-$g" "$GEN_DIR/pktgen.sh" start -d eth0 --cpus "${PG_CPUS[$g]}" \
-            --size "$PKT_SIZE" --dst-mac "$dmac" --dst-ip "$dip" \
-            --pps "$PPS" --flows "$FLOWS" --src-ip "$sip" >/dev/null 2>"$OUTDIR/gen-$g.err" ) &
+            --size "$size_arg" --dst-mac "$dmac" --dst-ip "$dip" \
+            --pps "$pps_arg" --flows "$FLOWS" --src-ip "$sip" >/dev/null 2>"$OUTDIR/gen-$g.err" ) &
         pids+=("$!:$g")
     done
     local pg
@@ -459,7 +507,9 @@ normalise_gen() {
 # per-kind command builders (echo a shell command for `sh -c`)
 DMAC=$(dst_mac "$DST"); DIP=$(dst_ip "$DST")
 cmd_udpflood() { local pl=$(( PKT_SIZE - 42 )); [ "$pl" -lt 1 ] && pl=1
-                 echo "$GEN_DIR/udpflood -d $DIP -p 9 -s $pl -t $THREADS -T $DURATION $EXTRA"; }
+                 # --dst-mac/-i are only used by the -r (AF_PACKET flow-churn)
+                 # path; harmless for the default connected-UDP path.
+                 echo "$GEN_DIR/udpflood -d $DIP -p 9 -s $pl -t $THREADS -T $DURATION -i eth0 --dst-mac $DMAC $EXTRA"; }
 cmd_frag()     { echo "$GEN_DIR/udpflood -d $DIP -p 9 -s 4000 -t $THREADS -T $DURATION $EXTRA"; }
 cmd_synflood() { echo "$GEN_DIR/synflood -t $THREADS -T $DURATION $EXTRA"; }
 cmd_http()     { echo "$GEN_DIR/http.sh --threads $THREADS --conns $CONNS --duration $DURATION --url '$URL' --keepalive $KEEPALIVE $EXTRA"; }

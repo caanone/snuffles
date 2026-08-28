@@ -222,6 +222,23 @@ def analyze_scenario(scen_dir):
     s["syslog_fail"] = syslog_fail
     s["sessions_final"] = sessions_final
 
+    # app-side output sinks (the tail of the accounting chain generator ->
+    # bridge -> socket -> app sinks). Sum the losses on every output path the
+    # consumer/emitter owns: `missed` (ring wrapped past the consumer before it
+    # drained, or a slot read failed), `syslog_fail` (syslog datagrams the
+    # sender could not push), and stream write failures (the -w pcap writer dies
+    # on its first failed write and logs "stream write failed" to stderr; there
+    # is no stats counter for it, so count the log line).
+    def count_stream_write_failures(path):
+        try:
+            with open(path, errors="replace") as f:
+                return sum(1 for line in f if "stream write failed" in line)
+        except Exception:
+            return None
+    stream_write_fail = count_stream_write_failures(os.path.join(scen_dir, "snuffles.stderr"))
+    s["stream_write_failures"] = stream_write_fail
+    s["sinks"] = add(missed, syslog_fail, stream_write_fail)
+
     # loss_pct_total = 1 - captured/sent (when sent known)
     if isinstance(captured_total, (int, float)) and isinstance(sent_total, (int, float)) and sent_total > 0:
         s["loss_pct_total"] = round(100.0 * (1.0 - captured_total / sent_total), 4)
@@ -289,6 +306,19 @@ def analyze_scenario(scen_dir):
             return None
         return round(100.0 * ((pts[-1][1] - pts[0][1]) / CLK_TCK) / (pts[-1][0] - pts[0][0]), 2)
     s["cpu_total_pct"] = proc_cpu_pct()
+
+    # cycles/packet: sample the SUT cores' clock (telemetry cpu_mhz) over the
+    # window; cycles/pkt = capture CPU% x MHz x 1e4 / captured_pps. capture CPU%
+    # is % of one core, so (pct/100)*MHz*1e6 = cycles/s on the capture thread,
+    # divided by captured_pps = cycles spent per captured packet.
+    mhz_vals = [r.get("cpu_mhz") for r in telwin if isinstance(r.get("cpu_mhz"), (int, float))]
+    mean_mhz = (sum(mhz_vals) / len(mhz_vals)) if mhz_vals else None
+    s["cpu_mhz_win"] = round(mean_mhz, 1) if mean_mhz is not None else None
+    if (isinstance(s["cpu_capture_pct"], (int, float)) and isinstance(mean_mhz, (int, float))
+            and isinstance(captured_pps, (int, float)) and captured_pps > 0):
+        s["cycles_per_pkt"] = round(s["cpu_capture_pct"] * mean_mhz * 1e4 / captured_pps, 1)
+    else:
+        s["cycles_per_pkt"] = None
 
     # ctxsw_per_s: (nvcsw+nivcsw) delta over the window / wall
     def proc_field(getter):
@@ -365,10 +395,13 @@ def analyze_scenario(scen_dir):
     s["perf_ctxsw_per_s"] = round(ps["context-switches"] / el, 1) if isinstance(ps.get("context-switches"), (int, float)) and isinstance(el, (int, float)) and el > 0 else None
     syscalls = add(ps.get("syscalls:sys_enter_write"), ps.get("syscalls:sys_enter_sendto"),
                    ps.get("syscalls:sys_enter_getsockopt"), ps.get("syscalls:sys_enter_recvfrom"),
-                   ps.get("syscalls:sys_enter_select"), ps.get("syscalls:sys_enter_poll"))
+                   ps.get("syscalls:sys_enter_select"), ps.get("syscalls:sys_enter_poll"),
+                   ps.get("syscalls:sys_enter_openat"), ps.get("syscalls:sys_enter_read"))
     s["perf_syscalls"] = syscalls
     s["perf_syscalls_write"] = ps.get("syscalls:sys_enter_write")
     s["perf_syscalls_getsockopt"] = ps.get("syscalls:sys_enter_getsockopt")
+    s["perf_syscalls_openat"] = ps.get("syscalls:sys_enter_openat")
+    s["perf_syscalls_read"] = ps.get("syscalls:sys_enter_read")
     # packets captured during EXACTLY the perf stat window: stats-line delta
     # over [stat_start, stat_end] (perf-window.json, epoch -> stats t via
     # snuf0). Fallback: captured_pps * elapsed wall seconds. NEVER task-clock
@@ -409,6 +442,16 @@ def analyze_scenario(scen_dir):
         s["exit_code"] = exitj.get("exit_code")
     if s["killed"] is None:
         s["killed"] = exitj.get("killed")
+
+    # ── capture-to-output latency (jsonl-latency mode) ─────────────────────
+    # sut/latency.py reads the --jsonl stream, computes now - packet.ts per line
+    # and reports percentiles in ms into latency.json.
+    lat = load_json(os.path.join(scen_dir, "latency.json")) or {}
+    s["latency_count"] = lat.get("count")
+    s["latency_p50_ms"] = lat.get("p50_ms")
+    s["latency_p95_ms"] = lat.get("p95_ms")
+    s["latency_p99_ms"] = lat.get("p99_ms")
+    s["latency_max_ms"] = lat.get("max_ms")
 
     with open(os.path.join(scen_dir, "summary.json"), "w") as f:
         json.dump(s, f, indent=2)
@@ -473,9 +516,13 @@ def write_run_tables(run_dir, rows):
             "sent_pps", "sent_total", "captured_total", "captured_pps",
             "kdrop_total", "kdrop_pct", "ifdrop", "missed", "emitted",
             "syslog_sent", "syslog_fail", "syslog_delivered", "streamed",
-            "sessions_final", "loss_pct_total", "rss_max_kb",
+            "sessions_final", "sinks", "stream_write_failures",
+            "loss_pct_total", "rss_max_kb",
             "cpu_capture_pct", "cpu_main_pct", "cpu_stats_pct", "ctxsw_per_s",
+            "cpu_mhz_win", "cycles_per_pkt",
             "syscalls_per_pkt", "ipc", "exit_latency_ms", "exit_code", "killed",
+            "latency_count", "latency_p50_ms", "latency_p95_ms", "latency_p99_ms",
+            "latency_max_ms",
             "softnet_dropped_delta", "softnet_squeezed_delta",
             "br0_rx_pkts_delta", "packet_socket_drops",
             # extras (not SPEC step-8): steady-state window + accounting chain
@@ -483,6 +530,7 @@ def write_run_tables(run_dir, rows):
             "captured_win", "kdrop_win", "kdrop_pct_win", "cpu_total_pct",
             "perf_cpus_utilized", "perf_stat_secs", "perf_stat_window_pkts",
             "perf_syscalls", "perf_syscalls_write", "perf_syscalls_getsockopt",
+            "perf_syscalls_openat", "perf_syscalls_read",
             "perf_ctxsw_per_s", "sent_datagrams", "frames_per_datagram",
             "bridge_in_pkts_total", "br0_rx_pkts_total", "gens_in_pkts_total",
             "gens_out_pkts_total", "sink_in_pkts_total", "sink_out_pkts_total",
@@ -500,8 +548,8 @@ def write_run_tables(run_dir, rows):
     md.append(f"# Load-test summary — run `{os.path.basename(run_dir)}`\n")
     md.append(f"{len(rows)} scenario(s). pps in k/M (3 sig. figs); percentages 2 dp.\n")
     head = ["scenario", "mode", "kind", "sent", "bridge in", "seen%", "captured",
-            "offered pps", "cap pps", "kdrop%", "kdrop% win", "rss MB",
-            "cap%", "main%", "sys/pkt", "ipc", "win s", "status"]
+            "offered pps", "cap pps", "kdrop%", "kdrop% win", "sinks", "rss MB",
+            "cap%", "main%", "cyc/pkt", "sys/pkt", "ipc", "win s", "status"]
     md.append("| " + " | ".join(head) + " |")
     md.append("|" + "|".join(["---"] * len(head)) + "|")
     for r in rows:
@@ -512,8 +560,10 @@ def write_run_tables(run_dir, rows):
             fmt_pps(r.get("sent_total")), fmt_pps(r.get("bridge_in_pkts_total")),
             fmt_pct(r.get("seen_pct")), fmt_pps(r.get("captured_total")),
             fmt_pps(r.get("offered_pps_win")), fmt_pps(r.get("captured_pps")),
-            fmt_pct(r.get("kdrop_pct")), fmt_pct(r.get("kdrop_pct_win")), rss_mb,
+            fmt_pct(r.get("kdrop_pct")), fmt_pct(r.get("kdrop_pct_win")),
+            (fmt_pps(r.get("sinks")) if isinstance(r.get("sinks"), (int, float)) else ""), rss_mb,
             fmt_pct(r.get("cpu_capture_pct")), fmt_pct(r.get("cpu_main_pct")),
+            (f"{r.get('cycles_per_pkt'):.0f}" if isinstance(r.get("cycles_per_pkt"), (int, float)) else ""),
             (f"{r.get('syscalls_per_pkt'):.3g}" if isinstance(r.get("syscalls_per_pkt"), (int, float)) else ""),
             (f"{r.get('ipc'):.3g}" if isinstance(r.get("ipc"), (int, float)) else ""),
             (f"{r.get('window_secs'):.1f}" if isinstance(r.get("window_secs"), (int, float)) else ""),
@@ -527,13 +577,74 @@ def write_run_tables(run_dir, rows):
               "run (app-independent; includes sink replies). **seen%** = (captured+kdrop)/bridge in: "
               "100 means every frame reached the packet socket, so kdrop is the ONLY loss point. "
               "**offered pps** / **cap pps** / **kdrop% win** are steady-state values over the "
-              "trimmed traffic window (**win s**); **kdrop%** is whole-run. **sys/pkt** = "
-              "write+sendto+getsockopt+recvfrom+select+poll syscalls per captured packet during "
-              "the perf-stat window. CPU% are per-thread, % of one CPU. Note for the pcap build "
-              "the packet-socket ring drops are visible only through the app's kdrop (libpcap's "
-              "TPACKET ring counts drops in tp_drops, not sk_drops which `ss` shows); the raw "
-              "build's plain socket shows them in `ss` too (packet_socket_drops).")
+              "trimmed traffic window (**win s**); **kdrop%** is whole-run. **sinks** = app-side "
+              "output losses = missed (ring wrapped past the consumer) + syslog_fail + stream "
+              "(-w) write failures; it closes the accounting chain generator -> bridge -> socket "
+              "-> app sinks. **cyc/pkt** = capture CPU% x SUT MHz x 1e4 / cap pps (cycles the "
+              "capture thread spends per packet). **sys/pkt** = "
+              "write+sendto+getsockopt+recvfrom+select+poll+openat+read syscalls per captured "
+              "packet during the perf-stat window. CPU% are per-thread, % of one CPU. Note for "
+              "the pcap build the packet-socket ring drops are visible only through the app's "
+              "kdrop (libpcap's TPACKET ring counts drops in tp_drops, not sk_drops which `ss` "
+              "shows); the raw build's plain socket shows them in `ss` too (packet_socket_drops). "
+              "jsonl-latency runs also report latency_p50/p95/p99_ms (capture-to-output) in "
+              "summary.csv / summary.json.")
     with open(os.path.join(run_dir, "summary.md"), "w") as f:
+        f.write("\n".join(md) + "\n")
+    write_median_table(run_dir, rows)
+
+
+def _median(xs):
+    xs = sorted(x for x in xs if isinstance(x, (int, float)))
+    if not xs:
+        return None
+    n = len(xs)
+    mid = n // 2
+    return xs[mid] if n % 2 else (xs[mid - 1] + xs[mid]) / 2.0
+
+
+def write_median_table(run_dir, rows):
+    """When a run holds repeated scenarios (matrix.sh --repeat N names them
+    <base>-r1..-rN), write summary-median.md: one row per base scenario with the
+    median/min/max of captured_pps and kdrop_pct_win across its repeats."""
+    import re
+    groups = {}                      # base -> list of rows
+    for r in rows:
+        m = re.match(r"^(.*)-r(\d+)$", r.get("name", ""))
+        base = m.group(1) if m else r.get("name", "")
+        groups.setdefault(base, []).append(r)
+    if not any(len(v) >= 2 for v in groups.values()):
+        return                       # nothing repeated: no median table to write
+    md = []
+    md.append(f"# Load-test median summary — run `{os.path.basename(run_dir)}`\n")
+    md.append(f"{len(groups)} scenario(s), repeats collapsed. captured_pps in "
+              "k/M (3 sig. figs); kdrop%% win 4 dp.\n")
+    head = ["scenario", "n", "mode", "kind",
+            "cap pps med", "cap pps min", "cap pps max",
+            "kdrop% win med", "kdrop% win min", "kdrop% win max"]
+    md.append("| " + " | ".join(head) + " |")
+    md.append("|" + "|".join(["---"] * len(head)) + "|")
+    def fpct4(v):
+        return f"{v:.4f}" if isinstance(v, (int, float)) else ""
+    for base in sorted(groups):
+        g = groups[base]
+        caps = [r.get("captured_pps") for r in g]
+        kds = [r.get("kdrop_pct_win") for r in g]
+        caps_n = [x for x in caps if isinstance(x, (int, float))]
+        kds_n = [x for x in kds if isinstance(x, (int, float))]
+        row = [
+            base, str(len(g)), g[0].get("mode") or "", g[0].get("traffic_kind") or "",
+            fmt_pps(_median(caps_n)), fmt_pps(min(caps_n) if caps_n else None),
+            fmt_pps(max(caps_n) if caps_n else None),
+            fpct4(_median(kds_n)), fpct4(min(kds_n) if kds_n else None),
+            fpct4(max(kds_n) if kds_n else None),
+        ]
+        md.append("| " + " | ".join(str(c) for c in row) + " |")
+    md.append("")
+    md.append("**n** = repeats collapsed into this row. Median/min/max are over the "
+              "per-repeat steady-window values (captured_pps, kdrop_pct_win). Use these "
+              "to judge run-to-run spread on a shared host, per SPEC's measurement-validity note.")
+    with open(os.path.join(run_dir, "summary-median.md"), "w") as f:
         f.write("\n".join(md) + "\n")
 
 def main():

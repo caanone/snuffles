@@ -54,6 +54,10 @@ pktgen.sh start|stop|reset|result|run \
 * `--flows 1` = fixed 5-tuple; `--flows N>1` sets `src_min 10.77.128.0 ..
   10.77.128.0+N-1` (capped 10.77.255.254) with `IPSRC_RND`, plus
   `udp_src 1024..65535` with `UDPSRC_RND`.
+* `--size` and `--pps` may each be a **comma list** mapped positionally onto
+  `--cpus` (e.g. `--cpus 4,5,6 --size 64,570,1518 --pps 233333,133333,50000`),
+  giving a per-thread size / rate mix; a single value applies to every cpu. This
+  is how the IMIX scenario (`I1-imix`) approximates a 64/570/1518 B mix at 7:4:1.
 
 > **veth caveat (important):** `clone_skb > 0` requires `IFF_TX_SKB_SHARING`,
 > which **veth does not set** — pktgen returns `ENOTSUPP` (errno 524). The rig's
@@ -63,12 +67,18 @@ pktgen.sh start|stop|reset|result|run \
 
 ### udpflood  (`/opt/gen/udpflood`)
 ```
-udpflood -d IP -p PORT [-s SIZE] [-t THREADS] [-T SECONDS] [-r]
+udpflood -d IP -p PORT [-s SIZE] [-t THREADS] [-T SECONDS] [-r] [-i IFACE] [--dst-mac MAC]
 ```
-Connected UDP, one socket per thread, `sendmmsg` batches of 64, `SO_SNDBUF`
-32 MB. `SIZE` is the **UDP payload** size (so `-s 4000` fragments into 3 packets
-at MTU 1500). `-r` binds a pool of `THREADS*16` sockets up front (kernel-picked
-ephemeral source ports) and round-robins one per batch.
+Default (no `-r`): connected UDP, one socket per thread (fixed source IP+port),
+`sendmmsg` batches of 64, `SO_SNDBUF` 32 MB. `SIZE` is the **UDP payload** size
+(so `-s 4000` fragments into 3 packets at MTU 1500 — the `frag` path).
+
+`-r` (flow churn): an AF_PACKET `SOCK_RAW` sender per thread (like synflood).
+Every frame is built by hand and gets a fresh **random source IP** in
+`10.77.128.0/17` (32768) and **random source port** 1024..65535 (64512) — ~2.1e9
+unique 5-tuples, a real per-packet flow-churn generator for the session table.
+Source MAC = the hwaddr of `-i` (default `eth0`); dst MAC = `--dst-mac` (default
+the rig sink). The old `-r` only varied the source port behind one bound IP.
 ```json
 {"tool":"udpflood","sent":N,"bytes":N,"seconds":F,"pps":F,"mbps":F,
  "errors":N,"threads":N,"size":N,"rand_src":0|1}
@@ -112,12 +122,14 @@ Runs `iperf3 -c host -P threads -t duration -J`, parsed with jq.
 
 ### replay.sh
 ```
-replay.sh -i eth0 --duration S [--pcap /opt/gen/corpus.pcap] [--mbps N]
+replay.sh -i eth0 --duration S [--pcap /opt/gen/corpus.pcap] [--mbps N] [--unique-ip]
 ```
 `tcpreplay -i eth0 -K --loop=0 --topspeed --stats=1 <pcap>` looped forever and
 killed after `duration` (tcpreplay's own `--duration` is unreliable across
-builds); `--mbps` swaps `--topspeed` for a rate cap. Parses the final
-`Actual:`/`Rated:` lines.
+builds); `--mbps` swaps `--topspeed` for a rate cap. `--unique-ip` adds
+tcpreplay `--unique-ip`, which rewrites the corpus' source/dest IPs each loop
+iteration for real 5-tuple churn (the `C9-replay-unique-ip` session-table
+scenario). Parses the final `Actual:`/`Rated:` lines.
 ```json
 {"tool":"replay","sent":N,"bytes":N,"seconds":F,"pps":F,"mbps":F,"pcap":"..."}
 ```
