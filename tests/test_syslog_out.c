@@ -220,6 +220,36 @@ static void test_self(syslog_out_t *sl, const char *target) {
     CHECK(syslog_out_is_self(NULL, &p) == 0);
 }
 
+/* A destination the socket cannot send to (limited broadcast without
+ * SO_BROADCAST -> EACCES on Linux/BSD/Winsock, or no route at all in an
+ * isolated namespace) exercises the failure accounting: nothing counts as
+ * sent, every record as failed, flushes keep the queue empty and a later
+ * batch is accounted on its own. */
+static void test_failure(void) {
+    syslog_out_t *bad = syslog_out_create("255.255.255.255:514", NULL);
+    CHECK(bad != NULL);
+    if (!bad) return;
+
+    pkt_summary_t p;
+    uint64_t sent, failed;
+    tcp_pkt(&p);
+    for (int i = 0; i < 3; i++) syslog_out_send(bad, &p);
+    CHECK(syslog_out_pending(bad) == 3);
+    syslog_out_flush(bad);
+    CHECK(syslog_out_pending(bad) == 0);
+    syslog_out_counts(bad, &sent, &failed);
+    CHECK(sent == 0);
+    CHECK(failed == 3);
+
+    /* a full batch fails as a whole, once (no double counting on retry) */
+    for (int i = 0; i < SYSLOG_BATCH; i++) syslog_out_send(bad, &p);
+    CHECK(syslog_out_pending(bad) == 0);
+    syslog_out_counts(bad, &sent, &failed);
+    CHECK(sent == 0);
+    CHECK(failed == 3 + SYSLOG_BATCH);
+    syslog_out_destroy(bad);
+}
+
 int main(void) {
     char target[64];
     lsock_t ls = listener_open(target, sizeof(target));
@@ -240,6 +270,7 @@ int main(void) {
         test_self(sl, target);
         syslog_out_destroy(sl);
     }
+    test_failure();
     syslog_out_flush(NULL);
     syslog_out_destroy(NULL);
     lsock_close(ls);
