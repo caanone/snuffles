@@ -49,6 +49,7 @@ static void ensure_wsa(void) {
 #endif
 
 struct syslog_out {
+    int                  connected;   /* connect() succeeded: send without an address */
     sock_t              sock;
     struct sockaddr_in  dest;
     char                dest_ip[46];   /* resolved IP string for self-check */
@@ -219,12 +220,20 @@ syslog_out_t *syslog_out_create(const char *host_port, const char *src_iface) {
     }
     sl->src_port = ntohs(local.sin_port);
 
+    /* Connect the UDP socket: an unconnected sendto() does a full route
+     * lookup (fib_table_lookup / ip_route_output) per datagram, which the
+     * load-test profile showed dominating the syslog path. A connected
+     * socket caches the route; send() / sendmmsg() with a NULL address
+     * then skip it. */
+    sl->connected = (connect(sl->sock, (struct sockaddr *)&sl->dest,
+                             sizeof(sl->dest)) == 0);
+
 #ifdef __linux__
     /* Fixed parts of the sendmmsg() vector; only iov_len varies per flush. */
     for (unsigned i = 0; i < SYSLOG_BATCH; i++) {
         sl->iov[i].iov_base           = sl->msgs[i];
-        sl->mm[i].msg_hdr.msg_name    = &sl->dest;
-        sl->mm[i].msg_hdr.msg_namelen = sizeof(sl->dest);
+        sl->mm[i].msg_hdr.msg_name    = sl->connected ? NULL : (void *)&sl->dest;
+        sl->mm[i].msg_hdr.msg_namelen = sl->connected ? 0 : sizeof(sl->dest);
         sl->mm[i].msg_hdr.msg_iov     = &sl->iov[i];
         sl->mm[i].msg_hdr.msg_iovlen  = 1;
     }
@@ -358,7 +367,8 @@ void syslog_out_flush(syslog_out_t *sl) {
 #else
     for (unsigned i = 0; i < n; i++) {
         if (sendto(sl->sock, sl->msgs[i], (size_t)sl->lens[i], SEND_FLAGS,
-                   (struct sockaddr *)&sl->dest, sizeof(sl->dest)) < 0)
+                   sl->connected ? NULL : (struct sockaddr *)&sl->dest,
+                   sl->connected ? 0 : (socklen_t)sizeof(sl->dest)) < 0)
             atomic_fetch_add_explicit(&sl->failed, 1, memory_order_relaxed);
         else
             atomic_fetch_add_explicit(&sl->sent, 1, memory_order_relaxed);
