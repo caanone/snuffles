@@ -28,7 +28,7 @@ $CC $CFLAGS -DNO_PCAP \
     -o "$OUT/snuffles.exe" -static -lws2_32 -liphlpapi -lpthread
 
 echo "== cross-compiling unit tests"
-for t in filter ringbuf session dissect cbpf config; do
+for t in filter ringbuf session dissect cbpf config syslog_out; do
     $CC $CFLAGS "tests/test_$t.c" "src/$t.c" -o "$OUT/test_$t.exe" \
         -static -lws2_32 -lpthread
 done
@@ -38,7 +38,7 @@ export WINEDEBUG=${WINEDEBUG:--all}
 
 echo "== running unit tests under Wine"
 rc=0
-for t in filter ringbuf session dissect cbpf config; do
+for t in filter ringbuf session dissect cbpf config syslog_out; do
     printf '%-10s ' "$t"
     if $WINE "$OUT/test_$t.exe"; then :; else
         echo "FAILED: test_$t.exe"

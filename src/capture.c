@@ -145,6 +145,11 @@ static void *capture_thread_fn(void *arg) {
 
         int ret = pcap_dispatch(ctx->handle, 64, capture_callback, (u_char *)ctx);
 
+        /* One non-blocking sendmmsg() per dispatch cycle for whatever the
+         * callbacks queued: a record waits at most one cycle (<= 100 ms)
+         * instead of costing a syscall each. */
+        syslog_out_flush(ctx->syslog);
+
         if (!ctx->offline) {
             struct pcap_stat ps;
             if (pcap_stats(ctx->handle, &ps) == 0) {
@@ -167,6 +172,7 @@ static void *capture_thread_fn(void *arg) {
         }
     }
 
+    syslog_out_flush(ctx->syslog);   /* records queued by the last cycle */
     atomic_store(&ctx->running, 0);
     return NULL;
 }
@@ -297,19 +303,21 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
         snprintf(ctx->bpf_active, sizeof(ctx->bpf_active), "%s", cfg->bpf_filter);
     }
 
+    /* open syslog output if configured: before the privilege drop, so the
+       16 MB send buffer (SO_SNDBUFFORCE) and --syslog-iface <dev>
+       (SO_BINDTODEVICE) get the capabilities they need */
+    if (cfg->syslog_target[0]) {
+        ctx->syslog = syslog_out_create(cfg->syslog_target, cfg->syslog_iface);
+        if (!ctx->syslog)
+            fprintf(stderr, "Warning: syslog output disabled\n");
+    }
+
     /* drop root privileges after capture device is opened */
 #ifndef _WIN32
     if (ns_drop_privileges() != 0)
         fprintf(stderr, "Warning: failed to drop root privileges; "
                         "continuing as root\n");
 #endif
-
-    /* open syslog output if configured */
-    if (cfg->syslog_target[0]) {
-        ctx->syslog = syslog_out_create(cfg->syslog_target, cfg->syslog_iface);
-        if (!ctx->syslog)
-            fprintf(stderr, "Warning: syslog output disabled\n");
-    }
 
     /* streaming -w writer (opened after the privilege drop so the file is
        owned by the invoking user, not root) */
