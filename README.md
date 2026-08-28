@@ -149,6 +149,7 @@ Options:
   -c <count>          Stop after N packets
   -s <snaplen>        Snapshot length (default: 65535)
   -b <ring_size>      Ring buffer size (default: 10000)
+  -B <MB>             Kernel capture buffer in MB (default: 64, libpcap build only)
   -o <file>           Export on exit (.pcap or .json)
   -w <file>           Stream packets to a pcap file while capturing
                       ('-w -' writes to stdout; combine with -q)
@@ -157,6 +158,7 @@ Options:
   -q, --quiet         Silent mode (no output, use with --syslog)
   --syslog <host:port> Forward packets via UDP syslog
   --syslog-iface <ip|dev>  Source interface/IP for syslog
+  --immediate         Per-packet delivery instead of 10 ms batches (libpcap build)
   --list-ifaces       List interfaces and exit
   -v                  Version info
   -h, --help          Help
@@ -215,6 +217,7 @@ file is silently ignored. CLI flags always override config values.
 interface    = eth0
 snaplen      = 1500            # 64-65535
 ring_size    = 50000           # 16-1000000
+buffer_mb    = 64              # 1-4096, kernel capture buffer (libpcap build)
 promisc      = 1               # 0 or 1
 syslog       = 10.0.0.100:514
 syslog_iface = 192.168.1.5
@@ -536,6 +539,7 @@ Drops from root to original user (sudo) or `nobody` after opening capture device
 |----------|-------|
 | snaplen | 64 - 65,535 bytes |
 | ring_size | 16 - 1,000,000 packets |
+| buffer_mb | 1 - 4,096 MB kernel capture buffer (libpcap build, default 64; >2047 clamps to 2 GB) |
 | Session table | 100,000 (LRU eviction) |
 | UI render buffer | 4 MB |
 | Filter preview | 2,000 packet scan |

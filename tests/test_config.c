@@ -28,12 +28,15 @@ int main(void) {
         "  interface = eth0  \n"
         "snaplen=128\n"
         "ring_size = 512\n"
+        "buffer_mb = 256\n"
         "promisc = 0\n"
         "syslog = 10.0.0.1:514\n"
         "syslog_iface = eth1\n"
         "unknown_key = whatever\n"       /* warn + skip */
         "snaplen = 999999\n"             /* out of range: keep 128 */
         "ring_size = banana\n"           /* not a number: keep 512 */
+        "buffer_mb = 0\n"                /* out of range: keep 256 */
+        "buffer_mb = 4097\n"             /* out of range: keep 256 */
         "this line has no equals sign\n" /* warn + skip */
         "preset web = tcp and port 443\n"
         "  preset   DNS-Fast  =  udp and port 53  \n"
@@ -56,6 +59,7 @@ int main(void) {
     CHECK(strcmp(cfg.iface, "eth0") == 0);
     CHECK(cfg.snaplen == 128);
     CHECK(cfg.ring_size == 512);
+    CHECK(cfg.buffer_mb == 256);
     CHECK(cfg.promisc == 0);
     CHECK(strcmp(cfg.syslog_target, "10.0.0.1:514") == 0);
     CHECK(strcmp(cfg.syslog_iface, "eth1") == 0);
@@ -95,6 +99,7 @@ int main(void) {
     CHECK(n == 0);
     CHECK(cfg4.snaplen == 65535);
     CHECK(cfg4.ring_size == 10000);
+    CHECK(cfg4.buffer_mb == 64);
     CHECK(cfg4.promisc == 1);
     CHECK(cfg4.iface[0] == '\0');
 

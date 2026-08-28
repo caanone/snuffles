@@ -8,6 +8,8 @@
 #include <string.h>
 #include <signal.h>
 #include <stdatomic.h>
+#include <limits.h>
+#include <time.h>
 #ifdef __linux__
   #include <sys/prctl.h>
 #endif
@@ -109,6 +111,9 @@ static void capture_callback(u_char *user, const struct pcap_pkthdr *hdr,
 
     ctx->pkt_count++;
     if (ctx->cfg.count > 0 && ctx->pkt_count >= (uint64_t)ctx->cfg.count) {
+        /* -c reached: stop the thread loop as well, otherwise it re-enters
+         * pcap_dispatch and keeps delivering one packet per call. */
+        atomic_store(&ctx->stop_req, 1);
         pcap_breakloop(ctx->handle);
     }
 }
@@ -132,6 +137,23 @@ static void apply_pending_bpf(capture_ctx_t *ctx) {
     pcap_freecode(&fp);
 }
 
+/* Packets handed to pcap_dispatch per call. stop_req is checked in the
+ * callback and -c breaks the loop exactly, so a large batch only saves the
+ * per-call overhead (poll/return path plus the stats sample below). */
+#define CAPTURE_BATCH      1024
+/* Minimum spacing between pcap_stats() samples while packets flow. */
+#define STATS_INTERVAL_MS  250
+
+static uint64_t mono_ms(void) {
+#ifdef _WIN32
+    return (uint64_t)GetTickCount64();
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+#endif
+}
+
 static void *capture_thread_fn(void *arg) {
     capture_ctx_t *ctx = (capture_ctx_t *)arg;
     atomic_store(&ctx->running, 1);
@@ -139,17 +161,28 @@ static void *capture_thread_fn(void *arg) {
     prctl(PR_SET_NAME, "snf-capture", 0, 0, 0);
 #endif
 
+    uint64_t last_stats_ms = 0;
+
     while (!atomic_load(&ctx->stop_req)) {
         if (atomic_exchange(&ctx->bpf_req, 0))
             apply_pending_bpf(ctx);
 
-        int ret = pcap_dispatch(ctx->handle, 64, capture_callback, (u_char *)ctx);
+        int ret = pcap_dispatch(ctx->handle, CAPTURE_BATCH, capture_callback,
+                                (u_char *)ctx);
 
+        /* pcap_stats() is a getsockopt() round trip: sample it at most every
+         * STATS_INTERVAL_MS while packets flow, and whenever dispatch came
+         * back empty (idle, break-out, or exit) so the counters last
+         * published are current. */
         if (!ctx->offline) {
-            struct pcap_stat ps;
-            if (pcap_stats(ctx->handle, &ps) == 0) {
-                atomic_store(&ctx->drops, (uint64_t)ps.ps_drop);
-                atomic_store(&ctx->ifdrops, (uint64_t)ps.ps_ifdrop);
+            uint64_t now = mono_ms();
+            if (ret <= 0 || now - last_stats_ms >= STATS_INTERVAL_MS) {
+                struct pcap_stat ps;
+                if (pcap_stats(ctx->handle, &ps) == 0) {
+                    atomic_store(&ctx->drops, (uint64_t)ps.ps_drop);
+                    atomic_store(&ctx->ifdrops, (uint64_t)ps.ps_ifdrop);
+                }
+                last_stats_ms = now;
             }
         }
 
@@ -249,10 +282,28 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
 
         pcap_set_snaplen(ctx->handle, cfg->snaplen);
         pcap_set_promisc(ctx->handle, cfg->promisc);
-        pcap_set_timeout(ctx->handle, 100);
-#ifdef PCAP_SET_IMMEDIATE_MODE
-        pcap_set_immediate_mode(ctx->handle, 1);
-#endif
+
+        /* Kernel capture buffer (TPACKET ring on Linux, BPF store buffer
+         * on BSD/macOS, Npcap kernel buffer on Windows). libpcap's default
+         * is 2 MB: ~16k small packets packed into TPACKET_V3 blocks, or a
+         * mere 31 frames on a per-frame TPACKET_V2 ring at snaplen 65535,
+         * of scheduling jitter before the kernel drops. 64 MB rides out
+         * ~500k small packets. libpcap shrinks the request itself if the
+         * kernel refuses it. */
+        long long bytes = (long long)cfg->buffer_mb * 1024 * 1024;
+        if (bytes > INT_MAX) bytes = INT_MAX;
+        pcap_set_buffer_size(ctx->handle, (int)bytes);
+
+        if (cfg->immediate) {
+            /* one wakeup per packet; on Linux this forces TPACKET_V2 */
+            pcap_set_immediate_mode(ctx->handle, 1);
+            pcap_set_timeout(ctx->handle, 100);
+        } else {
+            /* Batched delivery: on Linux libpcap picks TPACKET_V3 and
+             * retires a block every 10 ms (or when full). The TUI redraws
+             * every 50 ms, so this adds no visible latency. */
+            pcap_set_timeout(ctx->handle, 10);
+        }
 
         int err = pcap_activate(ctx->handle);
         if (err < 0) {
