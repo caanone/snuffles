@@ -345,7 +345,7 @@ int main(int argc, char *argv[]) {
     };
 
     int opt;
-    int ring_set = 0, snaplen_set = 0;
+    int ring_set = 0, snaplen_set = 0, buffer_set = 0;
     int stats_on = 0;
     char stats_path[512] = "";
     while ((opt = getopt_long(argc, argv, "i:r:f:c:s:b:B:o:w:qvh", long_opts, NULL)) != -1) {
@@ -360,7 +360,8 @@ int main(int argc, char *argv[]) {
                       snaplen_set = 1; break;
             case 'b': cfg.ring_size = (int)parse_num(optarg, "ring size", 16, 1000000);
                       ring_set    = 1; break;
-            case 'B': cfg.buffer_mb = (int)parse_num(optarg, "buffer size (MB)", 1, 2047); break;
+            case 'B': cfg.buffer_mb = (int)parse_num(optarg, "buffer size (MB)", 1, 2047);
+                      buffer_set = 1; break;
             case 'I': cfg.immediate = 1; break;
             case 'N': cfg.no_ui       = 1; break;
             case 'q': cfg.quiet      = 1; cfg.no_ui = 1; break;
@@ -408,6 +409,9 @@ int main(int argc, char *argv[]) {
             cfg.ring_size = 64;    /* tiny scratch buffer */
         if (!snaplen_set && cfg.snaplen > 256)
             cfg.snaplen = 256;     /* syslog only needs headers */
+        if (!buffer_set && cfg.buffer_mb > 8)
+            cfg.buffer_mb = 8;     /* keep the forwarder's footprint small:
+                                      8 MB still buffers ~30 ms at 1 M pps */
     }
 
     if (stats_on && !cfg.no_ui && !stats_path[0]) {

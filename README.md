@@ -436,8 +436,9 @@ capture (and the kernel drop counters) carry on unaffected.
 
 These figures cover snuffles' own buffers. The libpcap build also maps the
 kernel capture buffer into the process (64 MB by default, so RSS shows
-~70 MB even in `-q` mode); shrink it with `-B 1` or `buffer_mb` in the
-config file where memory matters more than burst tolerance. The raw build
+~70 MB; the lean `-q --syslog` forwarder defaults to 8 MB, ~13 MB RSS);
+shrink it further with `-B 1` or `buffer_mb` in the config file where
+memory matters more than burst tolerance. The raw build
 sizes the packet socket's receive queue with the same option; that memory
 stays in the kernel and does not show up in RSS.
 
