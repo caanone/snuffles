@@ -72,7 +72,8 @@ static uint8_t *blk_alloc(void) {
 }
 
 /* Append a frame the way tpacket_rcv lays it out: header at off, data at
- * off + tp_mac, next entry 16-aligned. Returns the next offset. */
+ * off + tp_mac, next entry at ALIGN(tp_mac + caplen, 8) (the kernel's
+ * V3_ALIGNMENT — not 16). Returns the next offset. */
 static uint32_t blk_add(uint8_t *b, uint32_t off, uint32_t caplen,
                         uint32_t wirelen, uint32_t sec, uint32_t nsec,
                         uint8_t fill) {
@@ -91,7 +92,7 @@ static uint32_t blk_add(uint8_t *b, uint32_t off, uint32_t caplen,
     sll->sll_ifindex = 1 + (int)(fill & 1);
     sll->sll_pkttype = (fill & 1) ? PACKET_OUTGOING : PACKET_HOST;
     memset(b + off + h->tp_mac, fill, caplen);
-    uint32_t total = (h->tp_mac + caplen + 15u) & ~15u;
+    uint32_t total = (h->tp_mac + caplen + 7u) & ~7u;
     h->tp_next_offset = total;
     bd->hdr.bh1.num_pkts++;
     bd->hdr.bh1.blk_len = off + total;
@@ -114,22 +115,48 @@ static void test_walk_basic(void) {
     walk_t w = { .n = 0, .stop_after = 0 };
     uint32_t n = rawring_walk_block(b, BLK, cb, &w);
     CHECK(n == 3 && w.n == 3);
-    CHECK(w.seen[0].caplen == 60 && w.seen[0].wirelen == 60);
-    CHECK(w.seen[0].sec == 1000 && w.seen[0].nsec == 1000);
-    CHECK(w.seen[0].data == b + o0 + 82 && w.seen[0].data[0] == 0xA1);
-    CHECK(w.seen[1].caplen == 128 && w.seen[1].wirelen == 1514);
-    CHECK(w.seen[1].data == b + o1 + 82 && w.seen[1].data[127] == 0xB2);
-    CHECK(w.seen[2].caplen == 42 && w.seen[2].sec == 1001);
-    CHECK(w.seen[2].data[41] == 0xC3);
-    /* sockaddr_ll: 0xA1/0xC3 odd -> outgoing on ifindex 2, 0xB2 -> host */
-    CHECK(w.seen[0].ifindex == 2 && w.seen[0].pkttype == PACKET_OUTGOING);
-    CHECK(w.seen[1].ifindex == 1 && w.seen[1].pkttype == PACKET_HOST);
-    CHECK(w.seen[2].ifindex == 2 && w.seen[2].pkttype == PACKET_OUTGOING);
+    if (w.n == 3) {
+        CHECK(w.seen[0].caplen == 60 && w.seen[0].wirelen == 60);
+        CHECK(w.seen[0].sec == 1000 && w.seen[0].nsec == 1000);
+        CHECK(w.seen[0].data == b + o0 + 82 && w.seen[0].data[0] == 0xA1);
+        CHECK(w.seen[1].caplen == 128 && w.seen[1].wirelen == 1514);
+        CHECK(w.seen[1].data == b + o1 + 82 && w.seen[1].data[127] == 0xB2);
+        CHECK(w.seen[2].caplen == 42 && w.seen[2].sec == 1001);
+        CHECK(w.seen[2].data[41] == 0xC3);
+        /* sockaddr_ll: 0xA1/0xC3 odd -> outgoing on ifindex 2, 0xB2 -> host */
+        CHECK(w.seen[0].ifindex == 2 && w.seen[0].pkttype == PACKET_OUTGOING);
+        CHECK(w.seen[1].ifindex == 1 && w.seen[1].pkttype == PACKET_HOST);
+        CHECK(w.seen[2].ifindex == 2 && w.seen[2].pkttype == PACKET_OUTGOING);
+    }
 
     /* the callback can stop the walk (-c reached): later frames untouched */
     walk_t s = { .n = 0, .stop_after = 2 };
     n = rawring_walk_block(b, BLK, cb, &s);
     CHECK(n == 2 && s.n == 2);
+
+    /* Odd frame sizes: 82 + 66 = 148 rounds to 152, so the second entry
+     * starts 8-aligned but not 16-aligned (a 66-byte frame is a UDP
+     * datagram with 24 bytes of payload; 98 is a ping). Every entry must
+     * still be delivered — a 16-byte alignment check lost all but the
+     * first frame of such blocks. */
+    uint8_t *m = blk_alloc();
+    uint32_t m1 = blk_add(m, 48, 66, 66, 5, 0, 0x01);
+    CHECK(m1 % 16 == 8);
+    uint32_t m2 = blk_add(m, m1, 98, 98, 5, 1, 0x02);
+    uint32_t m3 = blk_add(m, m2, 1514, 1514, 5, 2, 0x03);
+    uint32_t m4 = blk_add(m, m3, 42, 42, 5, 3, 0x04);
+    (void)m4;
+    blk_close(m, m3);
+    walk_t o = { .n = 0, .stop_after = 0 };
+    CHECK(rawring_walk_block(m, BLK, cb, &o) == 4 && o.n == 4);
+    if (o.n == 4) {
+        CHECK(o.seen[0].caplen == 66 && o.seen[0].data[65] == 0x01);
+        CHECK(o.seen[1].caplen == 98 && o.seen[1].data == m + m1 + 82);
+        CHECK(o.seen[1].data[97] == 0x02);
+        CHECK(o.seen[2].caplen == 1514 && o.seen[2].data[1513] == 0x03);
+        CHECK(o.seen[3].caplen == 42 && o.seen[3].nsec == 3);
+    }
+    free(m);
 
     /* an empty block */
     uint8_t *e = blk_alloc();
@@ -157,7 +184,7 @@ static void test_walk_malformed(void) {
     w.n = 0;
     CHECK(rawring_walk_block(b, BLK, cb, &w) == 1 && w.n == 1);
 
-    /* unaligned next offset */
+    /* next offset not a multiple of 8 */
     ((struct tpacket3_hdr *)(b + 48))->tp_next_offset = o1 - 48 + 4;
     w.n = 0;
     CHECK(rawring_walk_block(b, BLK, cb, &w) == 1 && w.n == 1);

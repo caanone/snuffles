@@ -34,10 +34,14 @@ uint32_t rawring_walk_block(const uint8_t *block, uint32_t block_size,
     uint32_t off = bh->offset_to_first_pkt;
     uint32_t n   = 0;
     for (uint32_t i = 0; i < bh->num_pkts; i++) {
-        /* header + sockaddr_ll must lie inside the block (the kernel
-         * aligns entries to 16 bytes, so an unaligned offset is
-         * corruption as well) */
-        if (off & (TPACKET_ALIGNMENT - 1)) break;
+        /* header + sockaddr_ll must lie inside the block. Entries are
+         * packed at RAWRING_V3_ALIGN (8-byte) multiples — tp_next_offset
+         * is ALIGN(tp_mac + tp_snaplen, 8), so with a 60-byte frame the
+         * next entry happens to be 16-aligned but with a 66-byte one it
+         * is not; only the first entry and tp_net follow the 16-byte
+         * TPACKET_ALIGNMENT. A coarser check here abandons the rest of
+         * the block after the first odd-sized frame. */
+        if (off & (RAWRING_V3_ALIGN - 1)) break;
         if (off > block_size || block_size - off < TPACKET3_HDRLEN)
             break;
         const struct tpacket3_hdr *h =
