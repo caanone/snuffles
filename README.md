@@ -38,7 +38,7 @@ dependencies beyond (optional) libpcap.
 - Session/stream tracking `[S]` — bidirectional 5-tuple aggregation with TCP state machine
 - Protocol statistics `[V]` — live per-protocol breakdown with rates and drop counts
 - Syslog forwarding `--syslog` — real-time UDP CSV with full header details, feedback loop prevention
-- Silent mode `-q` — zero terminal output, minimal user-space memory (~16KB ring; the libpcap build adds a kernel capture buffer, `-B`), pure syslog forwarder
+- Silent mode `-q` — no packet output, minimal user-space memory (~16KB ring; the libpcap build adds a kernel capture buffer, `-B`), pure syslog forwarder
 - ANSI terminal UI with color-coded protocols, scrollable list, detail panel, hex dump, help overlay
 - Streaming write `-w` — tcpdump-style write-while-capturing (`-w -` pipes into Wireshark)
 - JSON Lines output `--jsonl` — one JSON object per packet on stdout, made for `jq`
@@ -155,7 +155,7 @@ Options:
                       ('-w -' writes to stdout; combine with -q)
   --no-ui             Headless mode (print to stdout)
   --jsonl             Headless mode, one JSON object per packet
-  -q, --quiet         Silent mode (no output, use with --syslog)
+  -q, --quiet         Silent mode (no packet output, use with --syslog)
   --syslog <host:port> Forward packets via UDP syslog
   --syslog-iface <ip|dev>  Source interface/IP for syslog
   --stats[=FILE]      Capture/drop counters every second and at exit
@@ -451,14 +451,15 @@ frame longer than 1518 bytes on a non-jumbo interface warns once about
 GRO/GSO super-frames (`ethtool -K <if> gro off gso off tso off` restores
 wire-sized frames).
 
-`--cpu N` pins the capture thread to CPU N and keeps the headless consumer
-(and the stats thread) on the other CPUs; `--rt` runs the capture thread
-at `SCHED_FIFO` priority 1 (set before privileges are dropped, so it needs
-root or `CAP_SYS_NICE`; unprivileged it warns and continues). Both are
-Linux features (`--rt` also works on other POSIX systems); both have config
-keys (`cpu`, `rt`). Use `--rt` together with `--cpu` on machines with
-spare cores: a real-time capture thread that saturates its CPU starves
-whatever else was scheduled there.
+`--cpu N` pins the capture thread to CPU N and keeps every other thread
+(the headless consumer or the TUI, and the stats thread) on the other
+CPUs; `--rt` runs the capture thread at `SCHED_FIFO` priority 1 (set
+before privileges are dropped, so it needs root or `CAP_SYS_NICE`;
+unprivileged it warns and continues). Both are Linux features (`--rt`
+also works on other POSIX systems); both have config keys (`cpu`, `rt`).
+Use `--rt` together with `--cpu` on machines with spare cores: a
+real-time capture thread that saturates its CPU starves whatever else was
+scheduled there.
 
 Reading a file with `-r` into a headless consumer never loses records: the
 reader waits for the consumer instead of lapping the ring, so
