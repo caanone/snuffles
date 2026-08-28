@@ -3,6 +3,35 @@
 ## [Unreleased]
 
 ### Changed
+- **Session table rebuilt for flow churn.** Keys are now a packed binary
+  5-tuple (canonical order, so both directions of a flow hit one entry)
+  compared with `memcmp` and hashed with a per-process seeded xxHash-style
+  mixer (no hash flooding); the bucket array is a power of two of at least
+  twice the 100 000-session cap (262 144 buckets instead of 4 096, so the
+  mean chain is under one entry when full); chains are doubly linked so
+  evicting the LRU tail is O(1) instead of a second chain walk; entries
+  come from a preallocated pool with a free list, so the packet path
+  performs no `calloc`/`free` once warm; the display strings are formatted
+  once per new session instead of two `snprintf`s per packet. The
+  dissector now fills binary address fields (`src_addr`/`dst_addr`/
+  `addr_family`) next to the existing strings. Micro-benchmark, 1 M
+  distinct flows into the 100 k cap: 1 490 -> 130 ns per packet; hits on
+  100 k resident flows: 415 -> 90 ns; live 400 k-flow UDP flood on `lo`:
+  process user CPU 1.05 s -> 0.30 s per 300 k packets.
+- **TCP stream buffers are recycled.** The 16 MB reassembly budget used to
+  go to the first ~512 payload-carrying sessions for the life of the
+  capture. Now a session that reaches CLOSED/RST keeps its bytes viewable
+  but becomes the first reclaim candidate, holders idle for 60 s
+  (`session_table_t.reasm_idle_sec`, packet-timestamp clock) release their
+  buffers, and when the budget is exhausted a new payload-carrying session
+  takes the oldest holder's buffers. Freed buffers go to a free list, not
+  back to `malloc`.
+
+### Fixed
+- **Non-first IP fragments no longer create port-0 pseudo-sessions**
+  (IPv4 and IPv6; the IPv6 fragment header now also fills `ip_frag_off`
+  in the IPv4 layout: offset in the low 13 bits, MF as bit 13).
+
 - **Ring buffer producer no longer pays a wakeup per packet.** Every commit
   used to lock/signal an unused condition variable and `write()` one byte
   to the consumer's notify pipe (a syscall per packet, `EAGAIN` once the

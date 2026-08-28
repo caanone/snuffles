@@ -599,6 +599,9 @@ static int dissect_ipv4(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
 
     format_ipv4(data + 12, out->src_ip, sizeof(out->src_ip));
     format_ipv4(data + 16, out->dst_ip, sizeof(out->dst_ip));
+    memcpy(out->src_addr, data + 12, 4);
+    memcpy(out->dst_addr, data + 16, 4);
+    out->addr_family = 4;
 
     /* Non-first fragments carry no L4 header: parsing them as TCP/UDP
      * would fill sessions and syslog with garbage ports. */
@@ -651,6 +654,9 @@ static int dissect_ipv6(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
 
     format_ipv6(data + 8, out->src_ip, sizeof(out->src_ip));
     format_ipv6(data + 24, out->dst_ip, sizeof(out->dst_ip));
+    memcpy(out->src_addr, data + 8, 16);
+    memcpy(out->dst_addr, data + 24, 16);
+    out->addr_family = 6;
 
     const uint8_t *l4 = data + 40;
     uint32_t l4len = len - 40;
@@ -671,6 +677,13 @@ static int dissect_ipv6(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
                 ext_len = (l4len >= 8) ? ((uint32_t)l4[1] + 2) * 4 : 0;
                 break;
             case 44:   /* fragment header (fixed 8 bytes) */
+                if (l4len >= 8) {
+                    /* expose offset/MF in the IPv4 ip_frag_off layout so
+                     * consumers (session table, syslog) test one field */
+                    uint16_t fo = rd16(l4 + 2);
+                    out->ip_frag_off = (uint16_t)((fo >> 3) | ((fo & 1) << 13));
+                    out->ip_id = rd16(l4 + 6);   /* low 16 bits of the id */
+                }
                 if (l4len >= 8 && (rd16(l4 + 2) & 0xFFF8) != 0) {
                     /* non-first fragment: no L4 header follows */
                     out->highest_proto = PROTO_IPV6;
@@ -743,9 +756,12 @@ static int dissect_arp(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
     format_mac(data + 18, tha, sizeof(tha));
     format_ipv4(data + 24, tpa, sizeof(tpa));
 
-    /* set IP fields for filtering */
+    /* set IP fields for filtering (and the binary pair for sessions) */
     snprintf(out->src_ip, sizeof(out->src_ip), "%s", spa);
     snprintf(out->dst_ip, sizeof(out->dst_ip), "%s", tpa);
+    memcpy(out->src_addr, data + 14, 4);
+    memcpy(out->dst_addr, data + 24, 4);
+    out->addr_family = 4;
 
     if (op == 1) {
         snprintf(out->info, sizeof(out->info),
