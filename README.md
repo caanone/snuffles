@@ -38,7 +38,7 @@ dependencies beyond (optional) libpcap.
 - Session/stream tracking `[S]` — bidirectional 5-tuple aggregation with TCP state machine
 - Protocol statistics `[V]` — live per-protocol breakdown with rates and drop counts
 - Syslog forwarding `--syslog` — real-time UDP CSV with full header details, feedback loop prevention
-- Silent mode `-q` — zero terminal output, minimal memory (~16KB), pure syslog forwarder
+- Silent mode `-q` — zero terminal output, minimal user-space memory (~16KB ring; the libpcap build adds a kernel capture buffer, `-B`), pure syslog forwarder
 - ANSI terminal UI with color-coded protocols, scrollable list, detail panel, hex dump, help overlay
 - Streaming write `-w` — tcpdump-style write-while-capturing (`-w -` pipes into Wireshark)
 - JSON Lines output `--jsonl` — one JSON object per packet on stdout, made for `jq`
@@ -420,6 +420,11 @@ Packets to/from the syslog destination are automatically excluded.
 | `--no-ui --syslog` | ~16KB + stdout buffering |
 | TUI + syslog | Full ring buffer + sessions |
 
+These figures cover snuffles' own buffers. The libpcap build also maps the
+kernel capture buffer into the process (64 MB by default, so RSS shows
+~70 MB even in `-q` mode); shrink it with `-B 1` or `buffer_mb` in the
+config file where memory matters more than burst tolerance.
+
 ---
 
 ## Export
@@ -543,7 +548,7 @@ Drops from root to original user (sudo) or `nobody` after opening capture device
 | Session table | 100,000 (LRU eviction) |
 | UI render buffer | 4 MB |
 | Filter preview | 2,000 packet scan |
-| Quiet + syslog mode | ~16 KB total |
+| Quiet + syslog mode | ~16 KB user-space + kernel capture buffer (`-B`, libpcap build) |
 
 ### Parser Hardening
 

@@ -290,9 +290,11 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
          * of scheduling jitter before the kernel drops. 64 MB rides out
          * ~500k small packets. libpcap shrinks the request itself if the
          * kernel refuses it. */
-        long long bytes = (long long)cfg->buffer_mb * 1024 * 1024;
-        if (bytes > INT_MAX) bytes = INT_MAX;
-        pcap_set_buffer_size(ctx->handle, (int)bytes);
+        if (cfg->buffer_mb > 0) {   /* <= 0 (unset cfg): libpcap default */
+            long long bytes = (long long)cfg->buffer_mb * 1024 * 1024;
+            if (bytes > INT_MAX) bytes = INT_MAX;
+            pcap_set_buffer_size(ctx->handle, (int)bytes);
+        }
 
         if (cfg->immediate) {
             /* one wakeup per packet; on Linux this forces TPACKET_V2 */
