@@ -63,10 +63,12 @@ read in batches of 64 with
 .BR recvmmsg (2).
 .TP
 .B \-\-immediate
-Deliver every packet as soon as it arrives instead of in 10\ ms batches
-(libpcap build only). Lower per\-packet latency at a higher per\-packet CPU
-cost; on Linux this also switches libpcap from TPACKET_V3 blocks to a
-per\-frame ring.
+Deliver every packet as soon as it arrives instead of in 10\ ms batches.
+Lower per\-packet latency at a higher per\-packet CPU cost; on Linux this
+switches libpcap from TPACKET_V3 blocks to a per\-frame ring, and the
+raw\-socket build from its TPACKET_V3 ring to
+.BR recvmmsg (2)
+reads.
 .TP
 .BI \-o " file"
 Export the ring buffer on exit; format chosen by extension

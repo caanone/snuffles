@@ -284,7 +284,7 @@ typedef struct {
     char        syslog_target[256];
     char        syslog_iface[64];
     int         buffer_mb;      /* -B: kernel capture buffer in MB (TPACKET ring; raw: SO_RCVBUF fallback) */
-    int         immediate;      /* --immediate: per-packet delivery (libpcap) */
+    int         immediate;      /* --immediate: per-packet delivery (no TPACKET_V3 blocks) */
 } capture_cfg_t;
 
 static inline void capture_cfg_defaults(capture_cfg_t *cfg) {

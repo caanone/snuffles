@@ -15,9 +15,9 @@
  * process — the kernel packs frames into 256 KiB blocks sized by -B and
  * wakes us once per block (10 ms retire timeout), so the per-packet cost
  * is the dissection, not syscalls. When the ring cannot be set up (old
- * kernel, ENOMEM) it falls back to recvmmsg() batches of RAW_BATCH frames
- * with kernel SO_TIMESTAMP and a socket receive queue sized by -B
- * (SO_RCVBUFFORCE while still root).
+ * kernel, ENOMEM), or --immediate asks for per-packet delivery, it uses
+ * recvmmsg() batches of RAW_BATCH frames with kernel SO_TIMESTAMP and a
+ * socket receive queue sized by -B (SO_RCVBUFFORCE while still root).
  */
 
 #ifndef _GNU_SOURCE
@@ -839,17 +839,26 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
     }
 
     /* Capture buffer (-B): the TPACKET_V3 block ring, or the socket
-     * receive queue + recvmmsg when the kernel cannot provide one. */
+     * receive queue + recvmmsg when the kernel cannot provide one or
+     * --immediate asks for per-packet delivery: a V3 block is handed
+     * over only when full or RAWRING_RETIRE_MS after its first frame
+     * (~10 ms of latency for a lone packet), whereas recvmmsg with
+     * MSG_WAITFORONE returns on the first frame — libpcap likewise leaves
+     * TPACKET_V3 for immediate mode. */
     {
         char why[160];
-        if (ring_setup(ctx, why, sizeof(why)) != 0) {
+        int  have_ring = 0;
+        if (cfg->immediate)
+            ;   /* per-packet delivery: recvmmsg path */
+        else if (ring_setup(ctx, why, sizeof(why)) == 0)
+            have_ring = 1;
+        else
             fprintf(stderr, "Note: TPACKET_V3 ring unavailable (%s); "
                             "using recvmmsg\n", why);
-            if (fallback_setup(ctx) != 0) {
-                RAW_CLOSE(ctx->sock);
-                free(ctx);
-                return NULL;
-            }
+        if (!have_ring && fallback_setup(ctx) != 0) {
+            RAW_CLOSE(ctx->sock);
+            free(ctx);
+            return NULL;
         }
     }
 

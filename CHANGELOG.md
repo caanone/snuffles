@@ -26,7 +26,10 @@
   accept-all program is attached when there is no `-f`), so the kernel
   copies at most snaplen bytes of a frame into the ring, as libpcap's
   filters do; a TCP bulk transfer over `lo` under `-s 128` no longer costs
-  the sender a 64 KiB copy per segment.
+  the sender a 64 KiB copy per segment. `--immediate` now applies to the
+  raw build too: it keeps the `recvmmsg` path, whose first-frame return
+  delivers a lone packet in ~0.1 ms instead of the ring's ~10 ms block
+  retire.
 
 ### Fixed
 - **Raw build: frames were delivered unfiltered before `-f` took effect.**
