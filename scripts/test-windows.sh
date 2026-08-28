@@ -22,13 +22,13 @@ mkdir -p "$OUT"
 
 echo "== cross-compiling snuffles.exe (NO_PCAP) with $CC"
 $CC $CFLAGS -DNO_PCAP \
-    src/main.c src/config.c src/capture_raw.c src/cbpf.c src/dissect.c \
+    src/main.c src/config.c src/capture_raw.c src/cbpf.c src/rawring.c src/dissect.c \
     src/filter.c src/ringbuf.c src/ui.c src/export_pcap.c src/export_json.c \
     src/stats.c src/session.c src/syslog_out.c \
     -o "$OUT/snuffles.exe" -static -lws2_32 -liphlpapi -lpthread
 
 echo "== cross-compiling unit tests"
-for t in filter ringbuf session dissect cbpf config syslog_out; do
+for t in filter ringbuf session dissect cbpf rawring config syslog_out; do
     $CC $CFLAGS "tests/test_$t.c" "src/$t.c" -o "$OUT/test_$t.exe" \
         -static -lws2_32 -lpthread
 done
@@ -41,7 +41,7 @@ export WINEDEBUG=${WINEDEBUG:--all}
 
 echo "== running unit tests under Wine"
 rc=0
-for t in filter ringbuf session dissect cbpf config export_json syslog_out; do
+for t in filter ringbuf session dissect cbpf rawring config export_json syslog_out; do
     printf '%-10s ' "$t"
     if $WINE "$OUT/test_$t.exe"; then :; else
         echo "FAILED: test_$t.exe"

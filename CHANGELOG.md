@@ -13,6 +13,26 @@
   syscall instead of one per packet. Under sustained load the capture
   thread makes no wakeup syscalls at all. `--stats` reports the delivered
   wakeups as `wakeups=`.
+- **Raw build (Linux) captures from a TPACKET_V3 block ring.** The
+  no-libpcap backend now maps a `PACKET_RX_RING` of 256 KiB blocks (sized
+  by `-B`, 10 ms retire timeout) into the process and takes one `poll()`
+  per block instead of a `recvmmsg()` per batch of 64 frames, with kernel
+  timestamps and lengths read out of the mapping. Per-packet capture cost
+  on a UDP flood over `lo` fell from ~2.4 µs to ~1.1–1.5 µs (about half),
+  so the raw build's ceiling roughly doubles. When the kernel cannot set
+  up the ring (ENOMEM, pre-3.2 kernel) a note is printed and the previous
+  `recvmmsg` + `SO_RCVBUF` path is used. `ss -0 -e -m` shows the ring.
+
+### Fixed
+- **Raw build: frames were delivered unfiltered before `-f` took effect.**
+  A packet socket receives from the moment it is created; frames queued
+  between `socket()` and `SO_ATTACH_FILTER` bypassed the filter. A
+  reject-all program is now attached before `bind()`, the queue (or ring)
+  is drained after setup, and only then is the user's filter attached (or
+  the reject-all program detached when there is none).
+- **Raw build: the "raise net.core.rmem_max or run as root" hint** was
+  printed even when the socket buffer request hit the kernel's own
+  per-socket ceiling (1024 MiB); it now says "kernel limit" in that case.
 
 ## [1.3.1] — 2026-08-27
 
