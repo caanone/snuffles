@@ -67,7 +67,7 @@ OBJS_DEBUG = $(SRCS_PCAP:src/%.c=$(OBJDIR)/debug/%.o)
 
 # ── Unit tests (also runnable via CTest; this target keeps them
 #    available on the make-only path, e.g. macOS release builds) ──
-TESTS      = filter ringbuf session dissect cbpf config
+TESTS      = filter ringbuf session dissect cbpf config export_json
 TEST_BINS  = $(TESTS:%=$(OBJDIR)/tests/test_%)
 # make test SAN=1 -> run the suite under ASan/UBSan
 ifdef SAN
@@ -122,6 +122,12 @@ $(OBJDIR)/pcap $(OBJDIR)/raw $(OBJDIR)/debug:
 
 # ── Tests ────────────────────────────────────────────────────
 $(OBJDIR)/tests/test_%: tests/test_%.c src/%.c | $(OBJDIR)/tests
+	$(CC) $(BASE_CFLAGS) $(TEST_FLAGS) -Isrc $(CFLAGS) -o $@ $^ \
+	      $(TEST_LDFLAGS) $(LDFLAGS) $(TEST_LDLIBS)
+
+# export_json.c also walks the ring through the display filter
+$(OBJDIR)/tests/test_export_json: tests/test_export_json.c src/export_json.c \
+                                  src/filter.c src/ringbuf.c | $(OBJDIR)/tests
 	$(CC) $(BASE_CFLAGS) $(TEST_FLAGS) -Isrc $(CFLAGS) -o $@ $^ \
 	      $(TEST_LDFLAGS) $(LDFLAGS) $(TEST_LDLIBS)
 

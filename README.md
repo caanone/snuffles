@@ -116,7 +116,7 @@ make clean           # Remove artifacts
 ### Tests
 
 Unit tests (filter, ring buffer, sessions, dissectors, BPF compiler,
-config) run either from the Makefile or via CTest:
+config, JSON Lines writer) run either from the Makefile or via CTest:
 
 ```bash
 make test                 # all suites
