@@ -1,0 +1,23 @@
+{
+  "name": "C8-frag-quiet",
+  "build": "pcap",
+  "mode": "quiet",
+  "iface": "br0",
+  "bpf": "",
+  "duration": 30,
+  "perf": false,
+  "mtu": 1500,
+  "offloads": "on",
+  "rps": "off",
+  "traffic": {
+    "kind": "frag",
+    "gens": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "threads": 2,
+    "dst": "sink"
+  }
+}

@@ -1,0 +1,120 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 7K of event 'cycles:P'
+# Event count (approx.): 31122057169
+#
+# Overhead  Command      Shared Object      Symbol                                   
+# ........  ...........  .................  .........................................
+#
+     9.95%  snf-capture  [kernel.kallsyms]  [k] entry_SYSRETQ_unsafe_stack
+     3.10%  snf-capture  [kernel.kallsyms]  [k] _copy_to_iter
+     2.87%  snf-capture  snuffles           [.] dissect_packet
+     2.58%  snf-capture  [kernel.kallsyms]  [k] __sys_recvfrom
+            |          
+             --1.00%--entry_SYSRETQ_unsafe_stack
+                       0x7fbd723739ee
+                       0x7fbd7236bb7b
+
+     2.57%  snf-capture  [kernel.kallsyms]  [k] packet_recvmsg
+     2.37%  snf-capture  [kernel.kallsyms]  [k] __slab_free
+     1.76%  snf-capture  [kernel.kallsyms]  [k] kmem_cache_free
+     1.60%  snf-capture  [kernel.kallsyms]  [k] __check_object_size
+     1.53%  snf-capture  [kernel.kallsyms]  [k] do_syscall_64
+     1.21%  snf-capture  [kernel.kallsyms]  [k] srso_alias_safe_ret
+     1.12%  snf-capture  [kernel.kallsyms]  [k] __skb_try_recv_datagram
+     1.11%  snf-capture  [kernel.kallsyms]  [k] srso_alias_untrain_ret
+            |          
+             --0.96%--entry_SYSRETQ_unsafe_stack
+                       0x7fbd723739ee
+                       0x7fbd7236bb7b
+
+     1.10%  snf-capture  [kernel.kallsyms]  [k] sock_recvmsg
+     1.03%  snf-capture  snuffles           [.] session_table_update
+            |          
+             --0.53%--entry_SYSRETQ_unsafe_stack
+                       0x7fbd723739ee
+                       0x7fbd7236bb7b
+
+     1.03%  snf-capture  snuffles           [.] capture_thread_fn
+     1.01%  snf-capture  [kernel.kallsyms]  [k] fdget
+     0.97%  snf-capture  [kernel.kallsyms]  [k] kfree
+     0.96%  snf-capture  [kernel.kallsyms]  [k] srso_alias_return_thunk
+     0.93%  snf-capture  snuffles           [.] key_hash
+            |          
+             --0.53%--entry_SYSRETQ_unsafe_stack
+                       0x7fbd723739ee
+                       0x7fbd7236bb7b
+
+     0.92%  snf-capture  [kernel.kallsyms]  [k] skb_release_data
+     0.88%  snf-capture  snuffles           [.] dissect_ipv4.isra.0
+     0.87%  snf-capture  [kernel.kallsyms]  [k] security_socket_recvmsg
+     0.86%  snf-capture  [kernel.kallsyms]  [k] entry_SYSCALL_64
+            |          
+             --0.72%--entry_SYSRETQ_unsafe_stack
+                       0x7fbd723739ee
+                       0x7fbd7236bb7b
+
+     0.86%  snf-capture  libc.so.6          [.] 0x000000000009a9ee
+     0.83%  snf-capture  [kernel.kallsyms]  [k] consume_skb
+     0.77%  snf-capture  [kernel.kallsyms]  [k] __skb_recv_datagram
+     0.76%  snf-capture  [kernel.kallsyms]  [k] entry_SYSCALL_64_after_hwframe
+     0.73%  snf-capture  [vdso]             [.] 0x00000000000007f5
+     0.70%  snf-capture  [kernel.kallsyms]  [k] syscall_exit_to_user_mode
+     0.63%  snf-capture  [kernel.kallsyms]  [k] __skb_datagram_iter
+     0.58%  snf-capture  libc.so.6          [.] snprintf
+     0.57%  snf-capture  [kernel.kallsyms]  [k] simple_copy_to_iter
+     0.55%  snf-capture  libc.so.6          [.] memcpy@plt
+     0.52%  snf-capture  libc.so.6          [.] 0x000000000005a2f3
+     0.52%  snf-capture  [kernel.kallsyms]  [k] slab_update_freelist.isra.0
+     0.51%  snf-capture  libc.so.6          [.] 0x0000000000062cff
+     0.50%  snf-capture  libc.so.6          [.] 0x000000000005a35a
+     0.48%  snf-capture  [kernel.kallsyms]  [k] __virt_addr_valid
+     0.47%  snf-capture  snuffles           [.] dissect_udp.isra.0
+     0.47%  snf-capture  [kernel.kallsyms]  [k] arch_exit_to_user_mode_prepare.isra.0
+     0.44%  snf-capture  libc.so.6          [.] recv
+     0.44%  snf-capture  [kernel.kallsyms]  [k] skb_recv_datagram
+     0.43%  snf-capture  [kernel.kallsyms]  [k] skb_release_head_state
+     0.43%  snf-capture  [kernel.kallsyms]  [k] __skb_try_recv_from_queue
+     0.43%  snf-capture  [kernel.kallsyms]  [k] is_vmalloc_addr
+     0.42%  snf-capture  libc.so.6          [.] 0x000000000005a2c8
+     0.41%  snf-capture  libc.so.6          [.] 0x000000000005a2b3
+     0.41%  snf-capture  libc.so.6          [.] 0x0000000000062971
+     0.40%  snf-capture  libc.so.6          [.] 0x0000000000062f24
+     0.39%  snf-capture  [kernel.kallsyms]  [k] aa_sk_perm
+     0.39%  snf-capture  [kernel.kallsyms]  [k] native_queued_spin_lock_slowpath
+     0.39%  snf-capture  libc.so.6          [.] 0x0000000000162b7a
+     0.39%  snf-capture  libc.so.6          [.] 0x000000000005a350
+     0.38%  snf-capture  [kernel.kallsyms]  [k] __x64_sys_recvfrom
+     0.38%  snf-capture  libc.so.6          [.] 0x0000000000164f41
+     0.37%  snf-capture  libc.so.6          [.] 0x000000000005a300
+     0.35%  snf-capture  [kernel.kallsyms]  [k] _raw_spin_lock_irqsave
+     0.35%  snf-capture  libc.so.6          [.] 0x000000000008f6ad
+     0.34%  snf-capture  libc.so.6          [.] 0x0000000000063178
+     0.33%  snf-capture  libc.so.6          [.] 0x0000000000162b70
+     0.33%  snf-capture  [kernel.kallsyms]  [k] sock_rfree
+     0.33%  snf-capture  [kernel.kallsyms]  [k] __check_heap_object
+     0.33%  snf-capture  libc.so.6          [.] 0x000000000006298a
+     0.32%  snf-capture  libc.so.6          [.] 0x000000000005a2c4
+     0.31%  snf-capture  libc.so.6          [.] 0x000000000005a30a
+     0.31%  snf-capture  libc.so.6          [.] 0x0000000000162b43
+     0.31%  snf-capture  libc.so.6          [.] 0x0000000000062665
+     0.30%  snf-capture  libc.so.6          [.] 0x000000000009a9ec
+     0.30%  snf-capture  [kernel.kallsyms]  [k] syscall_return_via_sysret
+     0.30%  snf-capture  libc.so.6          [.] 0x000000000005a305
+     0.29%  snf-capture  libc.so.6          [.] 0x0000000000162b86
+     0.29%  snf-capture  [kernel.kallsyms]  [k] skb_copy_datagram_iter
+     0.29%  snf-capture  libc.so.6          [.] 0x00000000000626f9
+     0.29%  snf-capture  libc.so.6          [.] 0x000000000006260a
+     0.28%  snf-capture  [kernel.kallsyms]  [k] kfree_skbmem
+     0.26%  snf-capture  libc.so.6          [.] 0x0000000000162b94
+     0.25%  snf-capture  libc.so.6          [.] 0x000000000005a2f8
+     0.25%  snf-capture  libc.so.6          [.] 0x000000000005a30f
+     0.25%  snf-capture  libc.so.6          [.] 0x0000000000162b7f
+     0.25%  snf-capture  libc.so.6          [.] pthread_mutex_lock
+     0.25%  snf-capture  libc.so.6          [.] 0x000000000006260c
+     0.24%  snf-capture  libc.so.6          [.] 0x0000000000164f37
+     0.24%  snf-capture  libc.so.6          [.] 0x0000000000162b75
+     0.24%  snf-capture  libc.so.6          [.] 0x0000000000062ccb

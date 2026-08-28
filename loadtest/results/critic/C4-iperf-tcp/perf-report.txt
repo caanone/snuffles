@@ -1,0 +1,120 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 4K of event 'cycles:P'
+# Event count (approx.): 19189631912
+#
+# Overhead  Command      Shared Object                                   Symbol                                            
+# ........  ...........  ..............................................  ..................................................
+#
+    10.10%  snf-capture  libc.so.6                                       [.] 0x0000000000162d0e
+            |          
+            |--2.55%--0x7fbe8628dd0a
+            |          0x7fbe86418527
+            |          
+            |--2.19%--0x7fbe8628dd00
+            |          0x7fbe86418527
+            |          
+            |--1.77%--0x7fbe8628dd05
+            |          0x7fbe86418527
+            |          
+            |--1.26%--0x7fbe8628dcfb
+            |          0x7fbe86418527
+            |          
+             --0.57%--0x7fbe8628dcf3
+                       0x7fbe86418527
+
+     9.66%  snf-capture  libc.so.6                                       [.] 0x0000000000162d0a
+            |          
+            |--2.42%--0x7fbe8628dd0a
+            |          0x7fbe86418527
+            |          
+            |--2.24%--0x7fbe8628dd00
+            |          0x7fbe86418527
+            |          
+            |--1.55%--0x7fbe8628dcfb
+            |          0x7fbe86418527
+            |          
+            |--1.22%--0x7fbe8628dd05
+            |          0x7fbe86418527
+            |          
+             --0.53%--0x7fbe8628dcf3
+                       0x7fbe86418527
+
+     7.62%  snf-capture  libc.so.6                                       [.] 0x0000000000162cf3
+            |          
+            |--1.95%--0x7fbe8628dd05
+            |          0x7fbe86418527
+            |          
+            |--1.78%--0x7fbe8628dcfb
+            |          0x7fbe86418527
+            |          
+            |--1.11%--0x7fbe8628dd0a
+            |          0x7fbe86418527
+            |          
+             --1.00%--0x7fbe8628dd00
+                       0x7fbe86418527
+
+     6.91%  snf-capture  libc.so.6                                       [.] 0x0000000000162d05
+            |          
+            |--1.68%--0x7fbe8628dd0a
+            |          0x7fbe86418527
+            |          
+            |--1.53%--0x7fbe8628dd00
+            |          0x7fbe86418527
+            |          
+            |--1.32%--0x7fbe8628dd05
+            |          0x7fbe86418527
+            |          
+             --0.79%--0x7fbe8628dcfb
+                       0x7fbe86418527
+
+     6.52%  snf-capture  libc.so.6                                       [.] 0x0000000000162cfb
+            |          
+            |--1.45%--0x7fbe8628dd0a
+            |          0x7fbe86418527
+            |          
+            |--1.44%--0x7fbe8628dd00
+            |          0x7fbe86418527
+            |          
+            |--1.39%--0x7fbe8628dd05
+            |          0x7fbe86418527
+            |          
+             --0.89%--0x7fbe8628dcfb
+                       0x7fbe86418527
+
+     6.48%  snf-capture  libc.so.6                                       [.] 0x0000000000162d00
+            |          
+            |--1.88%--0x7fbe8628dd0a
+            |          0x7fbe86418527
+            |          
+            |--1.43%--0x7fbe8628dd00
+            |          0x7fbe86418527
+            |          
+            |--1.00%--0x7fbe8628dd05
+            |          0x7fbe86418527
+            |          
+             --0.73%--0x7fbe8628dcfb
+                       0x7fbe86418527
+
+     6.25%  snf-capture  libc.so.6                                       [.] 0x0000000000162cf7
+            |          
+            |--1.41%--0x7fbe8628dd05
+            |          0x7fbe86418527
+            |          
+            |--1.17%--0x7fbe8628dd0a
+            |          0x7fbe86418527
+            |          
+            |--1.16%--0x7fbe8628dcfb
+            |          0x7fbe86418527
+            |          
+             --0.91%--0x7fbe8628dd00
+                       0x7fbe86418527
+
+     3.47%  snf-capture  libc.so.6                                       [.] 0x0000000000162cee
+            |          
+            |--0.94%--0x7fbe8628dd05
+            |          0x7fbe86418527
+            |          

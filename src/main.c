@@ -293,12 +293,16 @@ static void *stats_thread_fn(void *arg) {
     prctl(PR_SET_NAME, "snf-stats", 0, 0, 0);
 #endif
     while (!atomic_load(&r->stop)) {
+        /* 1 s period in 100 ms slices so shutdown does not wait a full
+         * second for this thread to notice stop. */
+        for (int i = 0; i < 10 && !atomic_load(&r->stop); i++) {
 #ifndef _WIN32
-        struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
-        select(0, NULL, NULL, NULL, &tv);
+            struct timeval tv = { .tv_sec = 0, .tv_usec = 100000 };
+            select(0, NULL, NULL, NULL, &tv);
 #else
-        Sleep(1000);
+            Sleep(100);
 #endif
+        }
         if (atomic_load(&r->stop)) break;
         stats_report_line(r, "stats");
     }

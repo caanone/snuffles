@@ -1,0 +1,8 @@
+# host sysctl values before tune-host.sh apply (2026-08-28T16:07:21+03:00)
+net.core.rmem_max=33554432
+net.core.wmem_max=33554432
+net.core.netdev_max_backlog=1000
+net.core.netdev_budget=300
+net.core.netdev_budget_usecs=8000
+net.core.optmem_max=131072
+vm.max_map_count=2147483642

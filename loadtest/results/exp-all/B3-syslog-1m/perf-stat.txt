@@ -1,0 +1,22 @@
+# started on Fri Aug 28 14:51:44 2026
+
+
+ Performance counter stats for process id '47020':
+
+           9983.20 msec task-clock                       #    0.998 CPUs utilized             
+               829      context-switches                 #   83.040 /sec                      
+                93      cpu-migrations                   #    9.316 /sec                      
+                 0      page-faults                      #    0.000 /sec                      
+       39656447080      cycles                           #    3.972 GHz                       
+       47957282421      instructions                     #    1.21  insn per cycle            
+          98156712      cache-misses                                                          
+         489933966      branch-misses                                                         
+                10      syscalls:sys_enter_write         #    1.002 /sec                      
+                 0      syscalls:sys_enter_sendto        #    0.000 /sec                      
+                39      syscalls:sys_enter_getsockopt    #    3.907 /sec                      
+                 0      syscalls:sys_enter_recvfrom      #    0.000 /sec                      
+                 0      syscalls:sys_enter_select        #    0.000 /sec                      
+                 0      syscalls:sys_enter_poll          #    0.000 /sec                      
+
+      10.001327869 seconds time elapsed
+

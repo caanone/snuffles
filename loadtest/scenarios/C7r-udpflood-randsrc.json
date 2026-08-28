@@ -1,0 +1,25 @@
+{
+  "name": "C7r-udpflood-randsrc",
+  "build": "pcap",
+  "mode": "quiet",
+  "iface": "br0",
+  "bpf": "",
+  "duration": 30,
+  "perf": false,
+  "mtu": 1500,
+  "offloads": "on",
+  "rps": "off",
+  "traffic": {
+    "kind": "udpflood",
+    "gens": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "threads": 2,
+    "pkt_size": 64,
+    "dst": "sink",
+    "extra": "-r"
+  }
+}

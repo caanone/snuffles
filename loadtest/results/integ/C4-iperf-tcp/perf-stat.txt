@@ -1,0 +1,22 @@
+# started on Fri Aug 28 13:23:08 2026
+
+
+ Performance counter stats for process id '7272':
+
+           3975.13 msec task-clock                       #    0.993 CPUs utilized             
+               978      context-switches                 #  246.029 /sec                      
+                17      cpu-migrations                   #    4.277 /sec                      
+                 0      page-faults                      #    0.000 /sec                      
+       15768198204      cycles                           #    3.967 GHz                       
+        7969267131      instructions                     #    0.51  insn per cycle            
+         435327179      cache-misses                                                          
+          33389202      branch-misses                                                         
+            395924      syscalls:sys_enter_write         #   99.600 K/sec                     
+                 0      syscalls:sys_enter_sendto        #    0.000 /sec                      
+              8475      syscalls:sys_enter_getsockopt    #    2.132 K/sec                     
+                 0      syscalls:sys_enter_recvfrom      #    0.000 /sec                      
+                 0      syscalls:sys_enter_select        #    0.000 /sec                      
+               952      syscalls:sys_enter_poll          #  239.489 /sec                      
+
+       4.003095196 seconds time elapsed
+

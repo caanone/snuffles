@@ -1,0 +1,35 @@
+{
+  "name": "B8-headlesspipe-1m",
+  "build": "pcap",
+  "mode": "headless-pipe",
+  "iface": "br0",
+  "bpf": "",
+  "duration": 30,
+  "perf": false,
+  "mtu": 1500,
+  "offloads": "on",
+  "rps": "off",
+  "traffic": {
+    "kind": "pktgen",
+    "gens": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "cpus": [
+      4,
+      5,
+      6,
+      7,
+      12,
+      13,
+      14,
+      15
+    ],
+    "pkt_size": 64,
+    "pps": 125000,
+    "flows": 1,
+    "dst": "sink"
+  }
+}

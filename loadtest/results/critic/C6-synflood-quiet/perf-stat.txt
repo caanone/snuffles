@@ -1,0 +1,22 @@
+# started on Fri Aug 28 14:02:20 2026
+
+
+ Performance counter stats for process id '14561':
+
+           3023.54 msec task-clock                       #    0.756 CPUs utilized             
+               521      context-switches                 #  172.315 /sec                      
+                19      cpu-migrations                   #    6.284 /sec                      
+                 0      page-faults                      #    0.000 /sec                      
+       12003965451      cycles                           #    3.970 GHz                       
+       11355501242      instructions                     #    0.95  insn per cycle            
+          84212520      cache-misses                                                          
+          59477981      branch-misses                                                         
+            689561      syscalls:sys_enter_write         #  228.064 K/sec                     
+                 0      syscalls:sys_enter_sendto        #    0.000 /sec                      
+             10912      syscalls:sys_enter_getsockopt    #    3.609 K/sec                     
+                 0      syscalls:sys_enter_recvfrom      #    0.000 /sec                      
+                 0      syscalls:sys_enter_select        #    0.000 /sec                      
+               264      syscalls:sys_enter_poll          #   87.315 /sec                      
+
+       4.001605782 seconds time elapsed
+

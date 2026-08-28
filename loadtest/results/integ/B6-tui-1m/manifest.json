@@ -1,0 +1,60 @@
+{
+  "name": "B6-tui-1m",
+  "run_id": "integ",
+  "status": "ok",
+  "build": "pcap",
+  "mode": "tui",
+  "iface": "br0",
+  "duration": 12,
+  "perf": true,
+  "traffic": {
+    "kind": "pktgen",
+    "pkt_size": 64,
+    "dst": "sink",
+    "pps": 125000,
+    "flows": 1,
+    "gens": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "cpus": [
+      4,
+      5,
+      6,
+      7,
+      12,
+      13,
+      14,
+      15
+    ]
+  },
+  "knobs": {
+    "mtu": 1500,
+    "offloads": "on",
+    "rps": "off",
+    "snaplen": null,
+    "ring": null,
+    "bpf": ""
+  },
+  "git_sha": "bffe4ac9a84a7314c65b7f95f1d89ed4140a86fa",
+  "snuffles_version": "Snuffles v1.3.1",
+  "host_uname": "Linux 6.12.101+deb13-amd64 x86_64 GNU/Linux",
+  "cpuset": {
+    "sut": "2,3,10,11",
+    "gen1": "4,12",
+    "gen2": "5,13",
+    "gen3": "6,14",
+    "gen4": "7,15",
+    "sink": "0,8"
+  },
+  "run_start": 1787922796.826896210,
+  "run_end": 1787922830.715655159,
+  "snuffles_start": 1787922799.268700408,
+  "traffic_start": 1787922803.392565115,
+  "traffic_end": 1787922825.943258010,
+  "exit_code": 0,
+  "exit_latency_ms": 384,
+  "killed": false
+}
