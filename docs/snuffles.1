@@ -47,14 +47,16 @@ buffer the kernel fills while the capture thread is not scheduled, so it
 decides how much burst or scheduling jitter can be absorbed before the
 kernel drops packets; the kernel may cap or shrink the request.
 libpcap build: the TPACKET ring mapped into the process.
-Raw\-socket build (Linux): the packet socket's receive queue, set with
-SO_RCVBUFFORCE before privileges are dropped (falls back to SO_RCVBUF,
-capped by
+Raw\-socket build (Linux): a TPACKET_V3 ring of 256\ KiB blocks mapped into
+the process; the kernel hands over a block when it is full or 10\ ms after
+its first frame, with kernel timestamps. If it cannot provide the ring
+(ENOMEM, a pre\-3.2 kernel) a note is printed and the packet socket's
+receive queue is used instead, set with SO_RCVBUFFORCE before privileges
+are dropped (falls back to SO_RCVBUF, capped by
 .BR net.core.rmem_max ,
-with a warning; the kernel itself caps a socket buffer at 1024\ MiB); frames
-are read in batches of 64 with
-.BR recvmmsg (2)
-and timestamped by the kernel.
+with a warning; the kernel itself caps a socket buffer at 1024\ MiB), frames
+read in batches of 64 with
+.BR recvmmsg (2).
 .TP
 .B \-\-immediate
 Deliver every packet as soon as it arrives instead of in 10\ ms batches
