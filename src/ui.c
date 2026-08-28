@@ -1484,8 +1484,10 @@ void ui_run(ui_ctx_t *ctx) {
     (void)write(STDOUT_FILENO, ESC_CLEAR ESC_HOME, strlen(ESC_CLEAR ESC_HOME));
 #endif
 
+#ifndef _WIN32
     int notify_fd = ringbuf_get_notify_fd(ctx->rb);
     uint64_t seen_total = 0;
+#endif
 
     while (!ctx->stop) {
         if (g_async_stop) break;
