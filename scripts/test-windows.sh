@@ -32,13 +32,16 @@ for t in filter ringbuf session dissect cbpf config; do
     $CC $CFLAGS "tests/test_$t.c" "src/$t.c" -o "$OUT/test_$t.exe" \
         -static -lws2_32 -lpthread
 done
+# export_json.c also walks the ring through the display filter
+$CC $CFLAGS tests/test_export_json.c src/export_json.c src/filter.c src/ringbuf.c \
+    -o "$OUT/test_export_json.exe" -static -lws2_32 -lpthread
 
 WINE=${WINE:-wine}
 export WINEDEBUG=${WINEDEBUG:--all}
 
 echo "== running unit tests under Wine"
 rc=0
-for t in filter ringbuf session dissect cbpf config; do
+for t in filter ringbuf session dissect cbpf config export_json; do
     printf '%-10s ' "$t"
     if $WINE "$OUT/test_$t.exe"; then :; else
         echo "FAILED: test_$t.exe"

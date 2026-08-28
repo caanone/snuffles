@@ -132,8 +132,13 @@ static void run_headless(ringbuf_t *rb, capture_ctx_t *cap,
 #else
     int stdout_tty = isatty(STDOUT_FILENO);
 #endif
+    /* The buffer is supplied explicitly: given a NULL buf, glibc and musl
+       ignore the size and hand out their default block (4 KiB on glibc),
+       while BSD libc and MSVC honour it. Static so it outlives the stream;
+       exit() flushes it. */
+    static char outbuf[1 << 20];
     if (!stdout_tty)
-        setvbuf(stdout, NULL, _IOFBF, 1 << 20);
+        setvbuf(stdout, outbuf, _IOFBF, sizeof(outbuf));
 
     uint64_t last = 0;
     int notify_fd = ringbuf_get_notify_fd(rb);
