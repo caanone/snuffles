@@ -40,7 +40,14 @@ BPF capture filter. libpcap build: full pcap syntax. Raw\-socket build
 Stop after \fIcount\fR packets.
 .TP
 .BI \-s " snaplen"
-Snapshot length in bytes (64\-65535, default 65535).
+Snapshot length in bytes (64\-65535, default 65535). Raw\-socket build
+(Linux): with the TPACKET_V3 ring it is applied in the kernel through the
+filter program's return value, so at most \fIsnaplen\fR bytes of each
+frame are copied into the ring, with or without
+.BR \-f ;
+the
+.BR recvmmsg (2)
+path truncates in user space so the wire length stays known.
 .TP
 .BI \-b " ring"
 Ring buffer size in packets (16\-1000000, default 10000).
@@ -51,20 +58,24 @@ buffer the kernel fills while the capture thread is not scheduled, so it
 decides how much burst or scheduling jitter can be absorbed before the
 kernel drops packets; the kernel may cap or shrink the request.
 libpcap build: the TPACKET ring mapped into the process.
-Raw\-socket build (Linux): the packet socket's receive queue, set with
-SO_RCVBUFFORCE before privileges are dropped (falls back to SO_RCVBUF,
-capped by
+Raw\-socket build (Linux): a TPACKET_V3 ring of 256\ KiB blocks mapped into
+the process; the kernel hands over a block when it is full or 10\ ms after
+its first frame, with kernel timestamps. If it cannot provide the ring
+(ENOMEM, a pre\-3.2 kernel) a note is printed and the packet socket's
+receive queue is used instead, set with SO_RCVBUFFORCE before privileges
+are dropped (falls back to SO_RCVBUF, capped by
 .BR net.core.rmem_max ,
-with a warning; the kernel itself caps a socket buffer at 1024\ MiB); frames
-are read in batches of 64 with
-.BR recvmmsg (2)
-and timestamped by the kernel.
+with a warning; the kernel itself caps a socket buffer at 1024\ MiB), frames
+read in batches of 64 with
+.BR recvmmsg (2).
 .TP
 .B \-\-immediate
-Deliver every packet as soon as it arrives instead of in 10\ ms batches
-(libpcap build only). Lower per\-packet latency at a higher per\-packet CPU
-cost; on Linux this also switches libpcap from TPACKET_V3 blocks to a
-per\-frame ring.
+Deliver every packet as soon as it arrives instead of in 10\ ms batches.
+Lower per\-packet latency at a higher per\-packet CPU cost; on Linux this
+switches libpcap from TPACKET_V3 blocks to a per\-frame ring, and the
+raw\-socket build from its TPACKET_V3 ring to
+.BR recvmmsg (2)
+reads.
 .TP
 .BI \-o " file"
 Export the ring buffer on exit; format chosen by extension

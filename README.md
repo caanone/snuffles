@@ -162,7 +162,7 @@ Options:
   --no-summary        Headless modes: no counters line at exit
   --cpu <N>           Pin the capture thread to CPU N (Linux)
   --rt                SCHED_FIFO priority 1 for the capture thread (root)
-  --immediate         Per-packet delivery instead of 10 ms batches (libpcap build)
+  --immediate         Per-packet delivery instead of 10 ms batches 
   --list-ifaces       List interfaces and exit
   -v                  Version info
   -h, --help          Help
@@ -479,12 +479,12 @@ reader waits for the consumer instead of lapping the ring, so
 | `--no-ui --syslog` | same + stdout buffering |
 | TUI + syslog | Full ring buffer + sessions |
 
-These figures cover snuffles' own buffers. The libpcap build also maps the
+These figures cover snuffles' own buffers. Both builds also map the
 kernel capture buffer into the process (64 MB by default, so RSS shows
 ~70 MB; the lean `-q --syslog` forwarder defaults to 8 MB, ~13 MB RSS);
 shrink it further with `-B 1` or `buffer_mb` in the config file where
-memory matters more than burst tolerance. The raw build
-sizes the packet socket's receive queue with the same option; that memory
+memory matters more than burst tolerance. When the raw build has to fall
+back to a socket receive queue (no TPACKET_V3 ring available) that memory
 stays in the kernel and does not show up in RSS.
 
 ---
@@ -610,7 +610,7 @@ Drops from root to original user (sudo) or `nobody` after opening capture device
 |----------|-------|
 | snaplen | 64 - 65,535 bytes |
 | ring_size | 16 - 1,000,000 packets |
-| buffer_mb | 1 - 2,047 MB kernel capture buffer (default 64; libpcap: TPACKET ring, raw: socket receive buffer) |
+| buffer_mb | 1 - 2,047 MB kernel capture buffer (default 64; a TPACKET_V3 block ring in both builds, the raw build uses the socket receive queue when no ring is available) |
 | Session table | 100,000 (LRU eviction) |
 | UI render buffer | 4 MB |
 | Filter preview | 2,000 packet scan |
@@ -652,7 +652,7 @@ Packets to/from syslog destination excluded automatically.
 |---------|-------------------|---------------------|
 | Dependencies | libpcap / Npcap | None |
 | BPF kernel filter | Yes | Linux: subset (proto/host/port + and) |
-| Capture buffer `-B` | Kernel TPACKET ring (mmap'd) | Linux: SO_RCVBUF + recvmmsg batches, kernel timestamps |
+| Capture buffer `-B` | Kernel TPACKET ring (mmap'd) | Linux: TPACKET_V3 ring (mmap'd), kernel timestamps; recvmmsg + SO_RCVBUF when no ring |
 | Offline pcap | Yes | No |
 | Ethernet/ARP | Yes | Linux only |
 | Syslog | Yes | Yes |

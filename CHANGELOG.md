@@ -80,6 +80,39 @@
   at the rates the capture thread sustains. Measured on a 200x50 terminal:
   UI thread 43% -> 1.6% at 350-530 kpps; sessions view with 100 k sessions
   100% -> 9% UI, capture thread unblocked (58% -> 82% busy, 0% drops).
+- **Raw build (Linux) captures from a TPACKET_V3 block ring.** The
+  no-libpcap backend now maps a `PACKET_RX_RING` of 256 KiB blocks (sized
+  by `-B`, 10 ms retire timeout) into the process and takes one `poll()`
+  per block instead of a `recvmmsg()` per batch of 64 frames, with kernel
+  timestamps and lengths read out of the mapping. Per-packet capture cost
+  on a UDP flood over `lo` fell from ~2.4 µs to ~1.1–1.5 µs (about half),
+  so the raw build's ceiling roughly doubles. When the kernel cannot set
+  up the ring (ENOMEM, pre-3.2 kernel) a note is printed and the previous
+  `recvmmsg` + `SO_RCVBUF` path is used. `ss -0 -e -m` shows the ring.
+  The in-kernel filter now returns `-s` as its accepting value (an
+  accept-all program is attached when there is no `-f`), so the kernel
+  copies at most snaplen bytes of a frame into the ring, as libpcap's
+  filters do; a TCP bulk transfer over `lo` under `-s 128` no longer costs
+  the sender a 64 KiB copy per segment. `--immediate` now applies to the
+  raw build too: it keeps the `recvmmsg` path, whose first-frame return
+  delivers a lone packet in ~0.1 ms instead of the ring's ~10 ms block
+  retire.
+
+### Fixed
+- **Raw build: frames were delivered unfiltered before `-f` took effect.**
+  A packet socket receives from the moment it is created; frames queued
+  between `socket()` and `SO_ATTACH_FILTER` bypassed the filter. A
+  reject-all program is now attached before `bind()`, the queue (or ring)
+  is drained after setup, and only then is the user's filter attached (or
+  the reject-all program detached when there is none).
+- **Raw build: the "raise net.core.rmem_max or run as root" hint** was
+  printed even when the socket buffer request hit the kernel's own
+  per-socket ceiling (1024 MiB); it now says "kernel limit" in that case.
+- **Raw build: every packet on `lo` was captured twice.** A frame sent over
+  the loopback interface passes the packet tap twice (`PACKET_OUTGOING` on
+  transmit, `PACKET_HOST` on delivery); the raw backend now keeps only the
+  incoming copy, as libpcap does, so counts, sessions and `-w` files match
+  the libpcap build on `lo`.
 
 ## [1.3.1] — 2026-08-27
 

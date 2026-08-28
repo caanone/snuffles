@@ -94,7 +94,7 @@ static void print_usage(const char *prog) {
            "  -s <snaplen>      Snapshot length (default: 65535)\n"
            "  -b <ring_size>    Ring buffer size (default: 10000)\n"
            "  -B <MB>           Kernel capture buffer in MB, 1-2047 (default: 64;\n"
-           "                    libpcap: TPACKET ring, raw: socket receive buffer)\n"
+           "                    TPACKET_V3 ring; raw build: socket buffer if no ring)\n"
            "  -o <file>         Auto-export on exit (.pcap or .json)\n"
            "  -w <file>         Stream packets to a pcap file while capturing\n"
            "                    ('-w -' writes to stdout; combine with -q)\n"
@@ -112,7 +112,7 @@ static void print_usage(const char *prog) {
            "  --rt              Run the capture thread at SCHED_FIFO priority 1\n"
            "                    (needs root/CAP_SYS_NICE; warns and goes on)\n"
            "  --immediate       Deliver packets one at a time instead of in\n"
-           "                    10 ms batches (libpcap build; costs CPU)\n"
+           "                    10 ms batches (costs CPU)\n"
            "  --list-ifaces     List available interfaces and exit\n"
            "  -v                Print version and exit\n"
            "  -h, --help        Show this help\n",

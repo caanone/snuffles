@@ -55,7 +55,7 @@ COMMON_SRCS = src/main.c       \
               src/syslog_out.c
 
 SRCS_PCAP = $(COMMON_SRCS) src/capture.c
-SRCS_RAW  = $(COMMON_SRCS) src/capture_raw.c src/cbpf.c
+SRCS_RAW  = $(COMMON_SRCS) src/capture_raw.c src/cbpf.c src/rawring.c
 
 RELEASE_FLAGS = -O2
 DEBUG_FLAGS   = -g -O0 -fsanitize=address,undefined -fno-omit-frame-pointer
@@ -67,7 +67,7 @@ OBJS_DEBUG = $(SRCS_PCAP:src/%.c=$(OBJDIR)/debug/%.o)
 
 # ── Unit tests (also runnable via CTest; this target keeps them
 #    available on the make-only path, e.g. macOS release builds) ──
-TESTS      = filter ringbuf session dissect cbpf config export_json syslog_out ui
+TESTS      = filter ringbuf session dissect cbpf rawring config export_json syslog_out ui
 TEST_BINS  = $(TESTS:%=$(OBJDIR)/tests/test_%)
 # make test SAN=1 -> run the suite under ASan/UBSan
 ifdef SAN
