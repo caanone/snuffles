@@ -283,6 +283,8 @@ typedef struct {
     int         verbose;
     char        syslog_target[256];
     char        syslog_iface[64];
+    int         buffer_mb;      /* -B: kernel capture buffer in MB (libpcap) */
+    int         immediate;      /* --immediate: per-packet delivery (libpcap) */
 } capture_cfg_t;
 
 static inline void capture_cfg_defaults(capture_cfg_t *cfg) {
@@ -291,6 +293,7 @@ static inline void capture_cfg_defaults(capture_cfg_t *cfg) {
     cfg->snaplen   = 65535;
     cfg->ring_size = 10000;
     cfg->count     = 0;
+    cfg->buffer_mb = 64;
 }
 
 /* ── Default interface ───────────────────────────────────────── */
