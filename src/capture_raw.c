@@ -244,13 +244,13 @@ static void *capture_thread_fn(void *arg) {
          * latency at low rates. MSG_TRUNC: msg_len reports the wire
          * length even when the frame was cut to the buffer. */
         int n = recvmmsg(ctx->sock, msgs, vlen, MSG_WAITFORONE | MSG_TRUNC, NULL);
+        int err = errno;   /* poll_kernel_drops() below may clobber it */
 
         if (n <= 0) {
             poll_kernel_drops(ctx);
             since_poll = 0;
             if (atomic_load(&ctx->stop_req)) break;
-            if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
-                errno != EINTR) {
+            if (n < 0 && err != EAGAIN && err != EWOULDBLOCK && err != EINTR) {
                 struct timeval nap = { .tv_sec = 0, .tv_usec = 100000 };
                 select(0, NULL, NULL, NULL, &nap);   /* hard error: don't spin */
             }
@@ -283,6 +283,10 @@ static void *capture_thread_fn(void *arg) {
             since_poll = 0;
         }
     }
+
+    /* final read so a -c run's summary carries the drops since the last
+     * 4096-frame poll (up to a few thousand under load) */
+    poll_kernel_drops(ctx);
 
     atomic_store(&ctx->running, 0);
     return NULL;
@@ -534,11 +538,18 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
         socklen_t gl = sizeof(got);
         if (getsockopt(ctx->sock, SOL_SOCKET, SO_RCVBUF, &got, &gl) == 0) {
             /* the kernel reports double the requested size (bookkeeping) */
-            int got_mb = (int)(((long)got / 2 + 512 * 1024) / (1024 * 1024));
-            if (got_mb < cfg->buffer_mb)
-                fprintf(stderr, "Warning: kernel capped the capture buffer at "
-                        "%d MiB (-B %d); raise net.core.rmem_max or run as "
-                        "root\n", got_mb, cfg->buffer_mb);
+            long got_kb = (long)got / 2 / 1024;
+            int  got_mb = (int)((got_kb + 512) / 1024);
+            if (got_mb < cfg->buffer_mb) {
+                if (got_mb >= 1)
+                    fprintf(stderr, "Warning: kernel capped the capture buffer "
+                            "at %d MiB (-B %d); raise net.core.rmem_max or run "
+                            "as root\n", got_mb, cfg->buffer_mb);
+                else    /* default rmem_max (208 KiB) lands here */
+                    fprintf(stderr, "Warning: kernel capped the capture buffer "
+                            "at %ld KiB (-B %d); raise net.core.rmem_max or run "
+                            "as root\n", got_kb, cfg->buffer_mb);
+            }
         }
     }
 
