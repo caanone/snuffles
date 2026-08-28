@@ -1,0 +1,13 @@
+results/*
+!results/host-sysctl.before
+!results/*/
+results/*/*
+!results/*/summary.csv
+!results/*/summary.md
+!results/*/*/
+results/*/*/*
+!results/*/*/summary.json
+!results/*/*/manifest.json
+!results/*/*/snuffles.stats
+!results/*/*/perf-report.txt
+!results/*/*/perf-stat.txt

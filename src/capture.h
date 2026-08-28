@@ -7,8 +7,12 @@
 
 typedef struct {
     uint64_t    pkts_recv;
-    uint64_t    pkts_drop;
+    uint64_t    pkts_drop;      /* dropped by the kernel (socket buffer full) */
     uint64_t    bytes_total;
+    uint64_t    pkts_ifdrop;    /* dropped by the interface/driver (pcap only) */
+    uint64_t    syslog_sent;    /* --syslog datagrams handed to the kernel */
+    uint64_t    syslog_failed;  /* --syslog sendto() failures (ENOBUFS, ...) */
+    uint64_t    stream_pkts;    /* packets written by -w */
 } capture_stats_raw_t;
 
 typedef struct capture_ctx capture_ctx_t;

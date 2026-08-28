@@ -8,6 +8,9 @@
 #include <string.h>
 #include <signal.h>
 #include <stdatomic.h>
+#ifdef __linux__
+  #include <sys/prctl.h>
+#endif
 
 #ifndef _WIN32
   #include <unistd.h>
@@ -27,6 +30,8 @@ struct capture_ctx {
     int                 offline;
     uint64_t            pkt_count;      /* capture thread only */
     atomic_uint_fast64_t drops;         /* published by capture thread */
+    atomic_uint_fast64_t ifdrops;       /* pcap ps_ifdrop */
+    atomic_uint_fast64_t stream_pkts;   /* -w packets written */
     char                errbuf[PCAP_ERRBUF_SIZE];
     char                iface_name[64];
     char                bpf_active[512]; /* UI thread only (after create) */
@@ -90,10 +95,14 @@ static void capture_callback(u_char *user, const struct pcap_pkthdr *hdr,
         syslog_out_send(ctx->syslog, &rec->summary);
 
     /* streaming -w write (before commit: the slot is still ours) */
-    if (ctx->stream && pcap_writer_write(ctx->stream, rec) != 0) {
-        fprintf(stderr, "stream write failed; disabling -w output\n");
-        pcap_writer_close(ctx->stream);
-        ctx->stream = NULL;
+    if (ctx->stream) {
+        if (pcap_writer_write(ctx->stream, rec) != 0) {
+            fprintf(stderr, "stream write failed; disabling -w output\n");
+            pcap_writer_close(ctx->stream);
+            ctx->stream = NULL;
+        } else {
+            atomic_fetch_add_explicit(&ctx->stream_pkts, 1, memory_order_relaxed);
+        }
     }
 
     ringbuf_producer_commit(ctx->rb);
@@ -126,6 +135,9 @@ static void apply_pending_bpf(capture_ctx_t *ctx) {
 static void *capture_thread_fn(void *arg) {
     capture_ctx_t *ctx = (capture_ctx_t *)arg;
     atomic_store(&ctx->running, 1);
+#ifdef __linux__
+    prctl(PR_SET_NAME, "snf-capture", 0, 0, 0);
+#endif
 
     while (!atomic_load(&ctx->stop_req)) {
         if (atomic_exchange(&ctx->bpf_req, 0))
@@ -135,8 +147,10 @@ static void *capture_thread_fn(void *arg) {
 
         if (!ctx->offline) {
             struct pcap_stat ps;
-            if (pcap_stats(ctx->handle, &ps) == 0)
+            if (pcap_stats(ctx->handle, &ps) == 0) {
                 atomic_store(&ctx->drops, (uint64_t)ps.ps_drop);
+                atomic_store(&ctx->ifdrops, (uint64_t)ps.ps_ifdrop);
+            }
         }
 
         if (ret == PCAP_ERROR_BREAK || ret == 0) {
@@ -361,8 +375,11 @@ void capture_get_stats(capture_ctx_t *ctx, capture_stats_raw_t *out) {
 
     /* No pcap calls here: this runs on the UI thread. The capture thread
      * publishes drop counts into ctx->drops. */
-    out->pkts_recv = ringbuf_total(ctx->rb);
-    out->pkts_drop = atomic_load(&ctx->drops);
+    out->pkts_recv   = ringbuf_total(ctx->rb);
+    out->pkts_drop   = atomic_load(&ctx->drops);
+    out->pkts_ifdrop = atomic_load(&ctx->ifdrops);
+    out->stream_pkts = atomic_load_explicit(&ctx->stream_pkts, memory_order_relaxed);
+    syslog_out_counts(ctx->syslog, &out->syslog_sent, &out->syslog_failed);
 }
 
 int capture_get_datalink(const capture_ctx_t *ctx) {

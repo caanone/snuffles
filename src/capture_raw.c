@@ -17,6 +17,9 @@
 #include "export_pcap.h"
 #include "syslog_out.h"
 #include <stdatomic.h>
+#ifdef __linux__
+  #include <sys/prctl.h>
+#endif
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,6 +70,8 @@ struct capture_ctx {
     atomic_int          stop_req;
     int                 has_eth;    /* 1 if we get Ethernet headers (Linux AF_PACKET) */
     atomic_uint_fast64_t pkt_count;
+    atomic_uint_fast64_t drops;         /* Linux PACKET_STATISTICS, cumulative */
+    atomic_uint_fast64_t stream_pkts;   /* -w packets written */
     char                iface_name[64];
     char                bpf_expr[512]; /* stored but not kernel-applied */
     syslog_out_t       *syslog;
@@ -78,6 +83,9 @@ struct capture_ctx {
 static void *capture_thread_fn(void *arg) {
     capture_ctx_t *ctx = (capture_ctx_t *)arg;
     atomic_store(&ctx->running, 1);
+#ifdef __linux__
+    prctl(PR_SET_NAME, "snf-capture", 0, 0, 0);
+#endif
 
     uint8_t buf[65536];
 
@@ -90,6 +98,18 @@ static void *capture_thread_fn(void *arg) {
         /* already set via SO_RCVTIMEO in capture_create */
 #endif
         int len = (int)recv(ctx->sock, (char *)buf, sizeof(buf), 0);
+#ifdef __linux__
+        /* Kernel-side drop counter. PACKET_STATISTICS resets on every read,
+         * so accumulate. Polled on idle timeouts and every 4096 packets to
+         * keep the syscall off the per-packet path. */
+        if (len <= 0 || (atomic_load_explicit(&ctx->pkt_count,
+                                              memory_order_relaxed) & 4095) == 0) {
+            struct { unsigned int tp_packets, tp_drops; } st; /* struct tpacket_stats */
+            socklen_t sl = sizeof(st);
+            if (getsockopt(ctx->sock, SOL_PACKET, PACKET_STATISTICS, &st, &sl) == 0)
+                atomic_fetch_add(&ctx->drops, (uint64_t)st.tp_drops);
+        }
+#endif
         if (len <= 0) {
             if (atomic_load(&ctx->stop_req)) break;
 #ifdef _WIN32
@@ -173,10 +193,14 @@ static void *capture_thread_fn(void *arg) {
             syslog_out_send(ctx->syslog, &rec->summary);
 
         /* streaming -w write (before commit: the slot is still ours) */
-        if (ctx->stream && pcap_writer_write(ctx->stream, rec) != 0) {
-            fprintf(stderr, "stream write failed; disabling -w output\n");
-            pcap_writer_close(ctx->stream);
-            ctx->stream = NULL;
+        if (ctx->stream) {
+            if (pcap_writer_write(ctx->stream, rec) != 0) {
+                fprintf(stderr, "stream write failed; disabling -w output\n");
+                pcap_writer_close(ctx->stream);
+                ctx->stream = NULL;
+            } else {
+                atomic_fetch_add_explicit(&ctx->stream_pkts, 1, memory_order_relaxed);
+            }
         }
 
         ringbuf_producer_commit(ctx->rb);
@@ -331,14 +355,24 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
         return NULL;
     }
 
-    /* bind to specific interface if requested */
+    /* bind to specific interface if requested. AF_PACKET ignores
+     * SO_BINDTODEVICE for delivery (it only sets sk_bound_dev_if, which
+     * packet_rcv never checks) — the socket must be bound to the ifindex
+     * with sockaddr_ll, otherwise -i captures every interface. */
     if (cfg->iface[0]) {
-        struct ifreq ifr;
-        memset(&ifr, 0, sizeof(ifr));
-        snprintf(ifr.ifr_name, IFNAMSIZ, "%s", cfg->iface);
-        if (setsockopt(ctx->sock, SOL_SOCKET, SO_BINDTODEVICE,
-                       &ifr, sizeof(ifr)) != 0) {
-            perror("SO_BINDTODEVICE");
+        struct sockaddr_ll sll;
+        memset(&sll, 0, sizeof(sll));
+        sll.sll_family   = AF_PACKET;
+        sll.sll_protocol = htons(ETH_P_ALL);
+        sll.sll_ifindex  = (int)if_nametoindex(cfg->iface);
+        if (sll.sll_ifindex == 0) {
+            fprintf(stderr, "Cannot find interface '%s'\n", cfg->iface);
+            RAW_CLOSE(ctx->sock);
+            free(ctx);
+            return NULL;
+        }
+        if (bind(ctx->sock, (struct sockaddr *)&sll, sizeof(sll)) != 0) {
+            perror("bind(AF_PACKET)");
             RAW_CLOSE(ctx->sock);
             free(ctx);
             return NULL;
@@ -497,7 +531,10 @@ int capture_get_datalink(const capture_ctx_t *ctx) {
 void capture_get_stats(capture_ctx_t *ctx, capture_stats_raw_t *out) {
     memset(out, 0, sizeof(*out));
     if (!ctx) return;
-    out->pkts_recv = atomic_load(&ctx->pkt_count);
+    out->pkts_recv   = atomic_load(&ctx->pkt_count);
+    out->pkts_drop   = atomic_load(&ctx->drops);
+    out->stream_pkts = atomic_load_explicit(&ctx->stream_pkts, memory_order_relaxed);
+    syslog_out_counts(ctx->syslog, &out->syslog_sent, &out->syslog_failed);
 }
 
 const char *capture_get_iface(const capture_ctx_t *ctx) {
