@@ -49,33 +49,51 @@ typedef struct {
     int              flood_ms;   /* commit as fast as possible this long */
     int              nsessions;  /* > 0: also feed the session table */
     const char      *then;       /* keys sent when done ("q" ends the run) */
+    /* block delivery instead of the flood (block > 0): `blocks` blocks
+     * of `block` records committed back to back, flood_ms apart -- the
+     * shape the capture side produces (TPACKET_V3 retires a block every
+     * 10 ms, so 10 ms of traffic lands in the ring within a millisecond) */
+    int              block;
+    int              blocks;
 } load_t;
+
+static void load_commit(load_t *l, uint32_t n) {
+    pkt_summary_t s;
+    memset(&s, 0, sizeof(s));
+    snprintf(s.src_ip, sizeof(s.src_ip), "10.0.0.1");
+    snprintf(s.dst_ip, sizeof(s.dst_ip), "10.0.0.2");
+    snprintf(s.protocol, sizeof(s.protocol), "UDP");
+    s.l3_proto = PROTO_IPV4;
+    s.l4_proto = s.highest_proto = PROTO_UDP;
+    s.src_port = (uint16_t)(1024 + (l->nsessions ? n % (uint32_t)l->nsessions : 0));
+    s.dst_port = 53;
+    s.length   = 60;
+    s.ts.tv_sec = (long)(n / 1000);
+    pkt_record_t *r = ringbuf_producer_next(l->rb);
+    r->summary = s;
+    r->raw_len = 0;
+    ringbuf_producer_commit(l->rb);
+    if (l->nsessions)
+        session_table_update(l->st, &s, NULL, 0);
+}
 
 static void *load_thread(void *arg) {
     load_t *l = (load_t *)arg;
+    uint32_t n = 0;
+    if (l->block) {
+        uint64_t t0 = ui_now_us();
+        for (int b = 0; b < l->blocks; b++) {
+            uint64_t due = t0 + (uint64_t)(b + 1) * (uint64_t)l->flood_ms * 1000u;
+            while (ui_now_us() < due) usleep(200);
+            for (int i = 0; i < l->block; i++) load_commit(l, n++);
+        }
+        send_keys(l->then);
+        return NULL;
+    }
     if (l->delay_ms) usleep((useconds_t)l->delay_ms * 1000);
     uint64_t end = ui_now_us() + (uint64_t)l->flood_ms * 1000u;
-    uint32_t n = 0;
-    while (l->flood_ms && ui_now_us() < end) {
-        pkt_summary_t s;
-        memset(&s, 0, sizeof(s));
-        snprintf(s.src_ip, sizeof(s.src_ip), "10.0.0.1");
-        snprintf(s.dst_ip, sizeof(s.dst_ip), "10.0.0.2");
-        snprintf(s.protocol, sizeof(s.protocol), "UDP");
-        s.l3_proto = PROTO_IPV4;
-        s.l4_proto = s.highest_proto = PROTO_UDP;
-        s.src_port = (uint16_t)(1024 + (l->nsessions ? n % (uint32_t)l->nsessions : 0));
-        s.dst_port = 53;
-        s.length   = 60;
-        s.ts.tv_sec = (long)(n / 1000);
-        pkt_record_t *r = ringbuf_producer_next(l->rb);
-        r->summary = s;
-        r->raw_len = 0;
-        ringbuf_producer_commit(l->rb);
-        if (l->nsessions)
-            session_table_update(l->st, &s, NULL, 0);
-        n++;
-    }
+    while (l->flood_ms && ui_now_us() < end)
+        load_commit(l, n++);
     send_keys(l->then);
     return NULL;
 }
@@ -118,7 +136,7 @@ int main(void) {
     /* 1. Flood, packets view: ~30 frames/s, never per packet; stats keep
      *    up with the ring (the sleep is bounded by the ring-wrap rate). */
     {
-        load_t l = { rb, st, 0, 500, 0, "q" };
+        load_t l = { rb, st, 0, 500, 0, "q", 0, 0 };
         uint64_t ms = run_ui(ui, &l);
         uint64_t cap = ms / 33 + 2;              /* first frame + slop */
         printf("flood/packets: %llu frames in %llu ms (cap %llu), stats saw %llu of %llu\n",
@@ -131,11 +149,34 @@ int main(void) {
         CHECK(ui->snapshots_taken == 0);          /* not in the sessions view */
     }
 
+    /* 1b. Block delivery: 50 blocks of 2000 records, 10 ms apart, into a
+     *     4096-slot ring. The ring holds two blocks, so the loop must look
+     *     at the ring after every block: a wait with nothing pending must
+     *     be announced (so the next block wakes it), and a wait with
+     *     records pending must not run to the frame tick. Stats stay
+     *     complete; the frame cap still holds. */
+    {
+        uint64_t before = ringbuf_total(rb);
+        stats_init(&ui->stats);
+        ui->last_total = before;
+        load_t l = { rb, st, 0, 10, 0, "q", 2000, 50 };
+        uint64_t ms = run_ui(ui, &l);
+        uint64_t got = ui->stats.total_packets;
+        uint64_t all = ringbuf_total(rb) - before;
+        printf("blocks/packets: %llu frames in %llu ms, stats saw %llu of %llu (%.1f%%)\n",
+               (unsigned long long)ui->frames_rendered, (unsigned long long)ms,
+               (unsigned long long)got, (unsigned long long)all,
+               100.0 * (double)got / (double)all);
+        CHECK(all == 50u * 2000u);
+        CHECK(got * 10 >= all * 9);                /* >= 90% complete */
+        CHECK(ui->frames_rendered <= ms / 33 + 2);
+    }
+
     /* 2. Flood, sessions view: snapshots at most every 250 ms (plus the
      *    one forced by the view switch), frames still capped. */
     {
         send_keys("s");
-        load_t l = { rb, st, 0, 500, 2000, "q" };
+        load_t l = { rb, st, 0, 500, 2000, "q", 0, 0 };
         uint64_t ms = run_ui(ui, &l);
         uint64_t fcap = ms / 33 + 3;             /* + the immediate key frame */
         uint64_t scap = ms / 250 + 2;
@@ -154,7 +195,7 @@ int main(void) {
     /* 3. Clear forces a fresh (empty) snapshot at once. */
     {
         send_keys("cq");
-        load_t l = { rb, st, 0, 0, 0, "" };
+        load_t l = { rb, st, 0, 0, 0, "", 0, 0 };
         run_ui(ui, &l);
         CHECK(ui->snapshots_taken >= 1);
         CHECK(ui->sess_snap_count == 0);
@@ -164,7 +205,7 @@ int main(void) {
 
     /* 4. Idle: only the heartbeat redraws (first frame + one per 250 ms). */
     {
-        load_t l = { rb, st, 600, 0, 0, "q" };
+        load_t l = { rb, st, 600, 0, 0, "q", 0, 0 };
         uint64_t ms = run_ui(ui, &l);
         uint64_t cap = ms / 250 + 2;
         printf("idle: %llu frames in %llu ms (cap %llu)\n",
@@ -177,7 +218,7 @@ int main(void) {
     /* 5. A key is drawn immediately, not at the next tick: 'p' 60 ms after
      *    the first frame must produce exactly one more frame before 'q'. */
     {
-        load_t l = { rb, st, 60, 0, 0, "pq" };
+        load_t l = { rb, st, 60, 0, 0, "pq", 0, 0 };
         run_ui(ui, &l);
         printf("key: %llu frames\n", (unsigned long long)ui->frames_rendered);
         CHECK(ui->frames_rendered == 2);

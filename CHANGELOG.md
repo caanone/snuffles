@@ -22,8 +22,11 @@
   33 ms when something changed, at once on a key press, and every 250 ms
   otherwise; the sessions view refreshes its snapshot every 250 ms (or
   immediately on view switch, sort change, page jump or clear) and renders
-  from the cached copy in between. Measured on a 200x50 terminal: UI
-  thread 43% -> 1.6% at 350-530 kpps; sessions view with 100 k sessions
+  from the cached copy in between. Between frames the loop still looks at
+  the ring at least every 5 ms while packets are pending (the capture
+  side delivers in 10 ms blocks), so the `V` stats overlay stays complete
+  at the rates the capture thread sustains. Measured on a 200x50 terminal:
+  UI thread 43% -> 1.6% at 350-530 kpps; sessions view with 100 k sessions
   100% -> 9% UI, capture thread unblocked (58% -> 82% busy, 0% drops).
 
 ## [1.3.1] — 2026-08-27
