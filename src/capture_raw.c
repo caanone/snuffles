@@ -99,6 +99,7 @@ struct capture_ctx {
     size_t              ring_len;
     rawring_geom_t      geom;
     uint32_t            ring_cur;   /* next block to consume (capture thread) */
+    int                 lo_ifindex; /* loopback: skip its PACKET_OUTGOING copies */
     /* recvmmsg fallback */
     uint8_t            *bufs;       /* RAW_BATCH x bufsz recvmmsg buffers */
     uint32_t            bufsz;      /* max(snaplen, RAW_MIN_BUFSZ) */
@@ -238,9 +239,18 @@ typedef struct {
     int            done;    /* -c reached inside the block */
 } ring_walk_t;
 
+/* A frame sent over the loopback interface is seen twice — once as
+ * PACKET_OUTGOING on transmit and again as PACKET_HOST when lo delivers
+ * it. Keep the incoming copy only, as libpcap does. */
+static inline int lo_outgoing(const capture_ctx_t *ctx, int ifindex,
+                              uint8_t pkttype) {
+    return pkttype == PACKET_OUTGOING && ifindex == ctx->lo_ifindex;
+}
+
 static int ring_frame_cb(void *user, const rawring_frame_t *f) {
     ring_walk_t *w = (ring_walk_t *)user;
     if (f->caplen == 0) return 0;   /* mirrors recv() == 0 */
+    if (lo_outgoing(w->ctx, f->ifindex, f->pkttype)) return 0;
     struct timeval ts = { .tv_sec  = (time_t)f->sec,
                           .tv_usec = (suseconds_t)(f->nsec / 1000u) };
     w->done = process_packet(w->ctx, f->data, f->caplen, f->wirelen, ts);
@@ -332,16 +342,20 @@ static void recvmmsg_loop(capture_ctx_t *ctx) {
      * kernel to what it filled) is restored per call. */
     struct mmsghdr msgs[RAW_BATCH];
     struct iovec   iov[RAW_BATCH];
+    struct sockaddr_ll sll[RAW_BATCH];
     union {
         struct cmsghdr hdr;
         uint8_t        raw[CMSG_SPACE(sizeof(struct timeval))];
     } cmsg[RAW_BATCH];
     memset(msgs, 0, sizeof(msgs));
+    memset(sll, 0, sizeof(sll));
     for (int i = 0; i < RAW_BATCH; i++) {
         iov[i].iov_base = ctx->bufs + (size_t)i * ctx->bufsz;
         iov[i].iov_len  = ctx->bufsz;
         msgs[i].msg_hdr.msg_iov        = &iov[i];
         msgs[i].msg_hdr.msg_iovlen     = 1;
+        msgs[i].msg_hdr.msg_name       = &sll[i];
+        msgs[i].msg_hdr.msg_namelen    = sizeof(sll[i]);
         msgs[i].msg_hdr.msg_control    = cmsg[i].raw;
         msgs[i].msg_hdr.msg_controllen = sizeof(cmsg[i].raw);
     }
@@ -401,8 +415,12 @@ static void recvmmsg_loop(capture_ctx_t *ctx) {
                 ts = now;
             }
             mh->msg_controllen = sizeof(cmsg[i].raw);
+            int      ifindex = sll[i].sll_ifindex;
+            uint8_t  pkttype = sll[i].sll_pkttype;
+            mh->msg_namelen  = sizeof(sll[i]);
 
             if (caplen == 0) continue;   /* mirrors recv() == 0 */
+            if (lo_outgoing(ctx, ifindex, pkttype)) continue;
             done = process_packet(ctx, (const uint8_t *)iov[i].iov_base,
                                   caplen, wirelen, ts);
         }
@@ -875,6 +893,7 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
     }
 
     ctx->has_eth = 1; /* AF_PACKET gives full Ethernet frames */
+    ctx->lo_ifindex = (int)if_nametoindex("lo");   /* 0 if there is none */
 
 #else
     /* ── macOS / other: not supported without libpcap ────────── */

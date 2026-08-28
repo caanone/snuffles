@@ -43,6 +43,7 @@ static void test_geometry(void) {
 
 #ifdef __linux__
 #include <linux/if_packet.h>
+#include <sys/socket.h>
 
 /* ── block walk ──────────────────────────────────────────────── */
 
@@ -84,6 +85,11 @@ static uint32_t blk_add(uint8_t *b, uint32_t off, uint32_t caplen,
     h->tp_sec     = sec;
     h->tp_nsec    = nsec;
     h->tp_status  = TP_STATUS_USER;
+    struct sockaddr_ll *sll = (struct sockaddr_ll *)
+        (b + off + TPACKET_ALIGN(sizeof(struct tpacket3_hdr)));
+    sll->sll_family  = AF_PACKET;
+    sll->sll_ifindex = 1 + (int)(fill & 1);
+    sll->sll_pkttype = (fill & 1) ? PACKET_OUTGOING : PACKET_HOST;
     memset(b + off + h->tp_mac, fill, caplen);
     uint32_t total = (h->tp_mac + caplen + 15u) & ~15u;
     h->tp_next_offset = total;
@@ -115,6 +121,10 @@ static void test_walk_basic(void) {
     CHECK(w.seen[1].data == b + o1 + 82 && w.seen[1].data[127] == 0xB2);
     CHECK(w.seen[2].caplen == 42 && w.seen[2].sec == 1001);
     CHECK(w.seen[2].data[41] == 0xC3);
+    /* sockaddr_ll: 0xA1/0xC3 odd -> outgoing on ifindex 2, 0xB2 -> host */
+    CHECK(w.seen[0].ifindex == 2 && w.seen[0].pkttype == PACKET_OUTGOING);
+    CHECK(w.seen[1].ifindex == 1 && w.seen[1].pkttype == PACKET_HOST);
+    CHECK(w.seen[2].ifindex == 2 && w.seen[2].pkttype == PACKET_OUTGOING);
 
     /* the callback can stop the walk (-c reached): later frames untouched */
     walk_t s = { .n = 0, .stop_after = 2 };
@@ -176,6 +186,10 @@ static void test_walk_malformed(void) {
     w.n = 0;
     CHECK(rawring_walk_block(b, BLK, cb, &w) == 0);
     ((struct tpacket_block_desc *)b)->hdr.bh1.offset_to_first_pkt = BLK - 16;
+    w.n = 0;
+    CHECK(rawring_walk_block(b, BLK, cb, &w) == 0);
+    /* room for the header but not for the sockaddr_ll behind it */
+    ((struct tpacket_block_desc *)b)->hdr.bh1.offset_to_first_pkt = BLK - 64;
     w.n = 0;
     CHECK(rawring_walk_block(b, BLK, cb, &w) == 0);
 
