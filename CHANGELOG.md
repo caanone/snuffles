@@ -14,7 +14,11 @@
   performs no `calloc`/`free` once warm; the display strings are formatted
   once per new session instead of two `snprintf`s per packet. The
   dissector now fills binary address fields (`src_addr`/`dst_addr`/
-  `addr_family`) next to the existing strings. Micro-benchmark, 1 M
+  `addr_family`) next to the existing strings. Visible side effect: the
+  Sessions view's side A is now the numerically lower address (then the
+  lower port) instead of the lexically lower string, so some pairs swap
+  columns compared with v1.3.1 (e.g. 8.8.8.8 is side A next to 10.0.0.1);
+  stream direction 0/1 in "Follow stream" follows the same rule. Micro-benchmark, 1 M
   distinct flows into the 100 k cap: 1 490 -> 130 ns per packet; hits on
   100 k resident flows: 415 -> 90 ns; live 400 k-flow UDP flood on `lo`:
   process user CPU 1.05 s -> 0.30 s per 300 k packets.
@@ -30,7 +34,9 @@
 ### Fixed
 - **Non-first IP fragments no longer create port-0 pseudo-sessions**
   (IPv4 and IPv6; the IPv6 fragment header now also fills `ip_frag_off`
-  in the IPv4 layout: offset in the low 13 bits, MF as bit 13).
+  in the IPv4 layout: offset in the low 13 bits, MF as bit 13, and `ip_id`
+  with the low 16 bits of the fragment identification, so the syslog CSV
+  `ip_id`/`frag` columns are no longer always 0 for IPv6 fragments).
 
 - **Ring buffer producer no longer pays a wakeup per packet.** Every commit
   used to lock/signal an unused condition variable and `write()` one byte
