@@ -1,0 +1,22 @@
+# started on Fri Aug 28 13:15:06 2026
+
+
+ Performance counter stats for process id '4067':
+
+           1926.25 msec task-clock                       #    0.481 CPUs utilized             
+              1140      context-switches                 #  591.824 /sec                      
+                26      cpu-migrations                   #   13.498 /sec                      
+              1067      page-faults                      #  553.927 /sec                      
+        7628971732      cycles                           #    3.961 GHz                       
+       12878126929      instructions                     #    1.69  insn per cycle            
+          24120473      cache-misses                                                          
+          62194341      branch-misses                                                         
+            820396      syscalls:sys_enter_write         #  425.904 K/sec                     
+                 0      syscalls:sys_enter_sendto        #    0.000 /sec                      
+             13086      syscalls:sys_enter_getsockopt    #    6.794 K/sec                     
+                 0      syscalls:sys_enter_recvfrom      #    0.000 /sec                      
+                 0      syscalls:sys_enter_select        #    0.000 /sec                      
+              1091      syscalls:sys_enter_poll          #  566.386 /sec                      
+
+       4.001354494 seconds time elapsed
+

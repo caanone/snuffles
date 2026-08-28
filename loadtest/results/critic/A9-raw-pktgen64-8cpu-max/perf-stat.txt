@@ -1,0 +1,22 @@
+# started on Fri Aug 28 13:46:37 2026
+
+
+ Performance counter stats for process id '8900':
+
+           3998.55 msec task-clock                       #    0.999 CPUs utilized             
+                80      context-switches                 #   20.007 /sec                      
+                 6      cpu-migrations                   #    1.501 /sec                      
+                 0      page-faults                      #    0.000 /sec                      
+       15891136195      cycles                           #    3.974 GHz                       
+       21069478403      instructions                     #    1.33  insn per cycle            
+          20758947      cache-misses                                                          
+         163812803      branch-misses                                                         
+           1519985      syscalls:sys_enter_write         #  380.134 K/sec                     
+                 0      syscalls:sys_enter_sendto        #    0.000 /sec                      
+               371      syscalls:sys_enter_getsockopt    #   92.784 /sec                      
+           1519983      syscalls:sys_enter_recvfrom      #  380.133 K/sec                     
+                 0      syscalls:sys_enter_select        #    0.000 /sec                      
+                 0      syscalls:sys_enter_poll          #    0.000 /sec                      
+
+       4.001406693 seconds time elapsed
+

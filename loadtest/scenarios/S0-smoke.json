@@ -1,0 +1,25 @@
+{
+  "name": "S0-smoke",
+  "build": "pcap",
+  "mode": "quiet",
+  "iface": "br0",
+  "bpf": "",
+  "duration": 10,
+  "perf": false,
+  "mtu": 1500,
+  "offloads": "on",
+  "rps": "off",
+  "traffic": {
+    "kind": "pktgen",
+    "gens": [
+      1
+    ],
+    "cpus": [
+      4
+    ],
+    "pkt_size": 64,
+    "pps": 0,
+    "flows": 1,
+    "dst": "sink"
+  }
+}

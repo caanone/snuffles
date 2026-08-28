@@ -1,0 +1,120 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 4K of event 'cycles:P'
+# Event count (approx.): 19152380974
+#
+# Overhead  Command      Shared Object                                   Symbol                                            
+# ........  ...........  ..............................................  ..................................................
+#
+    10.26%  snf-capture  libc.so.6                                       [.] 0x0000000000162d0a
+            |          
+            |--2.26%--0x7f0b899f0d0a
+            |          0x7f0b89b7b527
+            |          
+            |--2.19%--0x7f0b899f0d00
+            |          0x7f0b89b7b527
+            |          
+            |--1.51%--0x7f0b899f0d05
+            |          0x7f0b89b7b527
+            |          
+            |--1.13%--0x7f0b899f0cfb
+            |          0x7f0b89b7b527
+            |          
+            |--0.80%--0x7f0b899f0cf3
+            |          0x7f0b89b7b527
+            |          
+             --0.55%--0x7f0b899f0cee
+                       0x7f0b89b7b527
+
+     9.79%  snf-capture  libc.so.6                                       [.] 0x0000000000162d0e
+            |          
+            |--2.26%--0x7f0b899f0d0a
+            |          0x7f0b89b7b527
+            |          
+            |--1.79%--0x7f0b899f0d00
+            |          0x7f0b89b7b527
+            |          
+            |--1.32%--0x7f0b899f0d05
+            |          0x7f0b89b7b527
+            |          
+            |--1.13%--0x7f0b899f0cfb
+            |          0x7f0b89b7b527
+            |          
+            |--0.81%--0x7f0b899f0cf3
+            |          0x7f0b89b7b527
+            |          
+             --0.67%--0x7f0b899f0ce4
+                       0x7f0b89b7b527
+
+     8.04%  snf-capture  libc.so.6                                       [.] 0x0000000000162cf3
+            |          
+            |--2.11%--0x7f0b899f0d05
+            |          0x7f0b89b7b527
+            |          
+            |--1.89%--0x7f0b899f0cfb
+            |          0x7f0b89b7b527
+            |          
+            |--1.16%--0x7f0b899f0d00
+            |          0x7f0b89b7b527
+            |          
+             --1.13%--0x7f0b899f0d0a
+                       0x7f0b89b7b527
+
+     6.82%  snf-capture  libc.so.6                                       [.] 0x0000000000162cfb
+            |          
+            |--1.82%--0x7f0b899f0d0a
+            |          0x7f0b89b7b527
+            |          
+            |--1.30%--0x7f0b899f0d00
+            |          0x7f0b89b7b527
+            |          
+            |--1.08%--0x7f0b899f0d05
+            |          0x7f0b89b7b527
+            |          
+            |--0.96%--0x7f0b899f0cfb
+            |          0x7f0b89b7b527
+            |          
+             --0.57%--0x7f0b899f0cf3
+                       0x7f0b89b7b527
+
+     6.72%  snf-capture  libc.so.6                                       [.] 0x0000000000162d05
+            |          
+            |--1.61%--0x7f0b899f0d0a
+            |          0x7f0b89b7b527
+            |          
+            |--1.26%--0x7f0b899f0d00
+            |          0x7f0b89b7b527
+            |          
+            |--1.24%--0x7f0b899f0d05
+            |          0x7f0b89b7b527
+            |          
+             --0.93%--0x7f0b899f0cfb
+                       0x7f0b89b7b527
+
+     6.49%  snf-capture  libc.so.6                                       [.] 0x0000000000162cf7
+            |          
+            |--1.33%--0x7f0b899f0cfb
+            |          0x7f0b89b7b527
+            |          
+            |--1.30%--0x7f0b899f0d05
+            |          0x7f0b89b7b527
+            |          
+            |--1.27%--0x7f0b899f0d00
+            |          0x7f0b89b7b527
+            |          
+             --0.88%--0x7f0b899f0d0a
+                       0x7f0b89b7b527
+
+     6.36%  snf-capture  libc.so.6                                       [.] 0x0000000000162d00
+            |          
+            |--1.53%--0x7f0b899f0d0a
+            |          0x7f0b89b7b527
+            |          
+            |--1.12%--0x7f0b899f0d00
+            |          0x7f0b89b7b527
+            |          
+            |--1.00%--0x7f0b899f0d05
+            |          0x7f0b89b7b527

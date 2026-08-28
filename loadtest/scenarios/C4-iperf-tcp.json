@@ -1,0 +1,22 @@
+{
+  "name": "C4-iperf-tcp",
+  "build": "pcap",
+  "mode": "quiet",
+  "iface": "br0",
+  "bpf": "",
+  "duration": 30,
+  "perf": true,
+  "mtu": 1500,
+  "offloads": "on",
+  "rps": "off",
+  "traffic": {
+    "kind": "iperf",
+    "gens": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "threads": 8
+  }
+}
