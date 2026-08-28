@@ -511,7 +511,11 @@ sudo ./snuffles -i en0 -c 100 -o capture.json
 - **Two threads**: capture (producer) + UI (consumer)
 - **Ring buffer**: pre-allocated, no malloc in hot path
 - **Silent mode**: capture thread only, main thread sleeps
-- **Session table**: normalized 5-tuple, 100K cap, LRU eviction
+- **Session table**: binary canonical 5-tuple key (both directions map to one
+  entry), seeded hash over 2x-cap power-of-two buckets, preallocated entry
+  pool, O(1) LRU eviction at the 100K cap; non-first IP fragments are not
+  tracked. Stream buffers (16 MB budget) are recycled: closed flows are
+  reclaimed first, idle holders (60 s) are released, oldest holder otherwise
 - **Display filter**: recursive descent, 48-node fixed AST
 - **Syslog**: single UDP socket (16 MB send buffer), 32-record batch, non-blocking `sendmmsg`, loop guard
 

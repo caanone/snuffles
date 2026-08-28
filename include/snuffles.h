@@ -224,6 +224,11 @@ typedef struct {
     char        dst_ip[46];
     uint16_t    src_port;
     uint16_t    dst_port;
+    /* Binary addresses for the session table (IPv4 in the first 4 bytes,
+     * the rest zero; IPv6 all 16). addr_family: 0 = none, 4 or 6. */
+    uint8_t     src_addr[16];
+    uint8_t     dst_addr[16];
+    uint8_t     addr_family;
     char        protocol[16];
     char        info[128];
     uint32_t    length;
@@ -236,7 +241,8 @@ typedef struct {
     uint8_t     ip_proto;       /* IP protocol number (6=TCP, 17=UDP, etc.) */
     uint16_t    ip_checksum;
     uint16_t    ip_id;
-    uint16_t    ip_frag_off;    /* fragment offset + flags */
+    uint16_t    ip_frag_off;    /* IPv4 layout: flags<<13 | offset/8; also set
+                                 * from an IPv6 fragment header (MF as bit 13) */
     uint8_t     tcp_flags;
     uint32_t    tcp_seq;
     uint32_t    tcp_ack;

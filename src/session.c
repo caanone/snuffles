@@ -13,61 +13,116 @@
 #define TF_RST  0x04
 #define TF_ACK  0x10
 
-/* ── FNV-1a hash ─────────────────────────────────────────────── */
+/* The lookup key is hashed and compared as raw bytes: its size must be a
+ * whole number of 64-bit words and every byte (padding included) must be
+ * written by make_key(). */
+_Static_assert(sizeof(session_bkey_t) == 40, "session_bkey_t must be 40 bytes");
 
-static uint32_t fnv1a(const void *data, size_t len) {
-    const uint8_t *p = (const uint8_t *)data;
-    uint32_t h = 2166136261u;
-    for (size_t i = 0; i < len; i++) {
-        h ^= p[i];
-        h *= 16777619u;
-    }
+/* ── Seeded hash (xxHash64-style 8-byte rounds + avalanche) ───── */
+
+#define HP1 0x9E3779B185EBCA87ULL
+#define HP2 0xC2B2AE3D27D4EB4FULL
+#define HP3 0x165667B19E3779F9ULL
+#define HP4 0x85EBCA77C2B2AE63ULL
+#define HP5 0x27D4EB2F165667C5ULL
+
+static inline uint64_t rotl64(uint64_t x, int r) {
+    return (x << r) | (x >> (64 - r));
+}
+
+static inline uint64_t hash_avalanche(uint64_t h) {
+    h ^= h >> 33; h *= HP2;
+    h ^= h >> 29; h *= HP3;
+    h ^= h >> 32;
     return h;
 }
 
-/* ── Normalize key: side_a is the "lower" side ───────────────── */
-
-static void normalize_key(session_key_t *key,
-                          const char *src_ip, const char *dst_ip,
-                          uint16_t src_port, uint16_t dst_port,
-                          uint8_t proto) {
-    int cmp = strcmp(src_ip, dst_ip);
-    if (cmp == 0) cmp = (int)src_port - (int)dst_port;
-
-    if (cmp <= 0) {
-        snprintf(key->ip_a, sizeof(key->ip_a), "%s", src_ip);
-        snprintf(key->ip_b, sizeof(key->ip_b), "%s", dst_ip);
-        key->port_a = src_port;
-        key->port_b = dst_port;
-    } else {
-        snprintf(key->ip_a, sizeof(key->ip_a), "%s", dst_ip);
-        snprintf(key->ip_b, sizeof(key->ip_b), "%s", src_ip);
-        key->port_a = dst_port;
-        key->port_b = src_port;
+static uint64_t bkey_hash(const session_bkey_t *k, uint64_t seed) {
+    uint64_t w[sizeof(*k) / 8];
+    memcpy(w, k, sizeof(w));
+    uint64_t h = seed + HP5 + sizeof(*k);
+    for (size_t i = 0; i < sizeof(w) / sizeof(w[0]); i++) {
+        uint64_t v = w[i] * HP2;
+        v = rotl64(v, 31) * HP1;
+        h ^= v;
+        h = rotl64(h, 27) * HP1 + HP4;
     }
-    key->proto = proto;
+    return hash_avalanche(h);
 }
 
-static int is_a_to_b(const session_key_t *key,
-                     const char *src_ip, uint16_t src_port) {
-    return (strcmp(src_ip, key->ip_a) == 0 && src_port == key->port_a);
+/* Per-table seed so an attacker cannot precompute colliding tuples. */
+static uint64_t random_seed(void) {
+    uint64_t s = 0;
+#ifdef _WIN32
+    LARGE_INTEGER qpc;
+    QueryPerformanceCounter(&qpc);
+    s = (uint64_t)qpc.QuadPart ^ ((uint64_t)GetCurrentProcessId() << 32) ^
+        (uint64_t)GetTickCount64();
+#else
+    FILE *f = fopen("/dev/urandom", "rb");
+    if (f) {
+        if (fread(&s, sizeof(s), 1, f) != 1) s = 0;
+        fclose(f);
+    }
+    if (s == 0) {
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        s = ((uint64_t)tv.tv_sec << 32) ^ (uint64_t)tv.tv_usec ^
+            ((uint64_t)getpid() << 16);
+    }
+#endif
+    s ^= (uint64_t)(uintptr_t)&s;   /* stack address: ASLR entropy */
+    return hash_avalanche(s | 1);
 }
 
-static uint32_t key_hash(const session_key_t *key, uint32_t bucket_count) {
-    uint32_t h = fnv1a(key->ip_a, strlen(key->ip_a));
-    h = h * 16777619u ^ fnv1a(key->ip_b, strlen(key->ip_b));
-    h = h * 16777619u ^ (uint32_t)key->port_a;
-    h = h * 16777619u ^ (uint32_t)key->port_b;
-    h = h * 16777619u ^ (uint32_t)key->proto;
-    return h % bucket_count;
+static uint32_t round_pow2(uint32_t v) {
+    uint32_t p = 1;
+    while (p < v && p < (1u << 31)) p <<= 1;
+    return p;
 }
 
-static int keys_equal(const session_key_t *a, const session_key_t *b) {
-    return strcmp(a->ip_a, b->ip_a) == 0 &&
-           strcmp(a->ip_b, b->ip_b) == 0 &&
-           a->port_a == b->port_a &&
-           a->port_b == b->port_b &&
-           a->proto  == b->proto;
+/* ── Key canonicalisation ────────────────────────────────────── */
+
+/* Fills the packed key (side A = lower address, then lower port) and
+ * returns 1 when the packet's source is side A. Every byte of *key is
+ * written, so the struct can be compared with memcmp. */
+static inline int make_key(session_bkey_t *key, const pkt_summary_t *pkt) {
+    size_t alen = (pkt->addr_family == 6) ? 16 : 4;
+    memset(key, 0, sizeof(*key));
+    int cmp = memcmp(pkt->src_addr, pkt->dst_addr, alen);
+    if (cmp == 0) cmp = (int)pkt->src_port - (int)pkt->dst_port;
+    if (cmp <= 0) {
+        memcpy(key->addr_a, pkt->src_addr, alen);
+        memcpy(key->addr_b, pkt->dst_addr, alen);
+        key->port_a = pkt->src_port;
+        key->port_b = pkt->dst_port;
+    } else {
+        memcpy(key->addr_a, pkt->dst_addr, alen);
+        memcpy(key->addr_b, pkt->src_addr, alen);
+        key->port_a = pkt->dst_port;
+        key->port_b = pkt->src_port;
+    }
+    key->proto  = (uint8_t)pkt->l4_proto;
+    key->family = pkt->addr_family;
+    return cmp <= 0;
+}
+
+/* ── Hash chain (doubly linked via pprev) ────────────────────── */
+
+static inline void chain_insert(session_table_t *st, session_entry_t *e,
+                                uint32_t bucket) {
+    session_entry_t *first = st->buckets[bucket];
+    e->next = first;
+    if (first) first->pprev = &e->next;
+    st->buckets[bucket] = e;
+    e->pprev = &st->buckets[bucket];
+}
+
+static inline void chain_unlink(session_entry_t *e) {
+    *e->pprev = e->next;
+    if (e->next) e->next->pprev = e->pprev;
+    e->next = NULL;
+    e->pprev = NULL;
 }
 
 /* ── LRU list (head = most recently touched, tail = evict next) ── */
@@ -88,21 +143,168 @@ static void lru_push_front(session_table_t *st, session_entry_t *e) {
     if (!st->lru_tail) st->lru_tail = e;
 }
 
-/* ── TCP stream reassembly (all under the table lock) ────────── */
+/* ── Entry pool ──────────────────────────────────────────────── */
 
-/* Frees an entry's stream buffers and refunds their budget charge. */
-static void entry_free_streams(session_table_t *st, session_entry_t *e) {
+static session_entry_t *entry_alloc(session_table_t *st) {
+    session_entry_t *e = st->free_list;
+    if (e) {
+        st->free_list = e->next;
+    } else if (st->pool_used < st->pool_cap) {
+        e = &st->pool[st->pool_used++];
+    } else {
+        e = malloc(sizeof(*e));
+        if (!e) return NULL;
+    }
+    memset(e, 0, sizeof(*e));
+    return e;
+}
+
+static inline int entry_in_pool(const session_table_t *st,
+                                const session_entry_t *e) {
+    uintptr_t p = (uintptr_t)e, lo = (uintptr_t)st->pool;
+    return st->pool && p >= lo && p < lo + (uintptr_t)st->pool_cap * sizeof(*e);
+}
+
+static void entry_free(session_table_t *st, session_entry_t *e) {
+    if (entry_in_pool(st, e)) {
+        e->next = st->free_list;
+        st->free_list = e;
+    } else {
+        free(e);
+    }
+}
+
+/* ── Stream buffer pool and holder lists ─────────────────────── */
+
+/* Holders live on one of two lists, each ordered by last packet (head =
+ * most recent): active flows, and flows that reached CLOSED/RST. Closed
+ * flows keep their bytes viewable ("Follow stream" on a finished HTTP
+ * exchange) but are the first to give them up when the budget is
+ * exhausted; idle holders on either list are released after
+ * reasm_idle_sec. */
+#define HOLD_NONE   0
+#define HOLD_ACTIVE 1
+#define HOLD_CLOSED 2
+
+typedef session_hold_list_t hold_list_t;
+
+static inline hold_list_t *hold_list(session_table_t *st, int which) {
+    return (which == HOLD_CLOSED) ? &st->hold_closed : &st->hold_active;
+}
+
+static void hold_unlink(hold_list_t *l, session_entry_t *e) {
+    if (e->hold_prev) e->hold_prev->hold_next = e->hold_next;
+    else              l->head = e->hold_next;
+    if (e->hold_next) e->hold_next->hold_prev = e->hold_prev;
+    else              l->tail = e->hold_prev;
+    e->hold_prev = e->hold_next = NULL;
+}
+
+static void hold_push_front(hold_list_t *l, session_entry_t *e) {
+    e->hold_prev = NULL;
+    e->hold_next = l->head;
+    if (l->head) l->head->hold_prev = e;
+    l->head = e;
+    if (!l->tail) l->tail = e;
+}
+
+/* Move a holder to the front of its list (it just saw a packet). */
+static inline void holder_touch(session_table_t *st, session_entry_t *e) {
+    if (!e->hold_which) return;
+    hold_list_t *l = hold_list(st, e->hold_which);
+    if (l->head == e) return;
+    hold_unlink(l, e);
+    hold_push_front(l, e);
+}
+
+static void buf_put(session_table_t *st, uint8_t *b) {
+    memcpy(b, &st->buf_free, sizeof(uint8_t *));
+    st->buf_free = b;
+}
+
+/* Returns an entry's stream buffers to the free pool and drops it from
+ * the holder lists; the budget charge is refunded. */
+static void entry_release_streams(session_table_t *st, session_entry_t *e) {
     if (e->stream_a) {
-        free(e->stream_a);
+        buf_put(st, e->stream_a);
         e->stream_a = NULL;
         st->reasm_used -= SESSION_STREAM_CAP;
     }
     if (e->stream_b) {
-        free(e->stream_b);
+        buf_put(st, e->stream_b);
         e->stream_b = NULL;
         st->reasm_used -= SESSION_STREAM_CAP;
     }
+    e->stream_len_a = e->stream_len_b = 0;
+    if (e->hold_which) {
+        hold_unlink(hold_list(st, e->hold_which), e);
+        e->hold_which = HOLD_NONE;
+    }
 }
+
+/* Reconcile an entry's holder-list membership with what it holds and its
+ * TCP state; must run after every update of a TCP entry. Cheap for the
+ * common non-holder case (two loads and a compare). */
+static void holder_sync(session_table_t *st, session_entry_t *e) {
+    int want = HOLD_NONE;
+    if (e->stream_a || e->stream_b)
+        want = (e->tcp_state == SESS_CLOSED || e->tcp_state == SESS_RST)
+               ? HOLD_CLOSED : HOLD_ACTIVE;
+    if (e->hold_which == want) return;
+    if (e->hold_which) hold_unlink(hold_list(st, e->hold_which), e);
+    e->hold_which = (uint8_t)want;
+    if (want) hold_push_front(hold_list(st, want), e);
+}
+
+/* A buffer for `self`: from the free pool, a fresh allocation while the
+ * budget allows, else reclaimed from the oldest holder (closed flows
+ * first). NULL when nothing can be had. */
+static uint8_t *buf_get(session_table_t *st, session_entry_t *self) {
+    uint8_t *b = st->buf_free;
+    if (!b && st->buf_alloc < st->buf_max) {
+        b = malloc(SESSION_STREAM_CAP);
+        if (b) st->buf_alloc++;
+        return b;
+    }
+    if (!b) {
+        session_entry_t *victim = st->hold_closed.tail;
+        if (!victim) victim = st->hold_active.tail;
+        if (!victim || victim == self) return NULL;
+        entry_release_streams(st, victim);
+        b = st->buf_free;
+        if (!b) return NULL;
+    }
+    memcpy(&st->buf_free, b, sizeof(uint8_t *));
+    return b;
+}
+
+/* Release holders that have not seen a packet for reasm_idle_sec (by the
+ * packet-timestamp clock); bounded work per call, run from update(). */
+static void holders_expire(session_table_t *st, const struct timeval *now) {
+    if (!st->reasm_idle_sec) return;
+    for (int which = HOLD_ACTIVE; which <= HOLD_CLOSED; which++) {
+        hold_list_t *l = hold_list(st, which);
+        for (int n = 0; n < 4; n++) {
+            session_entry_t *t = l->tail;
+            if (!t) break;
+            int64_t idle = (int64_t)now->tv_sec - (int64_t)t->last_seen.tv_sec;
+            if (idle < (int64_t)st->reasm_idle_sec) break;
+            entry_release_streams(st, t);
+        }
+    }
+}
+
+/* Frees the pooled (unheld) buffers; call only when no entry holds any. */
+static void buf_pool_drain(session_table_t *st) {
+    while (st->buf_free) {
+        uint8_t *b = st->buf_free;
+        memcpy(&st->buf_free, b, sizeof(uint8_t *));
+        free(b);
+    }
+    st->buf_alloc = 0;
+}
+
+/* ── TCP stream reassembly (all under the table lock) ────────── */
 
 /* One direction of the flow. Sequence tracking always advances (SYN and
  * FIN each consume one sequence number); bytes are stored only while the
@@ -130,9 +332,12 @@ static void stream_update(session_table_t *st, session_entry_t *e, int a2b,
     }
 
     if (paylen > 0) {
-        if (!*buf && st->reasm_used + SESSION_STREAM_CAP <= st->reasm_budget) {
-            *buf = malloc(SESSION_STREAM_CAP);
-            if (*buf) st->reasm_used += SESSION_STREAM_CAP;
+        if (!*buf) {
+            *buf = buf_get(st, e);
+            if (*buf) {
+                st->reasm_used += SESSION_STREAM_CAP;
+                *blen = 0;
+            }
         }
         if (*buf && *blen < SESSION_STREAM_CAP) {
             uint32_t room = SESSION_STREAM_CAP - *blen;
@@ -194,29 +399,55 @@ session_table_t *session_table_create(uint32_t bucket_count) {
     session_table_t *st = calloc(1, sizeof(session_table_t));
     if (!st) return NULL;
 
-    if (bucket_count == 0) bucket_count = 4096;
+    /* buckets: at least 2 x the session cap, power of two, so the mean
+     * chain stays under one entry even when the table is full */
+    uint32_t want = 2u * SESSION_DEFAULT_MAX;
+    if (bucket_count > want) want = bucket_count;
+    bucket_count = round_pow2(want);
     st->buckets = calloc(bucket_count, sizeof(session_entry_t *));
     if (!st->buckets) { free(st); return NULL; }
 
-    st->bucket_count  = bucket_count;
-    st->next_id       = 1;
-    st->max_sessions  = SESSION_DEFAULT_MAX;
+    /* entry pool: calloc gives untouched zero pages, so RSS grows only
+     * with the sessions actually created */
+    st->pool_cap = SESSION_DEFAULT_MAX;
+    st->pool = calloc(st->pool_cap, sizeof(session_entry_t));
+    if (!st->pool) st->pool_cap = 0;   /* heap entries instead */
+
+    st->bucket_count   = bucket_count;
+    st->bucket_mask    = bucket_count - 1;
+    st->next_id        = 1;
+    st->max_sessions   = SESSION_DEFAULT_MAX;
+    st->hash_seed      = random_seed();
+    st->reasm_idle_sec = SESSION_REASM_IDLE_DEFAULT;
     ns_mutex_init(&st->mtx);
     return st;
 }
 
+/* Drops every session and every stream buffer (lock held by caller). */
+static void table_reset_locked(session_table_t *st) {
+    session_entry_t *e = st->lru_head;
+    while (e) {
+        session_entry_t *next = e->lru_next;
+        entry_release_streams(st, e);
+        if (!entry_in_pool(st, e)) free(e);
+        e = next;
+    }
+    memset(st->buckets, 0, st->bucket_count * sizeof(session_entry_t *));
+    st->lru_head = st->lru_tail = NULL;
+    st->hold_active.head = st->hold_active.tail = NULL;
+    st->hold_closed.head = st->hold_closed.tail = NULL;
+    st->free_list = NULL;
+    st->pool_used = 0;
+    st->session_count = 0;
+    st->next_id = 1;
+    buf_pool_drain(st);
+}
+
 void session_table_destroy(session_table_t *st) {
     if (!st) return;
-    for (uint32_t i = 0; i < st->bucket_count; i++) {
-        session_entry_t *e = st->buckets[i];
-        while (e) {
-            session_entry_t *next = e->next;
-            entry_free_streams(st, e);
-            free(e);
-            e = next;
-        }
-    }
+    table_reset_locked(st);
     ns_mutex_destroy(&st->mtx);
+    free(st->pool);
     free(st->buckets);
     free(st);
 }
@@ -226,26 +457,14 @@ void session_table_enable_reasm(session_table_t *st, size_t budget_bytes) {
     ns_mutex_lock(&st->mtx);
     st->reasm_enabled = 1;
     st->reasm_budget  = budget_bytes;
+    st->buf_max       = (uint32_t)(budget_bytes / SESSION_STREAM_CAP);
     ns_mutex_unlock(&st->mtx);
 }
 
 void session_table_clear(session_table_t *st) {
     if (!st) return;
     ns_mutex_lock(&st->mtx);
-    for (uint32_t i = 0; i < st->bucket_count; i++) {
-        session_entry_t *e = st->buckets[i];
-        while (e) {
-            session_entry_t *next = e->next;
-            entry_free_streams(st, e);
-            free(e);
-            e = next;
-        }
-        st->buckets[i] = NULL;
-    }
-    st->lru_head = NULL;
-    st->lru_tail = NULL;
-    st->session_count = 0;
-    st->next_id = 1;
+    table_reset_locked(st);
     ns_mutex_unlock(&st->mtx);
 }
 
@@ -255,21 +474,21 @@ uint32_t session_table_update(session_table_t *st,
                               uint32_t paylen) {
     if (!st) return 0;
     /* skip packets without IP info */
-    if (!pkt->src_ip[0] || !pkt->dst_ip[0]) return 0;
+    if (pkt->addr_family == 0) return 0;
+    /* non-first fragments carry no L4 header: nothing to attach them to */
+    if ((pkt->ip_frag_off & 0x1FFF) != 0) return 0;
 
-    session_key_t key;
-    normalize_key(&key, pkt->src_ip, pkt->dst_ip,
-                  pkt->src_port, pkt->dst_port,
-                  (uint8_t)pkt->l4_proto);
-
-    uint32_t bucket = key_hash(&key, st->bucket_count);
+    session_bkey_t key;
+    int a2b = make_key(&key, pkt);
+    uint32_t h = (uint32_t)bkey_hash(&key, st->hash_seed);
+    uint32_t bucket = h & st->bucket_mask;
 
     ns_mutex_lock(&st->mtx);
 
     /* find existing */
     session_entry_t *e = st->buckets[bucket];
     while (e) {
-        if (keys_equal(&e->key, &key)) break;
+        if (e->hash == h && memcmp(&e->bkey, &key, sizeof(key)) == 0) break;
         e = e->next;
     }
 
@@ -278,35 +497,37 @@ uint32_t session_table_update(session_table_t *st,
         if (st->max_sessions > 0 && st->session_count >= st->max_sessions &&
             st->lru_tail) {
             session_entry_t *old = st->lru_tail;
-            uint32_t ob = key_hash(&old->key, st->bucket_count);
-            session_entry_t **pp = &st->buckets[ob];
-            while (*pp && *pp != old) pp = &(*pp)->next;
-            if (*pp) *pp = old->next;
+            chain_unlink(old);
             lru_unlink(st, old);
-            entry_free_streams(st, old);
-            free(old);
+            entry_release_streams(st, old);
+            entry_free(st, old);
             st->session_count--;
         }
 
         /* create new session */
-        e = calloc(1, sizeof(session_entry_t));
+        e = entry_alloc(st);
         if (!e) { ns_mutex_unlock(&st->mtx); return 0; }
-        e->key = key;
+        e->bkey = key;
+        e->hash = h;
         e->id = st->next_id++;
         e->first_seen = pkt->ts;
         e->tcp_state = SESS_NEW;
-        e->next = st->buckets[bucket];
-        st->buckets[bucket] = e;
+        /* display fields: formatted once, here, never on the packet path */
+        memcpy(e->key.ip_a, a2b ? pkt->src_ip : pkt->dst_ip, sizeof(e->key.ip_a));
+        memcpy(e->key.ip_b, a2b ? pkt->dst_ip : pkt->src_ip, sizeof(e->key.ip_b));
+        e->key.port_a = key.port_a;
+        e->key.port_b = key.port_b;
+        e->key.proto  = key.proto;
+        chain_insert(st, e, bucket);
         st->session_count++;
         lru_push_front(st, e);
-    } else {
+    } else if (st->lru_head != e) {
         /* touch: move to the front of the LRU list */
         lru_unlink(st, e);
         lru_push_front(st, e);
     }
 
     /* update counters */
-    int a2b = is_a_to_b(&key, pkt->src_ip, pkt->src_port);
     if (a2b) {
         e->pkts_a_to_b++;
         e->bytes_a_to_b += pkt->length;
@@ -320,11 +541,16 @@ uint32_t session_table_update(session_table_t *st,
     if (pkt->l4_proto == PROTO_TCP) {
         e->tcp_flags_seen |= pkt->tcp_flags;
         e->tcp_state = tcp_next_state(e->tcp_state, pkt->tcp_flags);
-        if (st->reasm_enabled)
+        if (st->reasm_enabled) {
+            holder_touch(st, e);
             stream_update(st, e, a2b, pkt, payload, paylen);
+            holder_sync(st, e);
+        }
     } else {
         e->tcp_state = SESS_ESTABLISHED;
     }
+    /* any tracked packet advances the idle clock for stream holders */
+    if (st->reasm_enabled) holders_expire(st, &pkt->ts);
 
     uint32_t id = e->id;
     ns_mutex_unlock(&st->mtx);
@@ -351,21 +577,22 @@ static uint32_t stream_copy_locked(const session_entry_t *e, int dir,
     return n;
 }
 
+/* Lookup by id (rare: "Follow stream"), lock held. */
+static session_entry_t *find_by_id_locked(session_table_t *st, uint32_t id) {
+    for (session_entry_t *e = st->lru_head; e; e = e->lru_next)
+        if (e->id == id) return e;
+    return NULL;
+}
+
 uint32_t session_stream_copy(session_table_t *st, uint32_t id, int dir,
                              uint8_t *out, uint32_t cap) {
     if (!st || !out || cap == 0) return 0;
 
     ns_mutex_lock(&st->mtx);
-    for (uint32_t i = 0; i < st->bucket_count; i++) {
-        for (session_entry_t *e = st->buckets[i]; e; e = e->next) {
-            if (e->id != id) continue;
-            uint32_t n = stream_copy_locked(e, dir, out, cap);
-            ns_mutex_unlock(&st->mtx);
-            return n;
-        }
-    }
+    session_entry_t *e = find_by_id_locked(st, id);
+    uint32_t n = e ? stream_copy_locked(e, dir, out, cap) : 0;
     ns_mutex_unlock(&st->mtx);
-    return 0;
+    return n;
 }
 
 void session_streams_copy(session_table_t *st, uint32_t id,
@@ -377,14 +604,10 @@ void session_streams_copy(session_table_t *st, uint32_t id,
     /* one critical section so the two directions form a coherent
      * point-in-time view of the session */
     ns_mutex_lock(&st->mtx);
-    for (uint32_t i = 0; i < st->bucket_count; i++) {
-        for (session_entry_t *e = st->buckets[i]; e; e = e->next) {
-            if (e->id != id) continue;
-            *len_a = stream_copy_locked(e, 0, out_a, cap);
-            *len_b = stream_copy_locked(e, 1, out_b, cap);
-            ns_mutex_unlock(&st->mtx);
-            return;
-        }
+    session_entry_t *e = find_by_id_locked(st, id);
+    if (e) {
+        *len_a = stream_copy_locked(e, 0, out_a, cap);
+        *len_b = stream_copy_locked(e, 1, out_b, cap);
     }
     ns_mutex_unlock(&st->mtx);
 }
@@ -448,19 +671,22 @@ session_entry_t *session_table_snapshot(session_table_t *st,
         return NULL;
     }
 
+    /* walk the LRU list: every live entry, no empty buckets to skip */
     uint32_t idx = 0;
-    for (uint32_t i = 0; i < st->bucket_count && idx < count; i++) {
-        for (session_entry_t *e = st->buckets[i]; e && idx < count; e = e->next) {
-            arr[idx] = *e;
-            arr[idx].next = NULL;
-            arr[idx].lru_prev = NULL;
-            arr[idx].lru_next = NULL;
-            /* stream buffers stay owned by the table: copies must never
-             * carry live pointers (use session_stream_copy instead) */
-            arr[idx].stream_a = NULL;
-            arr[idx].stream_b = NULL;
-            idx++;
-        }
+    for (session_entry_t *e = st->lru_head; e && idx < count; e = e->lru_next) {
+        arr[idx] = *e;
+        arr[idx].next = NULL;
+        arr[idx].pprev = NULL;
+        arr[idx].lru_prev = NULL;
+        arr[idx].lru_next = NULL;
+        arr[idx].hold_prev = NULL;
+        arr[idx].hold_next = NULL;
+        arr[idx].hold_which = HOLD_NONE;
+        /* stream buffers stay owned by the table: copies must never
+         * carry live pointers (use session_stream_copy instead) */
+        arr[idx].stream_a = NULL;
+        arr[idx].stream_b = NULL;
+        idx++;
     }
     count = idx;
 

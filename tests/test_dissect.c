@@ -73,6 +73,16 @@ int main(void) {
     CHECK(out.ip_ttl == 64);
     CHECK(out.l7_off == 14 + 20 + 20);
     CHECK(out.l7_len == 0);
+    /* binary addresses for the session table: IPv4 in the first 4 bytes,
+     * the remaining 12 zero */
+    {
+        static const uint8_t z12[12] = {0};
+        CHECK(out.addr_family == 4);
+        CHECK(memcmp(out.src_addr, "\x0a\x00\x00\x01", 4) == 0);
+        CHECK(memcmp(out.dst_addr, "\x08\x08\x08\x08", 4) == 0);
+        CHECK(memcmp(out.src_addr + 4, z12, 12) == 0);
+        CHECK(memcmp(out.dst_addr + 4, z12, 12) == 0);
+    }
 
     /* ── l7_off/l7_len locate the TCP payload ───────────────── */
     {
@@ -201,6 +211,14 @@ int main(void) {
         CHECK(out.l4_proto == PROTO_UNKNOWN);
         CHECK(out.src_port == 0);
         CHECK(strstr(out.info, "fragment") != NULL);
+        CHECK((out.ip_frag_off & 0x1FFF) == 185);
+        CHECK(out.addr_family == 4);       /* addresses still filled */
+
+        /* first fragment (MF set, offset 0) keeps its L4 header */
+        pkt[14 + 6] = 0x20; pkt[14 + 7] = 0x00;
+        dissect_packet(pkt, (uint32_t)o, 1, &out);
+        CHECK(out.l4_proto == PROTO_TCP);
+        CHECK((out.ip_frag_off & 0x1FFF) == 0 && (out.ip_frag_off & 0x2000));
     }
 
     /* ── IPv6 with hop-by-hop extension header, then TCP ────── */
@@ -220,6 +238,10 @@ int main(void) {
         CHECK(out.src_port == 1234 && out.dst_port == 443);
         CHECK(out.l7_off == 14 + 40 + 8 + 20);
         CHECK(out.l7_len == 0);
+        CHECK(out.addr_family == 6);
+        CHECK(memcmp(out.src_addr, v6 + 8, 16) == 0);
+        CHECK(memcmp(out.dst_addr, v6 + 24, 16) == 0);
+        CHECK(out.ip_frag_off == 0);
 
         /* payload lands past the extension chain */
         static const uint8_t v6pay[4] = { 'a', 'b', 'c', 'd' };
@@ -250,6 +272,35 @@ int main(void) {
         CHECK(out.l4_proto == PROTO_UNKNOWN);
         CHECK(out.src_port == 0);
         CHECK(strstr(out.info, "fragment") != NULL);
+        /* offset exposed in the IPv4 ip_frag_off layout: 0x05A8 >> 3 */
+        CHECK((out.ip_frag_off & 0x1FFF) == 181);
+        CHECK(out.addr_family == 6);
+
+        /* first fragment (offset 0, MF set) still reaches the TCP header */
+        uint8_t frag0[8] = { 6, 0, 0x00, 0x01 };
+        o = eth_hdr(pkt, 0x86DD);
+        o = put(pkt, o, v6, 40);
+        o = put(pkt, o, frag0, 8);
+        o = tcp_hdr(pkt, o, 1234, 443, 0x02);
+        dissect_packet(pkt, (uint32_t)o, 1, &out);
+        CHECK(out.l4_proto == PROTO_TCP);
+        CHECK((out.ip_frag_off & 0x1FFF) == 0 && (out.ip_frag_off & 0x2000));
+    }
+
+    /* ── ARP fills the binary address pair too ──────────────── */
+    {
+        uint8_t arp[28] = { 0, 1, 8, 0, 6, 4, 0, 1 };
+        memset(arp + 8, 0xAA, 6);
+        arp[14] = 192; arp[15] = 168; arp[16] = 1; arp[17] = 10;
+        arp[24] = 192; arp[25] = 168; arp[26] = 1; arp[27] = 1;
+        size_t o = eth_hdr(pkt, 0x0806);
+        o = put(pkt, o, arp, sizeof(arp));
+        dissect_packet(pkt, (uint32_t)o, 1, &out);
+        CHECK(out.l3_proto == PROTO_ARP);
+        CHECK(strcmp(out.src_ip, "192.168.1.10") == 0);
+        CHECK(out.addr_family == 4);
+        CHECK(memcmp(out.src_addr, arp + 14, 4) == 0);
+        CHECK(memcmp(out.dst_addr, arp + 24, 4) == 0);
     }
 
     /* ── Linux cooked capture (DLT_LINUX_SLL / SLL2) ────────── */
