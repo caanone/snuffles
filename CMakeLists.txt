@@ -89,6 +89,15 @@ if(BUILD_TESTING)
     target_include_directories(test_export_json PRIVATE include src)
     target_link_libraries(test_export_json PRIVATE Threads::Threads m)
     add_test(NAME export_json COMMAND test_export_json)
+    # test_ui.c includes src/ui.c (white-box pacing counters) and stubs the
+    # capture/export entry points; POSIX only (pipes, pthread).
+    if(NOT WIN32)
+        add_executable(test_ui tests/test_ui.c src/filter.c src/stats.c
+                       src/session.c src/ringbuf.c)
+        target_include_directories(test_ui PRIVATE include src)
+        target_link_libraries(test_ui PRIVATE Threads::Threads m)
+        add_test(NAME ui COMMAND test_ui)
+    endif()
 endif()
 
 # Install

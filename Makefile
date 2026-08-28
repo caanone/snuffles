@@ -67,7 +67,7 @@ OBJS_DEBUG = $(SRCS_PCAP:src/%.c=$(OBJDIR)/debug/%.o)
 
 # ── Unit tests (also runnable via CTest; this target keeps them
 #    available on the make-only path, e.g. macOS release builds) ──
-TESTS      = filter ringbuf session dissect cbpf config export_json syslog_out
+TESTS      = filter ringbuf session dissect cbpf config export_json syslog_out ui
 TEST_BINS  = $(TESTS:%=$(OBJDIR)/tests/test_%)
 # make test SAN=1 -> run the suite under ASan/UBSan
 ifdef SAN
@@ -128,6 +128,13 @@ $(OBJDIR)/tests/test_%: tests/test_%.c src/%.c | $(OBJDIR)/tests
 # export_json.c also walks the ring through the display filter
 $(OBJDIR)/tests/test_export_json: tests/test_export_json.c src/export_json.c \
                                   src/filter.c src/ringbuf.c | $(OBJDIR)/tests
+	$(CC) $(BASE_CFLAGS) $(TEST_FLAGS) -Isrc $(CFLAGS) -o $@ $^ \
+	      $(TEST_LDFLAGS) $(LDFLAGS) $(TEST_LDLIBS)
+
+# test_ui.c includes src/ui.c (white-box access to the pacing counters)
+# and stubs the capture/export entry points; it links what the UI uses.
+$(OBJDIR)/tests/test_ui: tests/test_ui.c src/filter.c src/stats.c \
+                         src/session.c src/ringbuf.c | $(OBJDIR)/tests
 	$(CC) $(BASE_CFLAGS) $(TEST_FLAGS) -Isrc $(CFLAGS) -o $@ $^ \
 	      $(TEST_LDFLAGS) $(LDFLAGS) $(TEST_LDLIBS)
 
