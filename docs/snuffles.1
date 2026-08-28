@@ -83,7 +83,8 @@ Headless mode: print one line per packet to stdout.
 Headless mode emitting one JSON object per packet (JSON Lines).
 .TP
 .BR \-q ", " \-\-quiet
-No terminal output at all; use with \fB\-\-syslog\fR or \fB\-w\fR.
+No packet output (only the exit summary on stderr, see
+\fB\-\-no\-summary\fR); use with \fB\-\-syslog\fR or \fB\-w\fR.
 .TP
 .BI \-\-syslog " host:port"
 Forward per\-packet CSV records over UDP syslog. Records are batched (up
@@ -119,9 +120,9 @@ the TUI). A frame longer than 1518 bytes on a non\-jumbo interface warns
 once about GRO/GSO super\-frames (headless modes).
 .TP
 .BI \-\-cpu " N"
-Pin the capture thread to CPU \fIN\fR (Linux). In headless modes the
-consumer and the stats thread are kept on the remaining CPUs of the
-process's affinity mask. Config key
+Pin the capture thread to CPU \fIN\fR (Linux). The other threads (the
+headless consumer or the TUI, and the stats thread) are kept on the
+remaining CPUs of the process's affinity mask. Config key
 .BR cpu .
 .TP
 .B \-\-rt

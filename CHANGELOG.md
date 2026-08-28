@@ -10,9 +10,9 @@
   dropped packets, and a frame longer than 1518 bytes on a non-jumbo
   interface warns once about GRO/GSO super-frames (libpcap build).
 - **`--cpu N` and `--rt`** (config keys `cpu`, `rt`): pin the capture thread
-  to one CPU — headless consumers and the stats thread stay on the other
-  CPUs — and run it under `SCHED_FIFO` priority 1 (set before the privilege
-  drop; warns and continues without root/CAP_SYS_NICE).
+  to one CPU — the consumer (headless printer or TUI) and the stats thread
+  stay on the other CPUs — and run it under `SCHED_FIFO` priority 1 (set
+  before the privilege drop; warns and continues without root/CAP_SYS_NICE).
 - **Offline replay back-pressure.** `-r file` into a headless consumer waits
   for the consumer instead of lapping the ring, so every packet of the
   file is emitted with `missed=0` whatever `-b` is (a blocked stdout used

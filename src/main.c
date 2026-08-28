@@ -100,15 +100,15 @@ static void print_usage(const char *prog) {
            "                    ('-w -' writes to stdout; combine with -q)\n"
            "  --no-ui           Headless mode (print to stdout)\n"
            "  --jsonl           Headless mode, one JSON object per packet\n"
-           "  -q, --quiet       Silent mode (no terminal output, use with --syslog)\n"
+           "  -q, --quiet       Silent mode (no packet output, use with --syslog)\n"
            "  --syslog <h:p>   Send packet CSV to syslog server (UDP)\n"
            "  --syslog-iface <ip|dev>  Source interface/IP for syslog\n"
            "  --stats[=FILE]    Report capture/drop counters every second and\n"
            "                    at exit (stderr, or FILE; the TUI needs FILE)\n"
            "  --no-summary      Headless modes: no counters line at exit\n"
            "                    (SIGUSR1 prints one at any time)\n"
-           "  --cpu <N>         Pin the capture thread to CPU N; headless\n"
-           "                    consumers stay off that CPU (Linux)\n"
+           "  --cpu <N>         Pin the capture thread to CPU N; the other\n"
+           "                    threads stay off that CPU (Linux)\n"
            "  --rt              Run the capture thread at SCHED_FIFO priority 1\n"
            "                    (needs root/CAP_SYS_NICE; warns and goes on)\n"
            "  --immediate       Deliver packets one at a time instead of in\n"
@@ -450,11 +450,12 @@ static void placement_pin_capture(placement_t *pl) {
 }
 
 /* After capture_start(): the main thread gives up the real-time policy
- * (always allowed, even unprivileged) and moves off the capture CPU. In
- * headless modes it takes the complement of the original mask so the
- * consumer (and the stats thread created afterwards) never compete with
- * capture; the TUI keeps its original mask. */
-static void placement_release_main(placement_t *pl, int headless) {
+ * (always allowed, even unprivileged) and moves off the capture CPU: it
+ * takes the complement of the original mask so the consumer -- headless
+ * printer or TUI, whose redraws are what --cpu keeps away from capture --
+ * and the stats thread created afterwards never compete with capture.
+ * A single-CPU mask falls back to sharing. */
+static void placement_release_main(placement_t *pl) {
 #ifndef _WIN32
     if (pl->rt) {
         struct sched_param sp;
@@ -465,13 +466,11 @@ static void placement_release_main(placement_t *pl, int headless) {
 #ifdef __linux__
     if (pl->cpu >= 0) {
         aff_mask_t m = pl->orig;
-        if (headless) {
-            aff_clear(&m, pl->cpu);
-            if (aff_empty(&m)) {
-                fprintf(stderr, "snuffles: --cpu %d: no other CPU available "
-                                "for the consumer; sharing it\n", pl->cpu);
-                m = pl->orig;
-            }
+        aff_clear(&m, pl->cpu);
+        if (aff_empty(&m)) {
+            fprintf(stderr, "snuffles: --cpu %d: no other CPU available "
+                            "for the consumer; sharing it\n", pl->cpu);
+            m = pl->orig;
         }
         if (aff_set(&m) != 0)
             fprintf(stderr, "snuffles: --cpu: cannot move the main thread "
@@ -479,7 +478,6 @@ static void placement_release_main(placement_t *pl, int headless) {
     }
 #else
     (void)pl;
-    (void)headless;
 #endif
 }
 
@@ -660,7 +658,7 @@ int main(int argc, char *argv[]) {
     /* start capture thread (inherits the --cpu mask and --rt policy) */
     placement_pin_capture(&place);
     int started = capture_start(cap);
-    placement_release_main(&place, cfg.no_ui);
+    placement_release_main(&place);
     if (started != 0) {
         capture_destroy(cap);
         session_table_destroy(sessions);
