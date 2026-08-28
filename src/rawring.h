@@ -30,6 +30,8 @@ typedef struct {
     uint32_t caplen;        /* bytes present in the ring */
     uint32_t wirelen;       /* on-the-wire length */
     uint32_t sec, nsec;     /* kernel receive timestamp */
+    int      ifindex;       /* sockaddr_ll: receiving interface */
+    uint8_t  pkttype;       /* sockaddr_ll: PACKET_HOST/_OUTGOING/... */
 } rawring_frame_t;
 
 /* Called per frame; a nonzero return stops the walk. */

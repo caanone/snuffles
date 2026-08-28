@@ -33,6 +33,11 @@
 - **Raw build: the "raise net.core.rmem_max or run as root" hint** was
   printed even when the socket buffer request hit the kernel's own
   per-socket ceiling (1024 MiB); it now says "kernel limit" in that case.
+- **Raw build: every packet on `lo` was captured twice.** A frame sent over
+  the loopback interface passes the packet tap twice (`PACKET_OUTGOING` on
+  transmit, `PACKET_HOST` on delivery); the raw backend now keeps only the
+  incoming copy, as libpcap does, so counts, sessions and `-w` files match
+  the libpcap build on `lo`.
 
 ## [1.3.1] — 2026-08-27
 
