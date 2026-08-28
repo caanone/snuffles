@@ -1,0 +1,22 @@
+{
+  "name": "C4o-iperf-tcp-offloads-off",
+  "build": "pcap",
+  "mode": "quiet",
+  "iface": "br0",
+  "bpf": "",
+  "duration": 30,
+  "perf": false,
+  "mtu": 1500,
+  "offloads": "off",
+  "rps": "off",
+  "traffic": {
+    "kind": "iperf",
+    "gens": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "threads": 8
+  }
+}

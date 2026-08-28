@@ -1,0 +1,25 @@
+{
+  "name": "C1h-http-keepalive-headless",
+  "build": "pcap",
+  "mode": "headless",
+  "iface": "br0",
+  "bpf": "",
+  "duration": 30,
+  "perf": false,
+  "mtu": 1500,
+  "offloads": "on",
+  "rps": "off",
+  "traffic": {
+    "kind": "http",
+    "gens": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "threads": 2,
+    "conns": 256,
+    "keepalive": true,
+    "url": "/"
+  }
+}

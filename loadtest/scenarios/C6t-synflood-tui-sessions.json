@@ -1,0 +1,22 @@
+{
+  "name": "C6t-synflood-tui-sessions",
+  "build": "pcap",
+  "mode": "tui-sessions",
+  "iface": "br0",
+  "bpf": "",
+  "duration": 30,
+  "perf": false,
+  "mtu": 1500,
+  "offloads": "on",
+  "rps": "off",
+  "traffic": {
+    "kind": "synflood",
+    "gens": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "threads": 2
+  }
+}

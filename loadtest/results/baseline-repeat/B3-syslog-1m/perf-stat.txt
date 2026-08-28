@@ -1,0 +1,22 @@
+# started on Fri Aug 28 15:11:54 2026
+
+
+ Performance counter stats for process id '64316':
+
+           9986.80 msec task-clock                       #    0.999 CPUs utilized             
+               841      context-switches                 #   84.211 /sec                      
+                82      cpu-migrations                   #    8.211 /sec                      
+                 0      page-faults                      #    0.000 /sec                      
+       39674214386      cycles                           #    3.973 GHz                       
+       38780417429      instructions                     #    0.98  insn per cycle            
+         116596376      cache-misses                                                          
+         500135580      branch-misses                                                         
+           1502727      syscalls:sys_enter_write         #  150.471 K/sec                     
+           1502717      syscalls:sys_enter_sendto        #  150.470 K/sec                     
+             23480      syscalls:sys_enter_getsockopt    #    2.351 K/sec                     
+                 0      syscalls:sys_enter_recvfrom      #    0.000 /sec                      
+                 0      syscalls:sys_enter_select        #    0.000 /sec                      
+                 0      syscalls:sys_enter_poll          #    0.000 /sec                      
+
+      10.001343396 seconds time elapsed
+

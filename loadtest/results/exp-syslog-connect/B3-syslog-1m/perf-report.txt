@@ -1,0 +1,120 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 8K of event 'cycles:P'
+# Event count (approx.): 31456394432
+#
+# Overhead  Command      Shared Object      Symbol                                   
+# ........  ...........  .................  .........................................
+#
+     2.70%  snf-capture  [kernel.kallsyms]  [k] udp_sendmsg
+     2.31%  snf-capture  [kernel.kallsyms]  [k] ip_route_input_slow
+     1.98%  snf-capture  [kernel.kallsyms]  [k] __fib_validate_source
+     1.93%  snf-capture  [kernel.kallsyms]  [k] __dev_queue_xmit
+            |          
+             --0.54%--fib_table_lookup
+
+     1.79%  snf-capture  [kernel.kallsyms]  [k] srso_alias_return_thunk
+     1.75%  snf-capture  [kernel.kallsyms]  [k] srso_alias_safe_ret
+     1.73%  snf-capture  [kernel.kallsyms]  [k] __ip_make_skb
+            |          
+            |--0.56%--__netif_receive_skb_core.constprop.0
+            |          __netif_receive_skb_one_core
+            |          process_backlog
+            |          __napi_poll
+            |          net_rx_action
+            |          handle_softirqs
+            |          do_softirq.part.0
+            |          __local_bh_enable_ip
+            |          __dev_queue_xmit
+            |          ip_finish_output2
+            |          ip_output
+            |          ip_send_skb
+            |          udp_send_skb
+            |          udp_sendmsg
+            |          ____sys_sendmsg
+            |          ___sys_sendmsg
+            |          __sys_sendmmsg
+            |          __x64_sys_sendmmsg
+            |          do_syscall_64
+            |          entry_SYSCALL_64_after_hwframe
+            |          0x7ff10f9e79ee
+            |          syslog_out_send
+            |          capture_callback
+            |          0x7ff10fc3a527
+            |          
+             --0.51%--packet_rcv
+                       __netif_receive_skb_core.constprop.0
+                       __netif_receive_skb_one_core
+                       process_backlog
+                       __napi_poll
+                       net_rx_action
+                       handle_softirqs
+                       do_softirq.part.0
+                       __local_bh_enable_ip
+                       __dev_queue_xmit
+                       ip_finish_output2
+                       ip_output
+                       ip_send_skb
+                       udp_send_skb
+                       udp_sendmsg
+                       ____sys_sendmsg
+                       ___sys_sendmsg
+                       __sys_sendmmsg
+                       __x64_sys_sendmmsg
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7ff10f9e79ee
+                       syslog_out_send
+                       capture_callback
+                       0x7ff10fc3a527
+
+     1.63%  snf-capture  [kernel.kallsyms]  [k] process_backlog
+     1.57%  snf-capture  [kernel.kallsyms]  [k] net_rx_action
+            |          
+             --0.68%--udp_queue_rcv_one_skb
+                       udp_unicast_rcv_skb
+                       __udp4_lib_rcv
+                       ip_protocol_deliver_rcu
+                       ip_local_deliver_finish
+                       ip_local_deliver
+                       __netif_receive_skb_one_core
+                       process_backlog
+                       __napi_poll
+                       net_rx_action
+                       handle_softirqs
+                       do_softirq.part.0
+                       __local_bh_enable_ip
+                       __dev_queue_xmit
+                       ip_finish_output2
+                       ip_output
+                       ip_send_skb
+                       udp_send_skb
+                       udp_sendmsg
+                       ____sys_sendmsg
+                       ___sys_sendmsg
+                       __sys_sendmmsg
+                       __x64_sys_sendmmsg
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7ff10f9e79ee
+                       syslog_out_send
+                       capture_callback
+                       0x7ff10fc3a527
+
+     1.40%  snf-capture  [kernel.kallsyms]  [k] __ip_append_data
+     1.39%  snf-capture  [kernel.kallsyms]  [k] fib_table_lookup
+     1.38%  snf-capture  [kernel.kallsyms]  [k] ip_output
+     1.36%  snf-capture  [kernel.kallsyms]  [k] kmem_cache_alloc_node_noprof
+     1.35%  snf-capture  [kernel.kallsyms]  [k] veth_xmit
+     1.30%  snf-capture  [kernel.kallsyms]  [k] __alloc_skb
+     1.26%  snf-capture  snuffles           [.] dissect_packet
+     1.22%  snf-capture  [kernel.kallsyms]  [k] ___sys_sendmsg
+     1.21%  snf-capture  [kernel.kallsyms]  [k] _copy_from_iter
+     1.20%  snf-capture  [kernel.kallsyms]  [k] udp_queue_rcv_one_skb
+     1.20%  snf-capture  [kernel.kallsyms]  [k] __memset
+     1.20%  snf-capture  [kernel.kallsyms]  [k] __netif_receive_skb_core.constprop.0
+     1.10%  snf-capture  [kernel.kallsyms]  [k] ip_finish_output2
+     1.05%  snf-capture  [kernel.kallsyms]  [k] __udp4_lib_rcv

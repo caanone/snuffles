@@ -1,0 +1,120 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 7K of event 'cycles:P'
+# Event count (approx.): 31232507515
+#
+# Overhead  Command      Shared Object      Symbol                                   
+# ........  ...........  .................  .........................................
+#
+    14.80%  snf-capture  [kernel.kallsyms]  [k] entry_SYSRETQ_unsafe_stack
+            |          
+            |--1.18%--kmem_cache_free
+            |          packet_recvmsg
+            |          sock_recvmsg
+            |          __sys_recvfrom
+            |          __x64_sys_recvfrom
+            |          do_syscall_64
+            |          entry_SYSCALL_64_after_hwframe
+            |          0x7f656163d9ee
+            |          0x7f6561635b7b
+            |          
+            |--0.69%--slab_update_freelist.isra.0
+            |          __slab_free
+            |          
+            |--0.63%--__memcg_slab_free_hook
+            |          kmem_cache_free
+            |          packet_recvmsg
+            |          sock_recvmsg
+            |          __sys_recvfrom
+            |          __x64_sys_recvfrom
+            |          do_syscall_64
+            |          entry_SYSCALL_64_after_hwframe
+            |          0x7f656163d9ee
+            |          0x7f6561635b7b
+            |          
+            |--0.61%--__sys_recvfrom
+            |          __x64_sys_recvfrom
+            |          do_syscall_64
+            |          entry_SYSCALL_64_after_hwframe
+            |          0x7f656163d9ee
+            |          0x7f6561635b7b
+            |          
+             --0.59%--__slab_free
+                       |          
+                        --0.54%--kmem_cache_free
+                                  packet_recvmsg
+                                  sock_recvmsg
+                                  __sys_recvfrom
+                                  __x64_sys_recvfrom
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  0x7f656163d9ee
+                                  0x7f6561635b7b
+
+     2.38%  snf-capture  snuffles           [.] dissect_packet
+            |          
+             --0.51%--key_hash
+                       |          
+                        --0.50%--session_table_update
+                                  capture_thread_fn
+                                  0x7f6561635b7b
+
+     2.27%  snf-capture  [kernel.kallsyms]  [k] _copy_to_iter
+     2.09%  snf-capture  [kernel.kallsyms]  [k] __sys_recvfrom
+            |          
+             --1.01%--entry_SYSRETQ_unsafe_stack
+                       0x7f656163d9ee
+                       0x7f6561635b7b
+
+     2.04%  snf-capture  [kernel.kallsyms]  [k] srso_alias_untrain_ret
+            |          
+             --1.06%--entry_SYSRETQ_unsafe_stack
+                       0x7f656163d9ee
+                       0x7f6561635b7b
+
+     1.97%  snf-capture  [kernel.kallsyms]  [k] do_syscall_64
+     1.94%  snf-capture  [kernel.kallsyms]  [k] __slab_free
+     1.93%  snf-capture  [kernel.kallsyms]  [k] packet_recvmsg
+     1.81%  snf-capture  [kernel.kallsyms]  [k] pipe_write
+            |          
+             --0.50%--packet_recvmsg
+                       sock_recvmsg
+                       __sys_recvfrom
+                       __x64_sys_recvfrom
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7f656163d9ee
+                       0x7f6561635b7b
+
+     1.64%  snf-capture  [kernel.kallsyms]  [k] vfs_write
+            |          
+             --0.76%--_copy_to_iter
+                       __skb_datagram_iter
+                       skb_copy_datagram_iter
+                       packet_recvmsg
+                       sock_recvmsg
+                       __sys_recvfrom
+                       __x64_sys_recvfrom
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7f656163d9ee
+                       0x7f6561635b7b
+
+     1.56%  snf-capture  [kernel.kallsyms]  [k] srso_alias_safe_ret
+     1.55%  snf-capture  [kernel.kallsyms]  [k] __check_object_size
+     1.42%  snf-capture  [kernel.kallsyms]  [k] entry_SYSCALL_64
+            |          
+             --0.70%--entry_SYSRETQ_unsafe_stack
+                       0x7f656163d9ee
+                       0x7f6561635b7b
+
+     1.20%  snf-capture  snuffles           [.] capture_thread_fn
+     1.16%  snf-capture  libc.so.6          [.] 0x000000000009a9ee
+     1.10%  snf-capture  [kernel.kallsyms]  [k] ksys_write
+     1.10%  snf-capture  [kernel.kallsyms]  [k] kmem_cache_free
+     1.06%  snf-capture  [kernel.kallsyms]  [k] syscall_exit_to_user_mode
+     0.97%  snf-capture  [kernel.kallsyms]  [k] entry_SYSCALL_64_after_hwframe
+     0.96%  snf-capture  [kernel.kallsyms]  [k] fdget
