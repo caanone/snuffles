@@ -22,6 +22,11 @@
   so the raw build's ceiling roughly doubles. When the kernel cannot set
   up the ring (ENOMEM, pre-3.2 kernel) a note is printed and the previous
   `recvmmsg` + `SO_RCVBUF` path is used. `ss -0 -e -m` shows the ring.
+  The in-kernel filter now returns `-s` as its accepting value (an
+  accept-all program is attached when there is no `-f`), so the kernel
+  copies at most snaplen bytes of a frame into the ring, as libpcap's
+  filters do; a TCP bulk transfer over `lo` under `-s 128` no longer costs
+  the sender a 64 KiB copy per segment.
 
 ### Fixed
 - **Raw build: frames were delivered unfiltered before `-f` took effect.**

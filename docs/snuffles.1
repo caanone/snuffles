@@ -36,7 +36,11 @@ BPF capture filter. libpcap build: full pcap syntax. Raw\-socket build
 Stop after \fIcount\fR packets.
 .TP
 .BI \-s " snaplen"
-Snapshot length in bytes (64\-65535, default 65535).
+Snapshot length in bytes (64\-65535, default 65535). Raw\-socket build
+(Linux): applied in the kernel through the filter program's return value,
+so at most \fIsnaplen\fR bytes of each frame are copied into the capture
+buffer, with or without
+.BR \-f .
 .TP
 .BI \-b " ring"
 Ring buffer size in packets (16\-1000000, default 10000).
