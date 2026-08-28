@@ -409,12 +409,26 @@ Non-TCP (empty TCP fields):
 
 Packets to/from the syslog destination are automatically excluded.
 
+### Delivery
+
+Records are queued on the capture thread and handed to the kernel in
+batches of up to 32 with one non-blocking `sendmmsg(2)` (Linux; one
+non-blocking `sendto(2)` per record elsewhere). A batch leaves as soon as
+the capture loop goes idle, so a record never waits longer than one
+dispatch cycle (<= 100 ms) at low rates. The socket gets a 16 MB send
+buffer (`SO_SNDBUFFORCE`, needing the root/CAP_NET_ADMIN snuffles still
+holds at that point; unprivileged it falls back to `SO_SNDBUF`, which the
+kernel caps at `net.core.wmem_max`). When even that fills — a slow or absent
+collector, NIC backpressure — the capture thread never blocks: those
+datagrams are dropped and counted as `syslog_fail` in `--stats`, and
+capture (and the kernel drop counters) carry on unaffected.
+
 ### Memory
 
 | Mode | Memory |
 |------|--------|
-| `-q --syslog` | ~16KB (64 slots x 256 bytes, no sessions) |
-| `--no-ui --syslog` | ~16KB + stdout buffering |
+| `-q --syslog` | ~16KB ring (64 slots x 256 bytes, no sessions) + 18KB syslog batch |
+| `--no-ui --syslog` | same + stdout buffering |
 | TUI + syslog | Full ring buffer + sessions |
 
 ---
@@ -488,7 +502,7 @@ sudo ./snuffles -i en0 -c 100 -o capture.json
 - **Silent mode**: capture thread only, main thread sleeps
 - **Session table**: normalized 5-tuple, 100K cap, LRU eviction
 - **Display filter**: recursive descent, 48-node fixed AST
-- **Syslog**: single UDP socket, stack buffer, loop guard
+- **Syslog**: single UDP socket (16 MB send buffer), 32-record batch, non-blocking `sendmmsg`, loop guard
 
 ---
 
