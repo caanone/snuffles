@@ -83,6 +83,12 @@ if(BUILD_TESTING)
         target_link_libraries(test_${t} PRIVATE Threads::Threads m)
         add_test(NAME ${t} COMMAND test_${t})
     endforeach()
+    # export_json.c also walks the ring through the display filter
+    add_executable(test_export_json tests/test_export_json.c src/export_json.c
+                   src/filter.c src/ringbuf.c)
+    target_include_directories(test_export_json PRIVATE include src)
+    target_link_libraries(test_export_json PRIVATE Threads::Threads m)
+    add_test(NAME export_json COMMAND test_export_json)
 endif()
 
 # Install
