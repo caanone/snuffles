@@ -5,6 +5,7 @@ snuffles \- lightweight terminal network packet analyzer
 .B snuffles
 [\fB\-i\fR \fIiface\fR] [\fB\-r\fR \fIfile.pcap\fR] [\fB\-f\fR \fIfilter\fR]
 [\fB\-c\fR \fIcount\fR] [\fB\-s\fR \fIsnaplen\fR] [\fB\-b\fR \fIring\fR]
+[\fB\-B\fR \fIMB\fR] [\fB\-\-immediate\fR]
 [\fB\-o\fR \fIfile\fR] [\fB\-w\fR \fIfile\fR] [\fB\-\-no\-ui\fR] [\fB\-\-jsonl\fR]
 [\fB\-q\fR] [\fB\-\-syslog\fR \fIhost:port\fR] [\fB\-\-list\-ifaces\fR]
 .SH DESCRIPTION
@@ -39,6 +40,19 @@ Snapshot length in bytes (64\-65535, default 65535).
 .TP
 .BI \-b " ring"
 Ring buffer size in packets (16\-1000000, default 10000).
+.TP
+.BI \-B " MB"
+Kernel capture buffer size in megabytes (1\-4096, default 64; libpcap build
+only). This is the buffer the kernel fills while the capture thread is not
+scheduled, so it decides how much burst or scheduling jitter can be absorbed
+before the kernel drops packets. Values above 2047 are clamped to libpcap's
+2\ GB limit, and the kernel may cap or shrink the request further.
+.TP
+.B \-\-immediate
+Deliver every packet as soon as it arrives instead of in 10\ ms batches
+(libpcap build only). Lower per\-packet latency at a higher per\-packet CPU
+cost; on Linux this also switches libpcap from TPACKET_V3 blocks to a
+per\-frame ring.
 .TP
 .BI \-o " file"
 Export the ring buffer on exit; format chosen by extension
@@ -122,6 +136,7 @@ pairs with the keys
 .BR interface ,
 .BR snaplen " (64\-65535),"
 .BR ring_size " (16\-1000000),"
+.BR buffer_mb " (1\-4096),"
 .BR promisc " (0/1),"
 .BR syslog ", and"
 .BR syslog_iface .
