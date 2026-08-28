@@ -1,6 +1,7 @@
 #include "ringbuf.h"
 #include "test_common.h"
 #include <pthread.h>
+#include <sched.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -264,10 +265,114 @@ static void test_wakeup_quiet(void) {
     ringbuf_destroy(rb);
 }
 
+/* ── consumer position / producer back-pressure ──────────────── */
+
+static void test_backpressure_basic(void) {
+    ringbuf_t *rb = ringbuf_create(8, 64);
+    CHECK(rb != NULL);
+
+    /* no consumer attached: never blocks, even after wrapping */
+    CHECK(ringbuf_consumer_seq(rb) == RINGBUF_NO_CONSUMER);
+    for (int i = 0; i < 20; i++) {
+        CHECK(ringbuf_producer_may_write(rb) == 1);
+        push(rb, (uint8_t)i);
+    }
+
+    /* attach at 0: capacity 8 leaves 6 records of headroom (one slot of
+     * slack for the record being overwritten) */
+    ringbuf_destroy(rb);
+    rb = ringbuf_create(8, 64);
+    ringbuf_consumer_attach(rb);
+    CHECK(ringbuf_consumer_seq(rb) == 0);
+    for (int i = 0; i < 6; i++) {
+        CHECK(ringbuf_producer_may_write(rb) == 1);
+        push(rb, (uint8_t)i);
+    }
+    CHECK(ringbuf_total(rb) == 6);
+    CHECK(ringbuf_producer_may_write(rb) == 1);    /* 6 < 7 */
+    push(rb, 6);
+    CHECK(ringbuf_producer_may_write(rb) == 0);    /* 7 < 7 fails */
+
+    /* every unread record is still intact */
+    pkt_record_t rec;
+    for (uint64_t s = 0; s < 7; s++) {
+        CHECK(ringbuf_read_seq(rb, s, &rec, NULL) == 1);
+        CHECK(rec.summary.length == s);
+    }
+
+    /* consumer advances: one record of room per published sequence */
+    ringbuf_consumer_publish(rb, 1);
+    CHECK(ringbuf_producer_may_write(rb) == 1);
+    push(rb, 7);
+    CHECK(ringbuf_producer_may_write(rb) == 0);
+    ringbuf_consumer_publish(rb, 7);
+    CHECK(ringbuf_producer_may_write(rb) == 1);
+    /* a consumer that is fully caught up never blocks the producer */
+    ringbuf_consumer_publish(rb, ringbuf_total(rb));
+    CHECK(ringbuf_producer_may_write(rb) == 1);
+    ringbuf_destroy(rb);
+}
+
+/* A producer that honours may_write and a deliberately slow consumer that
+ * publishes its position: every record must be read intact, in order,
+ * with no misses — the property the offline replay relies on. */
+#define BP_N   50000ULL
+#define BP_CAP 32u
+
+static void *bp_producer(void *arg) {
+    ringbuf_t *rb = (ringbuf_t *)arg;
+    for (uint64_t s = 0; s < BP_N; s++) {
+        while (!ringbuf_producer_may_write(rb))
+            sched_yield();
+        pkt_record_t *r = ringbuf_producer_next(rb);
+        r->summary.length = (uint32_t)s;
+        r->raw_len = 8;
+        memset(r->raw_data, (int)(s & 0xff), 8);
+        ringbuf_producer_commit(rb);
+    }
+    return NULL;
+}
+
+static void test_backpressure_threads(void) {
+    ringbuf_t *rb = ringbuf_create(BP_CAP, 64);
+    CHECK(rb != NULL);
+    ringbuf_consumer_attach(rb);
+
+    pthread_t prod;
+    pthread_create(&prod, NULL, bp_producer, rb);
+
+    uint64_t next = 0, misses = 0, bad = 0, max_lag = 0;
+    uint8_t data[64];
+    while (next < BP_N) {
+        uint64_t total = ringbuf_total(rb);
+        if (total <= next) { sched_yield(); continue; }
+        if (total - next > max_lag) max_lag = total - next;
+        pkt_record_t rec;
+        if (!ringbuf_read_seq(rb, next, &rec, data)) {
+            misses++;
+        } else if (rec.summary.length != (uint32_t)next ||
+                   data[0] != (uint8_t)(next & 0xff)) {
+            bad++;
+        }
+        next++;
+        ringbuf_consumer_publish(rb, next);
+        if (next % 97 == 0) wake_nap();    /* slow consumer: ring fills */
+    }
+    pthread_join(prod, NULL);
+
+    CHECK(misses == 0);
+    CHECK(bad == 0);
+    CHECK(max_lag <= BP_CAP - 1);          /* producer never lapped us */
+    CHECK(ringbuf_total(rb) == BP_N);
+    ringbuf_destroy(rb);
+}
+
 int main(void) {
     test_basic();
     test_stress();
     test_wakeup();
     test_wakeup_quiet();
+    test_backpressure_basic();
+    test_backpressure_threads();
     TEST_MAIN_END();
 }

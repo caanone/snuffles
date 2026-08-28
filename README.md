@@ -158,6 +158,10 @@ Options:
   -q, --quiet         Silent mode (no output, use with --syslog)
   --syslog <host:port> Forward packets via UDP syslog
   --syslog-iface <ip|dev>  Source interface/IP for syslog
+  --stats[=FILE]      Capture/drop counters every second and at exit
+  --no-summary        Headless modes: no counters line at exit
+  --cpu <N>           Pin the capture thread to CPU N (Linux)
+  --rt                SCHED_FIFO priority 1 for the capture thread (root)
   --immediate         Per-packet delivery instead of 10 ms batches (libpcap build)
   --list-ifaces       List interfaces and exit
   -v                  Version info
@@ -200,6 +204,12 @@ sudo ./snuffles -i eth0 -q -w - | wireshark -k -i -
 # JSON Lines into jq
 sudo ./snuffles -i en0 --jsonl | jq -r '.dst_ip'
 
+# Capture thread alone on CPU 3 at real-time priority, consumer elsewhere
+sudo ./snuffles -i eth0 --jsonl --cpu 3 --rt > packets.jsonl
+
+# Ask a running headless capture for its counters
+kill -USR1 $(pidof snuffles)
+
 # List interfaces
 ./snuffles --list-ifaces
 ```
@@ -221,6 +231,8 @@ buffer_mb    = 64              # 1-2047, kernel capture buffer
 promisc      = 1               # 0 or 1
 syslog       = 10.0.0.100:514
 syslog_iface = 192.168.1.5
+cpu          = 3               # pin the capture thread (Linux)
+rt           = 0               # 1: SCHED_FIFO capture thread (root)
 
 # Saved display-filter presets (name: alnum/_/-, max 31 chars)
 preset web = tcp and (port 80 or port 443)
@@ -425,6 +437,33 @@ kernel caps at `net.core.wmem_max`). When even that fills — a slow or absent
 collector, NIC backpressure — the capture thread never blocks: those
 datagrams are dropped and counted as `syslog_fail` in `--stats`, and
 capture (and the kernel drop counters) carry on unaffected.
+
+### Counters, summary and placement
+
+Headless modes (`--no-ui`, `--jsonl`, `-q`) print one `summary ...` line to
+stderr at exit — captured, kernel drops (`kdrop`), interface drops, records
+the consumer missed, syslog/stream counts, sessions — even without
+`--stats`; `--no-summary` turns it off, `--stats` adds the same line every
+second (`--stats=FILE` sends everything to a file). `kill -USR1 <pid>`
+prints a `stats ...` line on demand. If the kernel dropped packets, a hint
+follows the summary (`try -B <bigger>, -s <smaller>, -q, or --cpu`), and a
+frame longer than 1518 bytes on a non-jumbo interface warns once about
+GRO/GSO super-frames (`ethtool -K <if> gro off gso off tso off` restores
+wire-sized frames).
+
+`--cpu N` pins the capture thread to CPU N and keeps the headless consumer
+(and the stats thread) on the other CPUs; `--rt` runs the capture thread
+at `SCHED_FIFO` priority 1 (set before privileges are dropped, so it needs
+root or `CAP_SYS_NICE`; unprivileged it warns and continues). Both are
+Linux features (`--rt` also works on other POSIX systems); both have config
+keys (`cpu`, `rt`). Use `--rt` together with `--cpu` on machines with
+spare cores: a real-time capture thread that saturates its CPU starves
+whatever else was scheduled there.
+
+Reading a file with `-r` into a headless consumer never loses records: the
+reader waits for the consumer instead of lapping the ring, so
+`snuffles -r big.pcap --jsonl | slow-tool` emits every packet with
+`missed=0` regardless of `-b`.
 
 ### Memory
 
