@@ -12,6 +12,10 @@
 #define RAWRING_BLOCK_SIZE  (256u * 1024u)  /* one block = one wakeup */
 #define RAWRING_FRAME_SIZE  2048u           /* unused by V3, required */
 #define RAWRING_RETIRE_MS   10u             /* block retire timeout */
+/* Packing alignment of the entries inside a block: the kernel's
+ * V3_ALIGNMENT (af_packet.c), which the uapi header does not export.
+ * Not TPACKET_ALIGNMENT (16), which applies to the V1/V2 frame layout. */
+#define RAWRING_V3_ALIGN    8u
 
 typedef struct {
     uint32_t block_size;    /* multiple of the page size */
