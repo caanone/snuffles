@@ -12,10 +12,15 @@
 # Flags (all subcommands accept the ones they need):
 #   -d DEV            device (default eth0)
 #   --cpus a,b,c      kpktgend CPUs to program (default 0)
-#   --size N          wire size incl. Ethernet+FCS (pkt_size = N-4; default 64)
+#   --size N          wire size incl. Ethernet+FCS (pkt_size = N-4; default 64).
+#                     May be a comma list mapped positionally onto --cpus for a
+#                     per-thread size mix (IMIX), e.g. --cpus 4,5,6 --size
+#                     64,570,1518; a single value applies to every cpu.
 #   --dst-mac MAC     destination MAC
 #   --dst-ip  IP      destination IP
-#   --pps N           per-thread rate (0 = unlimited; sets ratep when >0)
+#   --pps N           per-thread rate (0 = unlimited; sets ratep when >0). Like
+#                     --size, may be a comma list mapped onto --cpus (per-thread
+#                     rate weighting for IMIX); a single value applies to all.
 #   --flows N         1 = fixed 5-tuple; N>1 => IPSRC_RND+UDPSRC_RND over N srcs
 #   --src-ip IP       source IP when flows==1 (default 10.77.0.11)
 #   --clone N         clone_skb (default 1000)
@@ -94,15 +99,30 @@ do_stop() {
     pgw "$PG/pgctrl" stop
 }
 
+# nth <index> <default> <csv> : echo the index-th comma field of <csv>, or the
+# sole field if the list has one element, or <default> if empty. 0-based index.
+nth() {
+    local idx=$1 def=$2 csv=$3
+    local IFS=,; set -- $csv
+    [ $# -eq 0 ] && { echo "$def"; return; }
+    [ $# -eq 1 ] && { echo "$1"; return; }
+    idx=$(( idx + 1 ))
+    [ "$idx" -le $# ] && eval "echo \${$idx}" || echo "$def"
+}
+
 do_start() {
     need_pktgen
     [ -n "$DST_MAC" ] || die "start needs --dst-mac"
     [ -n "$DST_IP" ] || die "start needs --dst-ip"
-    local pkt_size=$((SIZE - 4))
-    [ "$pkt_size" -ge 42 ] || die "size too small ($SIZE); pkt_size must be >= 42"
 
-    local cpu dev
+    local cpu dev i=0
     for cpu in $(cpu_list); do
+        # per-cpu size/rate: SIZE/PPS may be comma lists mapped onto --cpus
+        local wire pkt_size rate
+        wire=$(nth "$i" "$SIZE" "$SIZE")
+        rate=$(nth "$i" "$PPS" "$PPS")
+        pkt_size=$((wire - 4))
+        [ "$pkt_size" -ge 42 ] || die "size too small ($wire on cpu $cpu); pkt_size must be >= 42"
         [ -e "$PG/kpktgend_$cpu" ] || die "no $PG/kpktgend_$cpu (cpu $cpu not available to pktgen here)"
         dev="${DEV}@${cpu}"
         pgw "$PG/kpktgend_$cpu" "rem_device_all"
@@ -136,9 +156,10 @@ do_start() {
             pgw "$f" "src_max $SRC_IP"
         fi
         pgw "$f" "flag NO_TIMESTAMP"
-        if [ "$PPS" -gt 0 ]; then
-            pgw "$f" "ratep $PPS"
+        if [ "$rate" -gt 0 ] 2>/dev/null; then
+            pgw "$f" "ratep $rate"
         fi
+        i=$(( i + 1 ))
     done
 
     # "start" blocks until all threads finish; count 0 never finishes on its

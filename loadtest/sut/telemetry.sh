@@ -21,6 +21,30 @@ out=$2
 IFACES=(br0 p1 p2 p3 p4 p5 mgmt0)
 PAGE_KB=$(( $(getconf PAGESIZE 2>/dev/null || echo 4096) / 1024 ))
 
+# SUT CPUs whose clock we sample for the cycles/packet estimate. Prefer the
+# container's effective cpuset (so stand-in configs adapt); fall back to the
+# SPEC's fixed SUT cpuset 2,3,10,11. Expand a "2-3,10-11" range list to
+# "2 3 10 11".
+expand_cpulist() {
+    local part a b c out=""
+    IFS=, read -ra _parts <<< "$1"
+    for part in "${_parts[@]}"; do
+        if [[ $part == *-* ]]; then
+            a=${part%-*}; b=${part#*-}
+            for ((c = a; c <= b; c++)); do out+="$c "; done
+        elif [[ $part =~ ^[0-9]+$ ]]; then
+            out+="$part "
+        fi
+    done
+    printf '%s' "${out% }"
+}
+SUT_CPUS="2 3 10 11"
+if _cs=$(cat /sys/fs/cgroup/cpuset.cpus.effective 2>/dev/null) && [[ -n $_cs ]]; then
+    _exp=$(expand_cpulist "$_cs")
+    [[ -n $_exp ]] && SUT_CPUS=$_exp
+fi
+read -ra SUT_CPU_ARR <<< "$SUT_CPUS"
+
 pid=""
 if [[ $target =~ ^[0-9]+$ ]]; then
     pid=$target
@@ -177,15 +201,30 @@ sample_misc() {                    # sets MEM_JSON LOAD_JSON
     LOAD_JSON="[$l1,$l2,$l3]"
 }
 
+sample_cpumhz() {                  # sets CPUMHZ_JSON = mean "cpu MHz" of SUT_CPUS
+    # /proc/cpuinfo (host-wide in a privileged container) lists a "processor"
+    # id and its "cpu MHz" per core. Average the SUT cores' current clock so
+    # analyze.py can turn capture CPU% into cycles/packet. null if the field
+    # is absent (some kernels/governors do not expose per-core MHz here).
+    CPUMHZ_JSON=$(awk -v want="$SUT_CPUS" '
+        BEGIN { n = split(want, a, " "); for (i = 1; i <= n; i++) sel[a[i]] = 1; cur = -1 }
+        /^processor[ \t]*:/ { cur = $3 }
+        /^cpu MHz[ \t]*:/   { if (cur in sel) { sum += $4; cnt++ } }
+        END { if (cnt > 0) printf "%.3f", sum / cnt; else printf "null" }
+    ' /proc/cpuinfo 2>/dev/null)
+    [[ -n $CPUMHZ_JSON ]] || CPUMHZ_JSON=null
+}
+
 emit() {
     sample_proc
     sample_softnet
     sample_ifaces
     sample_pktsock
     sample_misc
-    printf '{"t":%s,"proc":%s,"threads":%s,"softnet":%s,"ifaces":%s,"pktsock":%s,"mem_current":%s,"loadavg":%s}\n' \
+    sample_cpumhz
+    printf '{"t":%s,"proc":%s,"threads":%s,"softnet":%s,"ifaces":%s,"pktsock":%s,"mem_current":%s,"cpu_mhz":%s,"loadavg":%s}\n' \
         "$EPOCHREALTIME" "$PROC_JSON" "$THREADS_JSON" "$SOFTNET_JSON" "$IFACES_JSON" \
-        "$PKTSOCK_JSON" "$MEM_JSON" "$LOAD_JSON" >&3
+        "$PKTSOCK_JSON" "$MEM_JSON" "$CPUMHZ_JSON" "$LOAD_JSON" >&3
 }
 
 # interruptible sleep (trap fires immediately instead of after `sleep` ends)
