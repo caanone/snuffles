@@ -1,4 +1,8 @@
+#ifdef __linux__
+  #define _GNU_SOURCE   /* sendmmsg(), struct mmsghdr */
+#endif
 #include "syslog_out.h"
+#include <errno.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,17 +16,22 @@
   #include <ws2tcpip.h>
   typedef SOCKET sock_t;
   #define SOCK_INVALID INVALID_SOCKET
+  #define SEND_FLAGS 0          /* socket is switched to FIONBIO instead */
 #else
   #include <unistd.h>
   #include <sys/socket.h>
+  #include <sys/uio.h>
   #include <netinet/in.h>
   #include <arpa/inet.h>
   #include <netdb.h>
   typedef int sock_t;
   #define SOCK_INVALID (-1)
+  #define SEND_FLAGS MSG_DONTWAIT
 #endif
 
 #define SYSLOG_DEFAULT_PORT 514
+#define SYSLOG_MSG_MAX      512                 /* one formatted CSV record */
+#define SYSLOG_SNDBUF       (16 * 1024 * 1024)  /* kernel send queue, bytes */
 
 #ifdef _WIN32
 /* socket()/getaddrinfo() fail with WSANOTINITIALISED unless Winsock is
@@ -47,7 +56,55 @@ struct syslog_out {
     uint16_t            src_port;      /* our bound port, for the self-check */
     atomic_uint_fast64_t sent;
     atomic_uint_fast64_t failed;
+
+    /* Outgoing batch, owned by the capture thread. Records are formatted
+     * straight into msgs[] and leave in one sendmmsg() (Linux) when the
+     * batch is full or the capture loop flushes on idle. */
+    unsigned            nbatch;
+    int                 lens[SYSLOG_BATCH];
+    char                msgs[SYSLOG_BATCH][SYSLOG_MSG_MAX];
+#ifdef __linux__
+    struct iovec        iov[SYSLOG_BATCH];
+    struct mmsghdr      mm[SYSLOG_BATCH];
+#endif
 };
+
+/* ── Send buffer: 16 MB so a slow collector or NIC backpressure is absorbed
+ *    in the kernel instead of stalling the capture thread ────────────── */
+
+static void set_sndbuf(syslog_out_t *sl) {
+    int want = SYSLOG_SNDBUF;
+    int done = 0;
+#if defined(__linux__) && defined(SO_SNDBUFFORCE)
+    /* Ignores net.core.wmem_max; needs CAP_NET_ADMIN, which is why the
+     * socket is opened before privileges are dropped. */
+    if (setsockopt(sl->sock, SOL_SOCKET, SO_SNDBUFFORCE,
+                   &want, sizeof(want)) == 0)
+        done = 1;
+#endif
+    /* Plain SO_SNDBUF is clipped to wmem_max (Linux) or rejected outright
+     * when above the platform ceiling (macOS): halve until it sticks. */
+    for (int v = want; !done && v >= 256 * 1024; v /= 2) {
+        if (setsockopt(sl->sock, SOL_SOCKET, SO_SNDBUF,
+                       (const char *)&v, sizeof(v)) == 0)
+            done = 1;
+    }
+
+    int got = 0;
+    socklen_t gl = sizeof(got);
+    if (getsockopt(sl->sock, SOL_SOCKET, SO_SNDBUF, (char *)&got, &gl) != 0)
+        got = 0;
+    /* Linux reports twice the requested value (bookkeeping overhead);
+     * anything below the request means the kernel clipped it. */
+    if (got < want)
+        fprintf(stderr, "syslog: send buffer limited to %d KB by the "
+                        "kernel (wanted %d KB"
+#ifdef __linux__
+                        "; raise net.core.wmem_max or run with CAP_NET_ADMIN"
+#endif
+                        ")\n",
+                got / 1024, want / 1024);
+}
 
 /* ── Create: parse host:port, resolve, open UDP socket ───────── */
 
@@ -113,6 +170,13 @@ syslog_out_t *syslog_out_create(const char *host_port, const char *src_iface) {
         return NULL;
     }
 
+    set_sndbuf(sl);
+#ifdef _WIN32
+    /* No MSG_DONTWAIT on Winsock: make the socket itself non-blocking. */
+    u_long nb = 1;
+    (void)ioctlsocket(sl->sock, FIONBIO, &nb);
+#endif
+
     /* bind to source interface/IP if specified */
     if (src_iface && src_iface[0]) {
         struct sockaddr_in src_addr;
@@ -155,6 +219,17 @@ syslog_out_t *syslog_out_create(const char *host_port, const char *src_iface) {
     }
     sl->src_port = ntohs(local.sin_port);
 
+#ifdef __linux__
+    /* Fixed parts of the sendmmsg() vector; only iov_len varies per flush. */
+    for (unsigned i = 0; i < SYSLOG_BATCH; i++) {
+        sl->iov[i].iov_base           = sl->msgs[i];
+        sl->mm[i].msg_hdr.msg_name    = &sl->dest;
+        sl->mm[i].msg_hdr.msg_namelen = sizeof(sl->dest);
+        sl->mm[i].msg_hdr.msg_iov     = &sl->iov[i];
+        sl->mm[i].msg_hdr.msg_iovlen  = 1;
+    }
+#endif
+
     fprintf(stderr, "Syslog output: %s:%u (UDP)\n", sl->dest_ip, port);
     return sl;
 }
@@ -191,7 +266,7 @@ int syslog_out_is_self(const syslog_out_t *sl, const pkt_summary_t *pkt) {
     return 0;
 }
 
-/* ── Send: format CSV + sendto ───────────────────────────────── */
+/* ── Send: format CSV into the batch ─────────────────────────── */
 
 void syslog_out_send(syslog_out_t *sl, const pkt_summary_t *pkt) {
     if (!sl || sl->sock == SOCK_INVALID) return;
@@ -213,7 +288,7 @@ void syslog_out_send(syslog_out_t *sl, const pkt_summary_t *pkt) {
         flags[fp] = '\0';
     }
 
-    char msg[512];
+    char *msg = sl->msgs[sl->nbatch];
     int len;
 
     /* always 16 fields:
@@ -221,7 +296,7 @@ void syslog_out_send(syslog_out_t *sl, const pkt_summary_t *pkt) {
        ttl,ip_id,ip_checksum,frag,flags,seq,ack,window,tcp_checksum
        non-TCP packets have empty values for TCP-specific fields */
     if (pkt->l4_proto == PROTO_TCP) {
-        len = snprintf(msg, sizeof(msg),
+        len = snprintf(msg, SYSLOG_MSG_MAX,
             "%s,%u,%s,%u,%ld,%u,%s,"
             "%u,%u,0x%04x,0x%04x,%s,%u,%u,%u,0x%04x\n",
             pkt->src_ip, pkt->src_port,
@@ -233,7 +308,7 @@ void syslog_out_send(syslog_out_t *sl, const pkt_summary_t *pkt) {
             flags, pkt->tcp_seq, pkt->tcp_ack,
             pkt->tcp_window, pkt->tcp_checksum);
     } else {
-        len = snprintf(msg, sizeof(msg),
+        len = snprintf(msg, SYSLOG_MSG_MAX,
             "%s,%u,%s,%u,%ld,%u,%s,"
             "%u,%u,0x%04x,0x%04x,,,,,\n",
             pkt->src_ip, pkt->src_port,
@@ -244,13 +319,55 @@ void syslog_out_send(syslog_out_t *sl, const pkt_summary_t *pkt) {
             pkt->ip_checksum, pkt->ip_frag_off);
     }
 
-    if (len > 0) {
-        if (sendto(sl->sock, msg, (size_t)len, 0,
+    if (len <= 0) return;
+    if (len >= SYSLOG_MSG_MAX) len = SYSLOG_MSG_MAX - 1;  /* cannot happen: bounded fields */
+    sl->lens[sl->nbatch++] = len;
+
+    if (sl->nbatch == SYSLOG_BATCH)
+        syslog_out_flush(sl);
+}
+
+/* ── Flush: hand the batch to the kernel without ever blocking ── */
+
+void syslog_out_flush(syslog_out_t *sl) {
+    if (!sl || sl->nbatch == 0) return;
+    unsigned n = sl->nbatch;
+    sl->nbatch = 0;
+
+#ifdef __linux__
+    for (unsigned i = 0; i < n; i++)
+        sl->iov[i].iov_len = (size_t)sl->lens[i];
+
+    unsigned off = 0;
+    while (off < n) {
+        int r = sendmmsg(sl->sock, sl->mm + off, n - off, MSG_DONTWAIT);
+        if (r > 0) {
+            atomic_fetch_add_explicit(&sl->sent, (uint64_t)r, memory_order_relaxed);
+            off += (unsigned)r;
+            continue;   /* short count: the message at 'off' failed; retry
+                           from there (a persisting error ends the batch
+                           below, so this loop is bounded by n) */
+        }
+        if (r < 0 && errno == EINTR) continue;
+        /* EAGAIN/ENOBUFS (send queue full) or a hard error: drop the rest
+         * of the batch rather than wait for room. The capture thread must
+         * never stall here, or the kernel drops captured packets instead. */
+        atomic_fetch_add_explicit(&sl->failed, (uint64_t)(n - off), memory_order_relaxed);
+        break;
+    }
+#else
+    for (unsigned i = 0; i < n; i++) {
+        if (sendto(sl->sock, sl->msgs[i], (size_t)sl->lens[i], SEND_FLAGS,
                    (struct sockaddr *)&sl->dest, sizeof(sl->dest)) < 0)
             atomic_fetch_add_explicit(&sl->failed, 1, memory_order_relaxed);
         else
             atomic_fetch_add_explicit(&sl->sent, 1, memory_order_relaxed);
     }
+#endif
+}
+
+unsigned syslog_out_pending(const syslog_out_t *sl) {
+    return sl ? sl->nbatch : 0;
 }
 
 void syslog_out_counts(const syslog_out_t *sl, uint64_t *sent, uint64_t *failed) {
@@ -264,6 +381,7 @@ void syslog_out_counts(const syslog_out_t *sl, uint64_t *sent, uint64_t *failed)
 
 void syslog_out_destroy(syslog_out_t *sl) {
     if (!sl) return;
+    syslog_out_flush(sl);   /* capture thread is joined by now: nothing races */
     if (sl->sock != SOCK_INVALID) {
 #ifdef _WIN32
         closesocket(sl->sock);

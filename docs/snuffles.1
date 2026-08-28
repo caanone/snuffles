@@ -60,7 +60,15 @@ Headless mode emitting one JSON object per packet (JSON Lines).
 No terminal output at all; use with \fB\-\-syslog\fR or \fB\-w\fR.
 .TP
 .BI \-\-syslog " host:port"
-Forward per\-packet CSV records over UDP syslog.
+Forward per\-packet CSV records over UDP syslog. Records are batched (up
+to 32 per non\-blocking
+.BR sendmmsg (2)
+on Linux) and flushed whenever the capture loop goes idle; the socket gets a
+16\ MB send buffer. Datagrams the kernel cannot queue are dropped, never
+waited for, and counted as
+.I syslog_fail
+by
+.BR \-\-stats .
 .TP
 .BI \-\-syslog\-iface " ip|dev"
 Source address or device for syslog datagrams.
