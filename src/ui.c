@@ -59,6 +59,7 @@
 #define UI_HEARTBEAT_US  250000u    /* idle redraw interval */
 #define UI_SNAPSHOT_US   250000u    /* session-table snapshot interval */
 #define UI_WAIT_MAX_US    50000u    /* wait bound: stop/capture-state latency */
+#define UI_WAIT_LOAD_US    5000u    /* wait bound while packets are pending */
 #define UI_WAIT_MIN_US     1000u    /* floor for the ring-wrap bound below */
 
 static uint64_t ui_now_us(void) {
@@ -1516,20 +1517,30 @@ static void ui_wait(int notify_fd, uint64_t timeout_us) {
 #endif
 
 /* How long the loop may sleep before the next frame is due. While
- * packets are flowing the sleep is also bounded so that, at the rate seen
- * over the previous iteration, the ring cannot lap more than half its
- * capacity: sync_stats reads records by sequence and would otherwise skip
- * whatever the producer overwrote in the meantime. */
+ * packets are pending the sleep is also bounded: sync_stats reads records
+ * by sequence and skips whatever the producer overwrote in the meantime.
+ * The capture side delivers in bursts (TPACKET_V3 retires a block every
+ * 10 ms, so ~10 ms of traffic lands in the ring within a millisecond),
+ * so the bound is a fixed UI_WAIT_LOAD_US -- well under a block time,
+ * whatever the previous iteration's average rate suggested -- and, for
+ * small rings, whatever keeps the ring from lapping more than half its
+ * capacity at that rate. Waking at most 200 times a second costs nothing
+ * measurable; missing a block did (17% of records at 500 kpps with the
+ * default ring). */
 static uint64_t ui_wait_budget(const ui_ctx_t *ctx, uint64_t now_us,
-                               int scheduled, uint64_t rate_pkts,
-                               uint64_t rate_span_us) {
+                               int scheduled, int pending,
+                               uint64_t rate_pkts, uint64_t rate_span_us) {
     uint64_t deadline = ctx->last_frame_us +
                         (scheduled ? UI_FRAME_US : UI_HEARTBEAT_US);
     uint64_t wait = deadline > now_us ? deadline - now_us : 0;
     if (wait > UI_WAIT_MAX_US) wait = UI_WAIT_MAX_US;
-    if (scheduled && rate_pkts > 0 && rate_span_us > 0) {
-        uint64_t wrap_us = (uint64_t)ctx->rb->capacity * rate_span_us / rate_pkts;
-        uint64_t bound   = wrap_us / 2;
+    if (pending) {
+        uint64_t bound = UI_WAIT_LOAD_US;
+        if (rate_pkts > 0 && rate_span_us > 0) {
+            uint64_t wrap_us = (uint64_t)ctx->rb->capacity * rate_span_us /
+                               rate_pkts;
+            if (bound > wrap_us / 2) bound = wrap_us / 2;
+        }
         if (bound < UI_WAIT_MIN_US) bound = UI_WAIT_MIN_US;
         if (wait > bound) wait = bound;
     }
@@ -1601,24 +1612,29 @@ void ui_run(ui_ctx_t *ctx) {
         if (g_async_stop) break;
 
         /* ── Wait ──
-         * Three cases. Idle (nothing pending, nothing to draw): announce
-         * a wait and block on the notify fd, stdin and the heartbeat, so
-         * the first packet after a lull is drawn at once — the producer
-         * pays one wakeup per lull, not one per packet. A frame already
-         * scheduled (packets pending or state dirty): sleep on stdin only
-         * until it is due; nothing to announce, the producer never wakes
-         * us, and whatever arrives meanwhile is picked up in one batch.
-         * A frame due now: no wait. A key interrupts any of them. */
+         * Nothing pending: announce a wait and block on the notify fd,
+         * stdin and the next deadline (the heartbeat when idle, the frame
+         * tick when state is dirty), so the first packet after a lull is
+         * seen at once -- the producer pays one wakeup per lull, not one
+         * per packet. Packets pending: a frame is scheduled; sleep on
+         * stdin only until it is due or the pending bound expires,
+         * whichever is first. Nothing to announce, the producer never
+         * wakes us, and whatever arrives meanwhile is picked up in one
+         * batch. A frame due now: no wait. A key interrupts any of them. */
         uint64_t now       = ui_now_us();
         int      pending   = ringbuf_total(ctx->rb) != seen_total;
         int      scheduled = pending || ctx->dirty;
-        uint64_t wait_us   = ui_wait_budget(ctx, now, scheduled,
+        uint64_t wait_us   = ui_wait_budget(ctx, now, scheduled, pending,
                                             rate_pkts, rate_span_us);
 #ifdef _WIN32
+        /* Polling only (the notify event is not used): a wait with state
+         * dirty is not announced anywhere, so bound it like a pending one
+         * or a block landing during it would be seen a frame late. */
+        if (scheduled && wait_us > UI_WAIT_LOAD_US) wait_us = UI_WAIT_LOAD_US;
         if (wait_us > 0)
             Sleep((DWORD)((wait_us + 999) / 1000));
 #else
-        if (!scheduled) {
+        if (!pending) {
             /* Re-check after announcing: a commit that raced the
              * announcement gets no wakeup (see ringbuf.h). */
             ringbuf_consumer_will_wait(ctx->rb);
