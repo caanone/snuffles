@@ -273,6 +273,11 @@ Press `H` or `?` for the built-in help overlay.
 | Q | Quit |
 | Escape | Cancel input |
 
+The screen is redrawn at most 30 times a second (at once on a key press,
+every 250 ms when nothing changes), whatever the packet rate. The sessions
+view works from a copy of the session table refreshed every 250 ms, or
+immediately when you switch to it, change the sort or page through it.
+
 ---
 
 ## Display Filter

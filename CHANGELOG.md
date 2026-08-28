@@ -13,6 +13,18 @@
   syscall instead of one per packet. Under sustained load the capture
   thread makes no wakeup syscalls at all. `--stats` reports the delivered
   wakeups as `wakeups=`.
+- **TUI frame rate capped at ~30/s; session snapshots rate-limited.** The
+  screen used to be redrawn after every ring wake-up (thousands of
+  full-screen `write()`s per second under load), and the sessions view
+  copied and sorted the whole session table under its lock on every one
+  of them, stalling the capture thread (with 100 k sessions: capture
+  thread at 58%, 23% kernel drops). Frames are now drawn at most every
+  33 ms when something changed, at once on a key press, and every 250 ms
+  otherwise; the sessions view refreshes its snapshot every 250 ms (or
+  immediately on view switch, sort change, page jump or clear) and renders
+  from the cached copy in between. Measured on a 200x50 terminal: UI
+  thread 43% -> 1.6% at 350-530 kpps; sessions view with 100 k sessions
+  100% -> 9% UI, capture thread unblocked (58% -> 82% busy, 0% drops).
 
 ## [1.3.1] — 2026-08-27
 

@@ -125,6 +125,11 @@ pauses,
 quits,
 .B H
 shows help.
+.PP
+The screen is redrawn at most 30 times a second (at once on a key press,
+every 250\ ms when nothing changes), whatever the packet rate. The sessions
+view works from a copy of the session table refreshed every 250\ ms, or
+immediately on a view switch, sort change or page jump.
 .SH EXAMPLES
 .nf
 sudo snuffles \-i eth0
