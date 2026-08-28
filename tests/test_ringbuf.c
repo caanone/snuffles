@@ -3,6 +3,9 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
+#include <sys/select.h>
 
 /* ── single-thread semantics ─────────────────────────────────── */
 
@@ -109,8 +112,132 @@ static void test_stress(void) {
     ringbuf_destroy(g_rb);
 }
 
+/* ── wakeup handshake ────────────────────────────────────────── */
+
+#define WAKE_N     100000ULL
+#define WAKE_PAUSE 10          /* producer naps this many times */
+
+static void *wake_producer(void *arg) {
+    (void)arg;
+    for (uint64_t s = 0; s < WAKE_N; s++) {
+        /* Nap now and then so the consumer drains the ring and actually
+         * blocks: those are the wakeups that must not be lost. */
+        if (s && s % (WAKE_N / WAKE_PAUSE) == 0) {
+            struct timespec nap = { 0, 2000000 };   /* 2 ms */
+            nanosleep(&nap, NULL);
+        }
+        pkt_record_t *r = ringbuf_producer_next(g_rb);
+        r->summary.length = (uint32_t)s;
+        r->raw_len = 0;
+        ringbuf_producer_commit(g_rb);
+    }
+    return NULL;
+}
+
+/* Consumer runs the documented protocol: announce, re-check, block on the
+ * pipe. Every record it reads must be intact, every record it misses must
+ * have been lapped, and no wait may hit the (generous) timeout: a timeout
+ * means a commit landed while we were blocked and nobody woke us. */
+static void test_wakeup(void) {
+    g_rb = ringbuf_create(1024, 16);
+    CHECK(g_rb != NULL);
+    int fd = ringbuf_get_notify_fd(g_rb);
+    CHECK(fd >= 0);
+
+    pthread_t t;
+    pthread_create(&t, NULL, wake_producer, NULL);
+
+    uint64_t last = 0, seen = 0, lapped = 0, bad = 0;
+    uint64_t waits = 0, blocks = 0, timeouts = 0;
+    pkt_record_t rec;
+    while (last < WAKE_N) {
+        if (ringbuf_total(g_rb) <= last) {
+            ringbuf_consumer_will_wait(g_rb);
+            waits++;
+            if (ringbuf_total(g_rb) <= last) {
+                fd_set fds;
+                FD_ZERO(&fds);
+                FD_SET(fd, &fds);
+                struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+                blocks++;
+                if (select(fd + 1, &fds, NULL, NULL, &tv) == 0) timeouts++;
+            }
+        }
+        ringbuf_drain_notify(g_rb);
+
+        uint64_t total = ringbuf_total(g_rb);
+        while (last < total) {
+            uint64_t oldest = ringbuf_oldest(g_rb);
+            if (last < oldest) { lapped += oldest - last; last = oldest; continue; }
+            /* The index is relative to a moving floor: a read can come
+             * back valid but for a later record, or fail because the slot
+             * was just overwritten. Either way re-evaluate the floor. */
+            if (!ringbuf_read(g_rb, (uint32_t)(last - oldest), &rec, NULL) ||
+                rec.seq_num != last)
+                continue;
+            seen++;
+            if (rec.summary.length != (uint32_t)last) bad++;
+            last++;
+        }
+    }
+    pthread_join(t, NULL);
+
+    uint64_t sent = ringbuf_notify_sent(g_rb);
+    printf("wakeup: seen=%llu lapped=%llu waits=%llu blocks=%llu "
+           "timeouts=%llu wakeups=%llu\n",
+           (unsigned long long)seen, (unsigned long long)lapped,
+           (unsigned long long)waits, (unsigned long long)blocks,
+           (unsigned long long)timeouts, (unsigned long long)sent);
+    CHECK(bad == 0);
+    CHECK(seen + lapped == WAKE_N);
+    CHECK(timeouts == 0);          /* no lost wakeup */
+    CHECK(blocks > 0);             /* the consumer really blocked */
+    CHECK(sent > 0);               /* ...and was woken through the pipe */
+    CHECK(sent <= waits);          /* at most one wakeup per announcement */
+    ringbuf_destroy(g_rb);
+}
+
+/* A consumer that never announces a wait must cost the producer no
+ * syscalls at all; one announcement buys exactly one pipe byte. */
+static void test_wakeup_quiet(void) {
+    ringbuf_t *rb = ringbuf_create(64, 16);
+    CHECK(rb != NULL);
+    int fd = ringbuf_get_notify_fd(rb);
+    char buf[16];
+
+    for (uint64_t s = 0; s < WAKE_N; s++) {
+        pkt_record_t *r = ringbuf_producer_next(rb);
+        r->raw_len = 0;
+        ringbuf_producer_commit(rb);
+    }
+    CHECK(ringbuf_total(rb) == WAKE_N);
+    CHECK(ringbuf_notify_sent(rb) == 0);
+    CHECK(read(fd, buf, sizeof(buf)) < 0);        /* pipe empty (EAGAIN) */
+
+    ringbuf_consumer_will_wait(rb);
+    for (uint64_t s = 0; s < WAKE_N; s++) {
+        pkt_record_t *r = ringbuf_producer_next(rb);
+        r->raw_len = 0;
+        ringbuf_producer_commit(rb);
+    }
+    CHECK(ringbuf_notify_sent(rb) == 1);
+    CHECK(read(fd, buf, sizeof(buf)) == 1);       /* exactly one byte */
+    CHECK(read(fd, buf, sizeof(buf)) < 0);
+
+    ringbuf_drain_notify(rb);                     /* withdraws the flag */
+    for (int i = 0; i < 1000; i++) {
+        pkt_record_t *r = ringbuf_producer_next(rb);
+        r->raw_len = 0;
+        ringbuf_producer_commit(rb);
+    }
+    CHECK(ringbuf_notify_sent(rb) == 1);
+    ringbuf_destroy(rb);
+}
+
 int main(void) {
     test_basic();
     test_stress();
+    test_wakeup();
+    test_wakeup_quiet();
     TEST_MAIN_END();
 }

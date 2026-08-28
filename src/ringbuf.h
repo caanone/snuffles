@@ -17,8 +17,12 @@ typedef struct ringbuf {
     /* Clear floor: consumers treat sequences below this as gone. The
      * producer counters are never reset, so clearing cannot race commits. */
     atomic_uint_fast64_t clear_seq;
-    ns_mutex_t      mtx;
-    ns_cond_t       cond;
+    /* Wakeup handshake. A consumer sets consumer_waiting right before it
+     * blocks (ringbuf_consumer_will_wait); the producer only touches the
+     * pipe/event when it finds the flag set, and clears it so one commit
+     * per idle period pays for a syscall instead of every commit. */
+    atomic_int      consumer_waiting;
+    atomic_uint_fast64_t notify_sent;   /* wakeups actually delivered */
 #ifdef _WIN32
     HANDLE          notify_event;
 #else
@@ -45,6 +49,18 @@ int                 ringbuf_read(ringbuf_t *rb, uint32_t idx,
                                  pkt_record_t *out, uint8_t *data);
 void                ringbuf_clear(ringbuf_t *rb);
 int                 ringbuf_get_notify_fd(ringbuf_t *rb);
+
+/* Consumer wakeup protocol (no lost wakeups):
+ *   if (ringbuf_total(rb) == last_seen) {      // nothing pending
+ *       ringbuf_consumer_will_wait(rb);
+ *       if (ringbuf_total(rb) == last_seen)    // re-check after announcing
+ *           select()/WaitForSingleObject() on the notify fd/event;
+ *   }
+ *   ringbuf_drain_notify(rb);
+ * The re-check catches a commit that raced the announcement; a commit
+ * after the announcement finds the flag set and delivers the wakeup. */
+void                ringbuf_consumer_will_wait(ringbuf_t *rb);
 void                ringbuf_drain_notify(ringbuf_t *rb);
+uint64_t            ringbuf_notify_sent(const ringbuf_t *rb);
 
 #endif /* RINGBUF_H */

@@ -513,7 +513,7 @@ snuffles/
     +-- capture_raw.c             # Raw socket backend (NO_PCAP)
     +-- dissect.c / .h            # Protocol dissectors (L2-L7)
     +-- filter.c / .h             # Display filter parser + evaluator
-    +-- ringbuf.c / .h            # Ring buffer + pipe notification
+    +-- ringbuf.c / .h            # Ring buffer + on-demand consumer wakeup
     +-- session.c / .h            # Session tracking hash table
     +-- syslog_out.c / .h         # UDP syslog forwarder
     +-- ui.c / .h                 # ANSI TUI
