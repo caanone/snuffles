@@ -214,3 +214,22 @@ int cbpf_compile(const char *expr, cbpf_insn_t *out, int max,
     }
     return g.count;
 }
+
+int cbpf_set_snaplen(cbpf_insn_t *insns, int n, uint32_t snaplen) {
+    int changed = 0;
+    for (int i = 0; i < n; i++) {
+        if (insns[i].code == OP_RET && insns[i].k == 0xFFFFFFFFu) {
+            insns[i].k = snaplen;
+            changed++;
+        }
+    }
+    return changed;
+}
+
+int cbpf_accept_all(cbpf_insn_t *out, uint32_t snaplen) {
+    out[0].code = OP_RET;
+    out[0].jt   = 0;
+    out[0].jf   = 0;
+    out[0].k    = snaplen;
+    return 1;
+}

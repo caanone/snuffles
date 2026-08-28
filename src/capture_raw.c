@@ -11,9 +11,13 @@
  *   - No kernel BPF filters (capture_set_bpf is a no-op; use display filters)
  *   - No offline pcap file reading (use the pcap backend for that)
  *
- * Linux receive path: recvmmsg() batches of RAW_BATCH frames into
- * preallocated buffers, kernel SO_TIMESTAMP per frame, socket receive
- * queue sized by -B (SO_RCVBUFFORCE while still root).
+ * Linux receive path: a PACKET_RX_RING in TPACKET_V3 mode mapped into the
+ * process — the kernel packs frames into 256 KiB blocks sized by -B and
+ * wakes us once per block (10 ms retire timeout), so the per-packet cost
+ * is the dissection, not syscalls. When the ring cannot be set up (old
+ * kernel, ENOMEM), or --immediate asks for per-packet delivery, it uses
+ * recvmmsg() batches of RAW_BATCH frames with kernel SO_TIMESTAMP and a
+ * socket receive queue sized by -B (SO_RCVBUFFORCE while still root).
  */
 
 #ifndef _GNU_SOURCE
@@ -56,10 +60,14 @@
   #include <netinet/in.h>
   #include <arpa/inet.h>
   #ifdef __linux__
-    #include <netpacket/packet.h>
+    #include <linux/if_packet.h>   /* sockaddr_ll + TPACKET_V3 ring structs */
     #include <net/ethernet.h>
     #include <linux/filter.h>
+    #include <sys/mman.h>
+    #include <poll.h>
+    #include <limits.h>
     #include "cbpf.h"
+    #include "rawring.h"
   #endif
 
   typedef int raw_sock_t;
@@ -86,6 +94,13 @@ struct capture_ctx {
     syslog_out_t       *syslog;
     pcap_writer_t      *stream;     /* -w: capture thread only */
 #ifdef __linux__
+    /* TPACKET_V3 block ring (NULL when the recvmmsg fallback is in use) */
+    uint8_t            *ring;
+    size_t              ring_len;
+    rawring_geom_t      geom;
+    uint32_t            ring_cur;   /* next block to consume (capture thread) */
+    int                 lo_ifindex; /* loopback: skip its PACKET_OUTGOING copies */
+    /* recvmmsg fallback */
     uint8_t            *bufs;       /* RAW_BATCH x bufsz recvmmsg buffers */
     uint32_t            bufsz;      /* max(snaplen, RAW_MIN_BUFSZ) */
 #endif
@@ -98,9 +113,12 @@ struct capture_ctx {
 
 /* ── Per-packet processing ───────────────────────────────────── */
 
-/* Shared by the Linux recvmmsg loop and the recv() loop: pkt/caplen are
- * the bytes we hold, wirelen the on-the-wire length, ts the capture
- * timestamp. Returns 1 when the -c limit has been reached. */
+/* Shared by the Linux ring and recvmmsg loops and the recv() loop:
+ * pkt/caplen are the bytes we hold (the dissector sees all of them; the
+ * kernel filter already cut a Linux frame to snaplen, and at most snaplen
+ * bytes are copied into the ring slot in any case), wirelen the
+ * on-the-wire length, ts the capture timestamp. Returns 1 when the -c
+ * limit has been reached. */
 static int process_packet(capture_ctx_t *ctx, const uint8_t *pkt,
                           uint32_t caplen, uint32_t wirelen,
                           struct timeval ts) {
@@ -208,26 +226,137 @@ static int cmsg_timestamp(struct msghdr *mh, struct timeval *ts) {
     return 0;
 }
 
-static void *capture_thread_fn(void *arg) {
-    capture_ctx_t *ctx = (capture_ctx_t *)arg;
-    atomic_store(&ctx->running, 1);
-    prctl(PR_SET_NAME, "snf-capture", 0, 0, 0);
+/* Sleep the capture thread for 100 ms after a hard error so it does not
+ * spin on a socket that keeps failing. */
+static void error_nap(void) {
+    struct timeval nap = { .tv_sec = 0, .tv_usec = 100000 };
+    select(0, NULL, NULL, NULL, &nap);
+}
 
+/* ── TPACKET_V3 block ring ───────────────────────────────────── */
+
+typedef struct {
+    capture_ctx_t *ctx;
+    int            done;    /* -c reached inside the block */
+} ring_walk_t;
+
+/* A frame sent over the loopback interface is seen twice — once as
+ * PACKET_OUTGOING on transmit and again as PACKET_HOST when lo delivers
+ * it. Keep the incoming copy only, as libpcap does. */
+static inline int lo_outgoing(const capture_ctx_t *ctx, int ifindex,
+                              uint8_t pkttype) {
+    return pkttype == PACKET_OUTGOING && ifindex == ctx->lo_ifindex;
+}
+
+static int ring_frame_cb(void *user, const rawring_frame_t *f) {
+    ring_walk_t *w = (ring_walk_t *)user;
+    if (f->caplen == 0) return 0;   /* mirrors recv() == 0 */
+    if (lo_outgoing(w->ctx, f->ifindex, f->pkttype)) return 0;
+    struct timeval ts = { .tv_sec  = (time_t)f->sec,
+                          .tv_usec = (suseconds_t)(f->nsec / 1000u) };
+    w->done = process_packet(w->ctx, f->data, f->caplen, f->wirelen, ts);
+    return w->done;
+}
+
+static inline struct tpacket_block_desc *ring_block(capture_ctx_t *ctx,
+                                                    uint32_t idx) {
+    return (struct tpacket_block_desc *)
+           (ctx->ring + (size_t)idx * ctx->geom.block_size);
+}
+
+/* Block status is written by the kernel (close: TP_STATUS_USER) and by us
+ * (release: TP_STATUS_KERNEL); acquire/release keeps the frame reads
+ * inside that window on weakly ordered CPUs. */
+static inline uint32_t ring_block_status(struct tpacket_block_desc *bd) {
+    return __atomic_load_n(&bd->hdr.bh1.block_status, __ATOMIC_ACQUIRE);
+}
+
+static inline void ring_block_release(struct tpacket_block_desc *bd) {
+    __atomic_store_n(&bd->hdr.bh1.block_status, TP_STATUS_KERNEL,
+                     __ATOMIC_RELEASE);
+}
+
+/* Hand back every block the kernel has already closed (nothing in them
+ * is processed). Used once after setup, before the real filter goes on,
+ * so frames that slipped in unfiltered never reach the consumer. Blocks
+ * close in ring order, so the consume cursor simply follows. */
+static void ring_drain(capture_ctx_t *ctx) {
+    for (uint32_t i = 0; i < ctx->geom.block_nr; i++) {
+        struct tpacket_block_desc *bd = ring_block(ctx, ctx->ring_cur);
+        if (!(ring_block_status(bd) & TP_STATUS_USER)) break;
+        ring_block_release(bd);
+        ctx->ring_cur = (ctx->ring_cur + 1 == ctx->geom.block_nr)
+                        ? 0 : ctx->ring_cur + 1;
+    }
+}
+
+/* One poll() per block: the kernel closes a block when it is full or
+ * RAWRING_RETIRE_MS after its first frame, and poll(POLLIN) reports the
+ * most recently closed block until we release it. Everything else —
+ * timestamps, wire and captured lengths — is read out of the mapping. */
+static void ring_loop(capture_ctx_t *ctx) {
+    struct pollfd pfd = { .fd = ctx->sock, .events = POLLIN, .revents = 0 };
+
+    while (!atomic_load(&ctx->stop_req)) {
+        struct tpacket_block_desc *bd = ring_block(ctx, ctx->ring_cur);
+        if (!(ring_block_status(bd) & TP_STATUS_USER)) {
+            /* nothing closed yet: wait (100 ms so stop_req is honoured) */
+            pfd.revents = 0;
+            int r = poll(&pfd, 1, 100);
+            if (r == 0) {
+                poll_kernel_drops(ctx);          /* idle: refresh counters */
+            } else if (r < 0) {
+                if (errno != EINTR) error_nap();
+            } else if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+                /* e.g. the interface went down (ENETDOWN): fetch and clear
+                 * the pending error, otherwise poll() returns at once
+                 * forever. The socket keeps delivering when it comes back. */
+                int e = 0;
+                socklen_t el = sizeof(e);
+                (void)getsockopt(ctx->sock, SOL_SOCKET, SO_ERROR, &e, &el);
+                if (!(pfd.revents & POLLIN)) error_nap();
+            }
+            continue;
+        }
+
+        ring_walk_t w = { .ctx = ctx, .done = 0 };
+        rawring_walk_block((const uint8_t *)bd, ctx->geom.block_size,
+                           ring_frame_cb, &w);
+        ring_block_release(bd);
+        ctx->ring_cur = (ctx->ring_cur + 1 == ctx->geom.block_nr)
+                        ? 0 : ctx->ring_cur + 1;
+
+        /* end of block: the syslog batch goes out (bounds record latency
+         * at the retire timeout) and the drop counter is refreshed — one
+         * syscall each per block, i.e. per ~1 500 small frames under load */
+        syslog_out_flush(ctx->syslog);
+        poll_kernel_drops(ctx);
+        if (w.done) break;
+    }
+}
+
+/* ── recvmmsg fallback ───────────────────────────────────────── */
+
+static void recvmmsg_loop(capture_ctx_t *ctx) {
     /* recvmmsg batch: one iovec + one cmsg slot per preallocated buffer.
      * Everything is set up once; only msg_controllen (shrunk by the
      * kernel to what it filled) is restored per call. */
     struct mmsghdr msgs[RAW_BATCH];
     struct iovec   iov[RAW_BATCH];
+    struct sockaddr_ll sll[RAW_BATCH];
     union {
         struct cmsghdr hdr;
         uint8_t        raw[CMSG_SPACE(sizeof(struct timeval))];
     } cmsg[RAW_BATCH];
     memset(msgs, 0, sizeof(msgs));
+    memset(sll, 0, sizeof(sll));
     for (int i = 0; i < RAW_BATCH; i++) {
         iov[i].iov_base = ctx->bufs + (size_t)i * ctx->bufsz;
         iov[i].iov_len  = ctx->bufsz;
         msgs[i].msg_hdr.msg_iov        = &iov[i];
         msgs[i].msg_hdr.msg_iovlen     = 1;
+        msgs[i].msg_hdr.msg_name       = &sll[i];
+        msgs[i].msg_hdr.msg_namelen    = sizeof(sll[i]);
         msgs[i].msg_hdr.msg_control    = cmsg[i].raw;
         msgs[i].msg_hdr.msg_controllen = sizeof(cmsg[i].raw);
     }
@@ -269,10 +398,8 @@ static void *capture_thread_fn(void *arg) {
             poll_kernel_drops(ctx);
             since_poll = 0;
             if (atomic_load(&ctx->stop_req)) break;
-            if (n < 0 && err != EAGAIN && err != EWOULDBLOCK && err != EINTR) {
-                struct timeval nap = { .tv_sec = 0, .tv_usec = 100000 };
-                select(0, NULL, NULL, NULL, &nap);   /* hard error: don't spin */
-            }
+            if (n < 0 && err != EAGAIN && err != EWOULDBLOCK && err != EINTR)
+                error_nap();                     /* hard error: don't spin */
             continue;
         }
 
@@ -289,8 +416,12 @@ static void *capture_thread_fn(void *arg) {
                 ts = now;
             }
             mh->msg_controllen = sizeof(cmsg[i].raw);
+            int      ifindex = sll[i].sll_ifindex;
+            uint8_t  pkttype = sll[i].sll_pkttype;
+            mh->msg_namelen  = sizeof(sll[i]);
 
             if (caplen == 0) continue;   /* mirrors recv() == 0 */
+            if (lo_outgoing(ctx, ifindex, pkttype)) continue;
             done = process_packet(ctx, (const uint8_t *)iov[i].iov_base,
                                   caplen, wirelen, ts);
         }
@@ -302,9 +433,18 @@ static void *capture_thread_fn(void *arg) {
             since_poll = 0;
         }
     }
+}
+
+static void *capture_thread_fn(void *arg) {
+    capture_ctx_t *ctx = (capture_ctx_t *)arg;
+    atomic_store(&ctx->running, 1);
+    prctl(PR_SET_NAME, "snf-capture", 0, 0, 0);
+
+    if (ctx->ring) ring_loop(ctx);
+    else           recvmmsg_loop(ctx);
 
     /* final read so a -c run's summary carries the drops since the last
-     * 4096-frame poll (up to a few thousand under load) */
+     * poll (up to a few thousand frames' worth under load) */
     poll_kernel_drops(ctx);
 
     syslog_out_flush(ctx->syslog);   /* records queued by the last burst */
@@ -409,6 +549,159 @@ static int find_interface_ip(const char *name, struct sockaddr_in *out) {
 }
 #endif
 
+/* ── Linux socket setup helpers ──────────────────────────────── */
+
+#ifdef __linux__
+
+/* PACKET_RX_RING in TPACKET_V3 mode, about buffer_mb MiB of 256 KiB
+ * blocks. On failure the socket is left without a ring (so recvmmsg still
+ * works on it) and *why says what failed. */
+static int ring_setup(capture_ctx_t *ctx, char *why, size_t whylen) {
+    int ver = TPACKET_V3;
+    if (setsockopt(ctx->sock, SOL_PACKET, PACKET_VERSION,
+                   &ver, sizeof(ver)) != 0) {
+        snprintf(why, whylen, "PACKET_VERSION: %s", strerror(errno));
+        return -1;
+    }
+    ctx->ring_len = rawring_geometry(ctx->cfg.buffer_mb,
+                                     sysconf(_SC_PAGESIZE), &ctx->geom);
+    struct tpacket_req3 req;
+    memset(&req, 0, sizeof(req));
+    req.tp_block_size      = ctx->geom.block_size;
+    req.tp_block_nr        = ctx->geom.block_nr;
+    req.tp_frame_size      = ctx->geom.frame_size;
+    req.tp_frame_nr        = ctx->geom.frame_nr;
+    req.tp_retire_blk_tov  = RAWRING_RETIRE_MS;
+    req.tp_sizeof_priv     = 0;
+    req.tp_feature_req_word = 0;
+    if (setsockopt(ctx->sock, SOL_PACKET, PACKET_RX_RING,
+                   &req, sizeof(req)) != 0) {
+        snprintf(why, whylen, "PACKET_RX_RING (%u x %u KiB): %s",
+                 req.tp_block_nr, req.tp_block_size / 1024, strerror(errno));
+        return -1;
+    }
+    void *m = mmap(NULL, ctx->ring_len, PROT_READ | PROT_WRITE, MAP_SHARED,
+                   ctx->sock, 0);
+    if (m == MAP_FAILED) {
+        snprintf(why, whylen, "mmap(%zu MiB): %s", ctx->ring_len >> 20,
+                 strerror(errno));
+        /* release the ring, or the socket delivers into it instead of
+         * the receive queue the fallback reads from */
+        memset(&req, 0, sizeof(req));
+        (void)setsockopt(ctx->sock, SOL_PACKET, PACKET_RX_RING,
+                         &req, sizeof(req));
+        return -1;
+    }
+    ctx->ring = (uint8_t *)m;
+    ctx->ring_cur = 0;
+    return 0;
+}
+
+static void ring_teardown(capture_ctx_t *ctx) {
+    if (!ctx->ring) return;
+    munmap(ctx->ring, ctx->ring_len);
+    ctx->ring = NULL;
+}
+
+/* Fallback when there is no ring: size the socket receive queue (-B)
+ * and allocate the recvmmsg batch buffers. */
+static int fallback_setup(capture_ctx_t *ctx) {
+    const capture_cfg_t *cfg = &ctx->cfg;
+
+    /* Socket receive queue (-B). The default, net.core.rmem_default
+     * (~208 KB), holds only ~100 small frames, so any consumer hiccup
+     * drops packets. SO_RCVBUFFORCE ignores net.core.rmem_max but needs
+     * CAP_NET_ADMIN, which we still hold before the privilege drop; fall
+     * back to SO_RCVBUF (silently capped at rmem_max) otherwise. */
+    int want = cfg->buffer_mb * 1024 * 1024;
+    if (setsockopt(ctx->sock, SOL_SOCKET, SO_RCVBUFFORCE,
+                   &want, sizeof(want)) != 0)
+        (void)setsockopt(ctx->sock, SOL_SOCKET, SO_RCVBUF,
+                         &want, sizeof(want));
+    int got = 0;
+    socklen_t gl = sizeof(got);
+    if (getsockopt(ctx->sock, SOL_SOCKET, SO_RCVBUF, &got, &gl) == 0) {
+        /* the kernel reports double the requested size (bookkeeping) */
+        long got_kb = (long)got / 2 / 1024;
+        int  got_mb = (int)((got_kb + 512) / 1024);
+        if (got_mb < cfg->buffer_mb) {
+            /* Either rmem_max capped a non-root SO_RCVBUF, or the request
+             * hit the kernel's own ceiling (INT_MAX/2 per socket, so the
+             * doubled figure reads INT_MAX-1): only the former is fixable
+             * by the user. */
+            const char *hint = ((long)got / 2 >= INT_MAX / 2)
+                ? "kernel limit"
+                : "raise net.core.rmem_max or run as root";
+            if (got_mb >= 1)
+                fprintf(stderr, "Warning: kernel capped the capture buffer "
+                        "at %d MiB (-B %d); %s\n", got_mb, cfg->buffer_mb,
+                        hint);
+            else    /* default rmem_max (208 KiB) lands here */
+                fprintf(stderr, "Warning: kernel capped the capture buffer "
+                        "at %ld KiB (-B %d); %s\n", got_kb, cfg->buffer_mb,
+                        hint);
+        }
+    }
+
+    /* kernel receive timestamps as SCM_TIMESTAMP cmsg (else gettimeofday) */
+    int one = 1;
+    (void)setsockopt(ctx->sock, SOL_SOCKET, SO_TIMESTAMP, &one, sizeof(one));
+
+    /* recvmmsg batch buffers: RAW_BATCH x max(snaplen, RAW_MIN_BUFSZ) */
+    ctx->bufsz = (uint32_t)cfg->snaplen;
+    if (ctx->bufsz < RAW_MIN_BUFSZ) ctx->bufsz = RAW_MIN_BUFSZ;
+    ctx->bufs = malloc((size_t)RAW_BATCH * ctx->bufsz);
+    if (!ctx->bufs) {
+        fprintf(stderr, "Cannot allocate receive buffers (%u x %u bytes)\n",
+                RAW_BATCH, ctx->bufsz);
+        return -1;
+    }
+
+    /* receive timeout so the loop can check stop_req */
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 100000 };
+    setsockopt(ctx->sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    return 0;
+}
+
+/* Throw away whatever the socket holds: closed ring blocks, or the
+ * receive queue on the fallback path. */
+static void drain_socket(capture_ctx_t *ctx) {
+    if (ctx->ring) {
+        ring_drain(ctx);
+        return;
+    }
+    uint8_t b;
+    for (long i = 0; i < 1000000; i++)
+        if (recv(ctx->sock, &b, 1, MSG_DONTWAIT | MSG_TRUNC) <= 0) break;
+}
+
+/* Accepting return value for the kernel filter. With the ring it is the
+ * snaplen: the kernel copies that many bytes into the block and tp_len
+ * still carries the wire length. On the recvmmsg path it must be the
+ * whole frame, because packet_rcv() trims the skb to the return value
+ * and the wire length would be lost (MSG_TRUNC reports the trimmed
+ * length); truncation happens in user space there (bufsz). libpcap makes
+ * the same distinction between its mmap and read paths. */
+static inline uint32_t filter_snaplen(const capture_ctx_t *ctx) {
+    return ctx->ring ? (uint32_t)ctx->cfg.snaplen : 0xFFFFFFFFu;
+}
+
+static int attach_cbpf(int sock, const cbpf_insn_t *insns, int n) {
+    struct sock_fprog prog = {
+        .len    = (unsigned short)n,
+        .filter = (struct sock_filter *)insns,
+    };
+    return setsockopt(sock, SOL_SOCKET, SO_ATTACH_FILTER, &prog, sizeof(prog));
+}
+
+static void linux_release(capture_ctx_t *ctx) {
+    ring_teardown(ctx);
+    free(ctx->bufs);
+    ctx->bufs = NULL;
+}
+
+#endif /* __linux__ */
+
 /* ── Public API ──────────────────────────────────────────────── */
 
 capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
@@ -501,6 +794,18 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
         return NULL;
     }
 
+    /* Reject-all filter first. The socket is hooked into the receive
+     * path from socket() on, so frames arriving before the user's filter
+     * goes on would be delivered unfiltered; with this in place they are
+     * dropped instead. Whatever slipped in between the two calls is
+     * drained below, before the real filter replaces it. */
+    {
+        cbpf_insn_t rej = { 0x06 /* BPF_RET|BPF_K */, 0, 0, 0 };
+        if (attach_cbpf(ctx->sock, &rej, 1) != 0)
+            fprintf(stderr, "Warning: SO_ATTACH_FILTER (reject-all) failed: "
+                            "%s\n", strerror(errno));
+    }
+
     /* bind to specific interface if requested. AF_PACKET ignores
      * SO_BINDTODEVICE for delivery (it only sets sk_bound_dev_if, which
      * packet_rcv never checks) — the socket must be bound to the ifindex
@@ -544,57 +849,42 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
                     cfg->iface);
     }
 
-    /* Socket receive queue (-B). The default, net.core.rmem_default
-     * (~208 KB), holds only ~100 small frames, so any consumer hiccup
-     * drops packets. SO_RCVBUFFORCE ignores net.core.rmem_max but needs
-     * CAP_NET_ADMIN, which we still hold before the privilege drop; fall
-     * back to SO_RCVBUF (silently capped at rmem_max) otherwise. */
+    /* Capture buffer (-B): the TPACKET_V3 block ring, or the socket
+     * receive queue + recvmmsg when the kernel cannot provide one or
+     * --immediate asks for per-packet delivery: a V3 block is handed
+     * over only when full or RAWRING_RETIRE_MS after its first frame
+     * (~10 ms of latency for a lone packet), whereas recvmmsg with
+     * MSG_WAITFORONE returns on the first frame — libpcap likewise leaves
+     * TPACKET_V3 for immediate mode. */
     {
-        int want = cfg->buffer_mb * 1024 * 1024;
-        if (setsockopt(ctx->sock, SOL_SOCKET, SO_RCVBUFFORCE,
-                       &want, sizeof(want)) != 0)
-            (void)setsockopt(ctx->sock, SOL_SOCKET, SO_RCVBUF,
-                             &want, sizeof(want));
-        int got = 0;
-        socklen_t gl = sizeof(got);
-        if (getsockopt(ctx->sock, SOL_SOCKET, SO_RCVBUF, &got, &gl) == 0) {
-            /* the kernel reports double the requested size (bookkeeping) */
-            long got_kb = (long)got / 2 / 1024;
-            int  got_mb = (int)((got_kb + 512) / 1024);
-            if (got_mb < cfg->buffer_mb) {
-                if (got_mb >= 1)
-                    fprintf(stderr, "Warning: kernel capped the capture buffer "
-                            "at %d MiB (-B %d); raise net.core.rmem_max or run "
-                            "as root\n", got_mb, cfg->buffer_mb);
-                else    /* default rmem_max (208 KiB) lands here */
-                    fprintf(stderr, "Warning: kernel capped the capture buffer "
-                            "at %ld KiB (-B %d); raise net.core.rmem_max or run "
-                            "as root\n", got_kb, cfg->buffer_mb);
-            }
+        char why[160];
+        int  have_ring = 0;
+        if (cfg->immediate)
+            ;   /* per-packet delivery: recvmmsg path */
+        else if (ring_setup(ctx, why, sizeof(why)) == 0)
+            have_ring = 1;
+        else
+            fprintf(stderr, "Note: TPACKET_V3 ring unavailable (%s); "
+                            "using recvmmsg\n", why);
+        if (!have_ring && fallback_setup(ctx) != 0) {
+            RAW_CLOSE(ctx->sock);
+            free(ctx);
+            return NULL;
         }
     }
 
-    /* kernel receive timestamps as SCM_TIMESTAMP cmsg (else gettimeofday) */
-    int one = 1;
-    (void)setsockopt(ctx->sock, SOL_SOCKET, SO_TIMESTAMP, &one, sizeof(one));
+    /* Frames that got in between socket() and the reject-all filter
+     * are still queued: throw them away, then put the real filter on. */
+    drain_socket(ctx);
 
-    /* recvmmsg batch buffers: RAW_BATCH x max(snaplen, RAW_MIN_BUFSZ) */
-    ctx->bufsz = (uint32_t)cfg->snaplen;
-    if (ctx->bufsz < RAW_MIN_BUFSZ) ctx->bufsz = RAW_MIN_BUFSZ;
-    ctx->bufs = malloc((size_t)RAW_BATCH * ctx->bufsz);
-    if (!ctx->bufs) {
-        fprintf(stderr, "Cannot allocate receive buffers (%u x %u bytes)\n",
-                RAW_BATCH, ctx->bufsz);
-        RAW_CLOSE(ctx->sock);
-        free(ctx);
-        return NULL;
-    }
-
-    /* receive timeout */
-    struct timeval tv = { .tv_sec = 0, .tv_usec = 100000 };
-    setsockopt(ctx->sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-    /* -f: compile the subset syntax to classic BPF and attach in-kernel */
+    /* -f: compile the subset syntax to classic BPF and attach in-kernel
+     * (replacing the reject-all program). The program's accepting return
+     * is the snaplen when the ring is in use (filter_snaplen), so the
+     * kernel copies at most -s bytes of a frame into the ring — as
+     * libpcap's filters do; without it a 64 KiB loopback segment under
+     * -s 128 costs a 64 KiB copy in the sender's context and fills a
+     * block every three frames. No -f therefore attaches an accept-all
+     * program with the same return instead of running unfiltered. */
     if (cfg->bpf_filter[0]) {
         cbpf_insn_t insns[CBPF_MAX_INSNS];
         char cerr[128];
@@ -604,27 +894,34 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
             fprintf(stderr, "BPF (raw build): %s\n"
                     "Supported: tcp/udp/icmp/sctp/ip/arp, [src|dst] host A.B.C.D, "
                     "[src|dst] port N, joined with 'and'\n", cerr);
+            linux_release(ctx);
             RAW_CLOSE(ctx->sock);
-            free(ctx->bufs);
             free(ctx);
             return NULL;
         }
-        struct sock_fprog prog = {
-            .len    = (unsigned short)n,
-            .filter = (struct sock_filter *)insns,
-        };
-        if (setsockopt(ctx->sock, SOL_SOCKET, SO_ATTACH_FILTER,
-                       &prog, sizeof(prog)) != 0) {
+        cbpf_set_snaplen(insns, n, filter_snaplen(ctx));
+        if (attach_cbpf(ctx->sock, insns, n) != 0) {
             perror("SO_ATTACH_FILTER");
+            linux_release(ctx);
             RAW_CLOSE(ctx->sock);
-            free(ctx->bufs);
             free(ctx);
             return NULL;
         }
         snprintf(ctx->bpf_expr, sizeof(ctx->bpf_expr), "%s", cfg->bpf_filter);
+    } else {
+        cbpf_insn_t acc[1];
+        int n = cbpf_accept_all(acc, filter_snaplen(ctx));
+        if (attach_cbpf(ctx->sock, acc, n) != 0) {
+            perror("SO_ATTACH_FILTER");
+            linux_release(ctx);
+            RAW_CLOSE(ctx->sock);
+            free(ctx);
+            return NULL;
+        }
     }
 
     ctx->has_eth = 1; /* AF_PACKET gives full Ethernet frames */
+    ctx->lo_ifindex = (int)if_nametoindex("lo");   /* 0 if there is none */
 
 #else
     /* ── macOS / other: not supported without libpcap ────────── */
@@ -691,11 +988,11 @@ void capture_destroy(capture_ctx_t *ctx) {
         ctx->stream = NULL;
     }
     syslog_out_destroy(ctx->syslog);
+#ifdef __linux__
+    linux_release(ctx);     /* unmap the ring before the socket goes */
+#endif
     if (ctx->sock != RAW_INVALID)
         RAW_CLOSE(ctx->sock);
-#ifdef __linux__
-    free(ctx->bufs);
-#endif
 #ifdef _WIN32
     WSACleanup();
 #endif
@@ -751,27 +1048,26 @@ int capture_set_bpf(capture_ctx_t *ctx, const char *expr,
         return -1;
     }
 #ifdef __linux__
+    cbpf_insn_t insns[CBPF_MAX_INSNS];
+    int n;
     if (!expr || !expr[0]) {
-        int dummy = 0;
-        /* detaching with nothing attached returns ENOENT; that's fine */
-        (void)setsockopt(ctx->sock, SOL_SOCKET, SO_DETACH_FILTER,
-                         &dummy, sizeof(dummy));
+        /* clearing the filter: accept everything, still cut to -s */
+        n = cbpf_accept_all(insns, filter_snaplen(ctx));
+        if (attach_cbpf(ctx->sock, insns, n) != 0) {
+            snprintf(errbuf, errlen, "SO_ATTACH_FILTER failed");
+            return -1;
+        }
         ctx->bpf_expr[0] = '\0';
         return 0;
     }
-    cbpf_insn_t insns[CBPF_MAX_INSNS];
     char cerr[128];
-    int n = cbpf_compile(expr, insns, CBPF_MAX_INSNS, cerr, sizeof(cerr));
+    n = cbpf_compile(expr, insns, CBPF_MAX_INSNS, cerr, sizeof(cerr));
     if (n < 0) {
         snprintf(errbuf, errlen, "%s (subset: proto, host, port, 'and')", cerr);
         return -1;
     }
-    struct sock_fprog prog = {
-        .len    = (unsigned short)n,
-        .filter = (struct sock_filter *)insns,
-    };
-    if (setsockopt(ctx->sock, SOL_SOCKET, SO_ATTACH_FILTER,
-                   &prog, sizeof(prog)) != 0) {
+    cbpf_set_snaplen(insns, n, filter_snaplen(ctx));
+    if (attach_cbpf(ctx->sock, insns, n) != 0) {
         snprintf(errbuf, errlen, "SO_ATTACH_FILTER failed");
         return -1;
     }

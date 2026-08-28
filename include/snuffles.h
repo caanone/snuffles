@@ -289,8 +289,8 @@ typedef struct {
     int         verbose;
     char        syslog_target[256];
     char        syslog_iface[64];
-    int         buffer_mb;      /* -B: kernel capture buffer in MB (libpcap ring / raw SO_RCVBUF) */
-    int         immediate;      /* --immediate: per-packet delivery (libpcap) */
+    int         buffer_mb;      /* -B: kernel capture buffer in MB (TPACKET ring; raw: SO_RCVBUF fallback) */
+    int         immediate;      /* --immediate: per-packet delivery (no TPACKET_V3 blocks) */
     int         no_summary;     /* --no-summary: no exit counters in headless modes */
     int         cpu;            /* --cpu: pin the capture thread to this CPU (-1: unset) */
     int         rt;             /* --rt: SCHED_FIFO for the capture thread */
