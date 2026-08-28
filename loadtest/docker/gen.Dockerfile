@@ -42,7 +42,7 @@ COPY loadtest/gen/ /opt/gen-src/
 # Build the C generators and the drivers into /opt/gen, then build the corpus.
 RUN set -eux; \
     mkdir -p /opt/gen; \
-    gcc -O2 -Wall -Wextra -pthread /opt/gen-src/udpflood.c -o /opt/gen/udpflood; \
+    gcc -O2 -Wall -Wextra -fno-strict-aliasing -pthread /opt/gen-src/udpflood.c -o /opt/gen/udpflood; \
     gcc -O2 -Wall -Wextra -fno-strict-aliasing -pthread /opt/gen-src/synflood.c -o /opt/gen/synflood; \
     for f in pktgen.sh http.sh iperf.sh replay.sh frag.sh; do \
         printf '#!/bin/bash\n# live wrapper: the driver is taken from the read-only /repo mount at\n# run time so editing loadtest/gen/*.sh never needs an image rebuild.\n[ -x /repo/loadtest/gen/%s ] && exec /repo/loadtest/gen/%s "$@"\nexec /opt/gen-src/%s "$@"\n' "$f" "$f" "$f" > /opt/gen/$f; \
