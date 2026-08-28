@@ -109,6 +109,10 @@ static void capture_callback(u_char *user, const struct pcap_pkthdr *hdr,
 
     ctx->pkt_count++;
     if (ctx->cfg.count > 0 && ctx->pkt_count >= (uint64_t)ctx->cfg.count) {
+        /* pcap_breakloop alone only ends this dispatch call; the thread
+         * loop re-dispatches unless stop_req is set, so -c never stopped a
+         * live capture. */
+        atomic_store(&ctx->stop_req, 1);
         pcap_breakloop(ctx->handle);
     }
 }

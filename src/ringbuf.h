@@ -36,6 +36,14 @@ uint32_t            ringbuf_count(const ringbuf_t *rb);
 uint64_t            ringbuf_total(const ringbuf_t *rb);
 uint64_t            ringbuf_oldest(const ringbuf_t *rb);
 
+/* Copy the record with absolute sequence number seq into *out. Returns 0
+ * if seq is not (or no longer) in the ring — i.e. the producer has lapped
+ * the caller, or seq is not committed yet — or the slot changed underneath
+ * the copy. Streaming consumers must use this rather than a display index:
+ * an index is relative to a floor that moves while they iterate. */
+int                 ringbuf_read_seq(ringbuf_t *rb, uint64_t seq,
+                                     pkt_record_t *out, uint8_t *data);
+
 /* Copy the record at display index idx (0 = oldest visible) into *out.
  * If data is non-NULL it must hold at least snaplen bytes; the packet
  * bytes are copied there and out->raw_data points at it. With data NULL
