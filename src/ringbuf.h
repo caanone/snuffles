@@ -12,8 +12,16 @@
  * starting at position P is still intact as long as the producer's
  * allocation cursor has not passed P + arena_size — which is what
  * readers check after copying. The default arena is
- * capacity x min(snaplen, RINGBUF_ARENA_SLOT) bytes. */
+ * capacity x min(snaplen, RINGBUF_ARENA_SLOT) bytes. With several
+ * producers the arena is split into one equal slice per producer and
+ * both the position and that check are per slice. */
 #define RINGBUF_ARENA_SLOT 2048u
+
+/* Producers. One capture worker owns one producer id; -j N gives N of
+ * them (see capture.h). Each producer bump-allocates from its own slice
+ * of the arena, so the only counter producers share is the ring's
+ * reservation cursor. */
+#define RINGBUF_MAX_PRODUCERS 16
 
 /* Consumers that block on the ring each own a waiter slot: a wake-up
  * channel (pipe on POSIX, auto-reset event on Windows), a waiting flag
@@ -33,21 +41,47 @@ typedef struct {
 #endif
 } ringbuf_waiter_t;
 
-typedef struct ringbuf {
-    pkt_record_t   *records;
-    uint8_t        *arena;
-    uint64_t        arena_size;
-    uint64_t        arena_off;      /* producer only: next free offset */
+/* Per-producer state. The arena is split into one equal slice per
+ * producer: allocation is then thread-local (no shared cursor to
+ * contend on) and a record only has to say which slice it points into.
+ * Positions are slice-relative and never wrap; the byte at position p of
+ * producer i lives at arena[arena_base + p % arena_len]. */
+typedef struct {
     /* Allocation cursor (position, not offset). Advanced before the
      * producer writes the bytes it just claimed, so a reader that loads
      * it after copying can tell whether its copy could have been
      * overwritten. */
     atomic_uint_fast64_t arena_pos;
-    /* Per-slot seqlock generation: odd while the producer is writing the
-     * slot, even when it is stable. Readers copy out and retry on change. */
+    uint64_t        arena_base;     /* slice start, byte offset into arena */
+    uint64_t        arena_len;      /* slice size */
+    uint64_t        arena_off;      /* producer only: next free slice offset */
+    uint64_t        seq;            /* producer only: reservation held now */
+    /* one producer per cache line: arena_pos is read by every consumer */
+    char            pad[64 > 5 * sizeof(uint64_t)
+                        ? 64 - 5 * sizeof(uint64_t) : 8];
+} ringbuf_prod_t;
+
+typedef struct ringbuf {
+    pkt_record_t   *records;
+    uint8_t        *arena;
+    uint64_t        arena_size;
+    /* Per-slot seqlock generation, seq * 2 + (1 while being written).
+     * Readers copy out and retry on change. The generation carries the
+     * sequence rather than counting writes so that a reader can tell a
+     * stable slot from one two producers are lapping onto at once: the
+     * value is unique per record, so "unchanged across the copy" implies
+     * "nobody touched the slot", whatever the number of producers. */
     atomic_uint_fast64_t *slot_gen;
+    ringbuf_prod_t *prods;
+    void           *prods_raw;      /* prods before cache-line alignment */
+    int             nprod;          /* producers (1 = single-producer) */
+    int             mp;             /* nprod > 1: shared cursors are atomic */
     uint32_t        capacity;
     uint32_t        snaplen;        /* max payload bytes per record */
+    /* write_seq reserves slots (a plain counter with one producer, a
+     * fetch-add cursor with several); commit_seq is the publication
+     * point and only ever advances over records whose slots are marked
+     * published, so a reader never sees a hole. */
     atomic_uint_fast64_t write_seq;
     atomic_uint_fast64_t commit_seq;
     /* Clear floor: consumers treat sequences below this as gone. The
@@ -67,9 +101,16 @@ typedef struct ringbuf {
 } ringbuf_t;
 
 /* arena_bytes 0 selects the default (capacity x min(snaplen, 2048)); any
- * value is raised to at least snaplen so one full packet always fits. */
+ * value is raised to at least nproducers x snaplen so one full packet
+ * always fits in every producer's slice. */
 ringbuf_t          *ringbuf_create(uint32_t capacity, uint32_t snaplen,
                                    uint64_t arena_bytes);
+ringbuf_t          *ringbuf_create_mp(uint32_t capacity, uint32_t snaplen,
+                                      uint64_t arena_bytes, int nproducers);
+/* Lower the producer count (re-splitting the arena) before anything has
+ * been produced: capture may end up with fewer workers than asked for. */
+void                ringbuf_set_producers(ringbuf_t *rb, int nproducers);
+int                 ringbuf_producers(const ringbuf_t *rb);
 void                ringbuf_destroy(ringbuf_t *rb);
 
 /* Claim the next slot and wanted bytes of payload space (granted =
@@ -80,6 +121,14 @@ void                ringbuf_destroy(ringbuf_t *rb);
  * the caller. */
 pkt_record_t       *ringbuf_producer_next(ringbuf_t *rb, uint32_t wanted);
 void                ringbuf_producer_commit(ringbuf_t *rb);
+/* Same for producer id pid (0 <= pid < nproducers). Producers run
+ * concurrently: each reserves its own slot and payload bytes, fills it
+ * and publishes, and commit_seq then advances over the published prefix
+ * (see ringbuf.c). The single-producer forms above are pid 0 and take no
+ * atomic beyond the ones the single-producer ring already used. */
+pkt_record_t       *ringbuf_producer_next_w(ringbuf_t *rb, int pid,
+                                            uint32_t wanted);
+void                ringbuf_producer_commit_w(ringbuf_t *rb, int pid);
 
 uint32_t            ringbuf_count(const ringbuf_t *rb);
 uint64_t            ringbuf_total(const ringbuf_t *rb);

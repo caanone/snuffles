@@ -17,6 +17,41 @@
   (`workflow_dispatch`) on a self-hosted runner — never on push/PR,
   which GitHub-hosted runners cannot serve. `run-scenario.sh` gained
   `RS_SNF_EXTRA_ARGS` for appending snuffles arguments to a run.
+- **`-j N` / `--workers N`: multi-worker capture with `PACKET_FANOUT`**
+  (config key `workers`, 1-16, default 1 = unchanged behaviour). N capture
+  sockets on the same interface join one `PACKET_FANOUT` group in
+  `PACKET_FANOUT_HASH` mode (group id: the pid), each with its own thread,
+  its own kernel buffer and its own session table shard, so one
+  interface's capture work spreads over N cores instead of one. The flow
+  hash keeps a flow on one worker and in order, so a session never spans
+  shards; the shards hand out disjoint session ids and the TUI, `--stats`
+  and exports show their union. `-B` is per worker (total kernel memory is
+  N x B); `-c`, the display filter, `-w`, `--syslog` and the export are
+  shared and unchanged. Linux live capture only: `-r`, other platforms and
+  a handle that is not an `AF_PACKET` socket warn once and use one worker.
+  The TUI title bar shows "N workers" and `--stats` adds per-worker kernel
+  drops (`kdrop_w=a,b,c`). Records reach the ring in commit order, so with
+  `-j N > 1` the list, `-w` and the exports are not strictly
+  timestamp-sorted across flows (17% of records stepped back by up to one
+  16 ms block interval on a 4-flow loopback run; a flow's own packets stay
+  in order), and `--cpu` — which would pin every worker to one CPU — warns. Both backends: the libpcap build sets the
+  socket option on each activated handle's descriptor (libpcap has no API
+  for it), the raw build before each ring is mapped.
+- **Multi-producer ring buffer.** With `-j N > 1` the capture workers all
+  commit into the one ring: a producer reserves a sequence with one
+  fetch-add, takes the slot from the record one lap back with a CAS (so
+  two producers can never write one slot — a producer descheduled for a
+  whole lap would otherwise corrupt the record that replaced it, with no
+  generation change for a reader to notice), fills it and publishes, and
+  `commit_seq` then steps over the published prefix. Each producer
+  bump-allocates payload bytes from its own slice of the arena. The
+  single-producer path takes none of those atomics (measured: 109.6 vs
+  109.2 ns of capture-thread CPU per packet, within run-to-run noise) and
+  the slot generation now carries the record's sequence instead of
+  counting writes, which also removes two atomic read-modify-writes per
+  packet from it. `tests/test_ringbuf.c` adds a multi-producer
+  completeness test (every reservation visible exactly once, in producer
+  order, payloads intact) and a lapping stress test.
 - **Telemetry on by default in headless modes.** `--no-ui`, `--jsonl` and
   `-q` print the `summary ...` counters line to stderr at exit even
   without `--stats` (`--no-summary` turns it off), `SIGUSR1` prints one

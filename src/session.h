@@ -104,6 +104,8 @@ typedef struct {
     uint32_t            bucket_mask;
     uint32_t            session_count;
     uint32_t            next_id;
+    uint32_t            id_first;       /* first id this table hands out */
+    uint32_t            id_stride;      /* ids step by this (shards: 1 per worker) */
     uint32_t            max_sessions;   /* evict oldest when exceeded */
     uint64_t            hash_seed;      /* random per table: no hash flooding */
     /* entry pool: one calloc'd array sized to the session cap, handed out
@@ -137,6 +139,11 @@ typedef struct {
  * least 2 x SESSION_DEFAULT_MAX so chains stay short at the cap. */
 session_table_t    *session_table_create(uint32_t bucket_count);
 void                session_table_destroy(session_table_t *st);
+/* Shards (one session table per capture worker) hand out disjoint id
+ * sequences — first, first + stride, ... — so a session id names one
+ * shard and one session across the whole capture. Default: 1, 1. */
+void                session_table_set_ids(session_table_t *st, uint32_t first,
+                                          uint32_t stride);
 /* Returns the session id the packet belongs to, or 0 if untracked (no IP
  * addresses, or a non-first IP fragment — those carry no L4 header and
  * must not create port-0 pseudo-sessions).
@@ -164,6 +171,23 @@ uint32_t            session_stream_copy(session_table_t *st, uint32_t id,
                                         int dir, uint8_t *out, uint32_t cap);
 void                session_table_clear(session_table_t *st);
 uint32_t            session_table_count(const session_table_t *st);
+
+/* ── Shard set (multi-worker capture) ────────────────────────── */
+/* PACKET_FANOUT_HASH keeps a flow on one worker, so a session never
+ * spans shards and these are plain unions over the per-worker tables.
+ * n == 1 is the single-table case and costs nothing extra. */
+uint32_t            session_tables_count(session_table_t *const *sts, int n);
+void                session_tables_clear(session_table_t *const *sts, int n);
+session_entry_t    *session_tables_snapshot(session_table_t *const *sts, int n,
+                                            uint32_t *out_count,
+                                            session_sort_t sort);
+/* Copies both stream directions of session `id` from whichever shard
+ * hands out that id (see session_table_set_ids). */
+void                session_tables_streams_copy(session_table_t *const *sts,
+                                                int n, uint32_t id,
+                                                uint8_t *out_a, uint8_t *out_b,
+                                                uint32_t cap, uint32_t *len_a,
+                                                uint32_t *len_b);
 
 /* Returns a malloc'd array of entry COPIES taken under the table lock
  * (caller frees the array). Entries stay valid regardless of concurrent

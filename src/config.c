@@ -1,4 +1,5 @@
 #include "config.h"
+#include "capture.h"   /* CAPTURE_MAX_WORKERS */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -134,6 +135,9 @@ static void parse_keyval(const char *path, int lineno, char *line,
     } else if (strcmp(key, "rt") == 0) {
         if (!cfg_num(val, 0, 1, &cfg->rt))
             warn_line(path, lineno, "rt must be 0 or 1", val);
+    } else if (strcmp(key, "workers") == 0) {
+        if (!cfg_num(val, 1, CAPTURE_MAX_WORKERS, &cfg->workers))
+            warn_line(path, lineno, "workers out of range (1-16)", val);
     } else {
         warn_line(path, lineno, "unknown key", key);
     }

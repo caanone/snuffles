@@ -7,15 +7,54 @@
 #ifndef _WIN32
   #include <unistd.h>
   #include <fcntl.h>
+  #include <sched.h>
 #endif
 
-ringbuf_t *ringbuf_create(uint32_t capacity, uint32_t snaplen,
-                          uint64_t arena_bytes) {
+/* Spin hint while a producer waits for the slot one lap back (see
+ * ringbuf_producer_next_w). The wait is short — the other producer is
+ * mid-packet — so pause first and only yield once it is clear the owner
+ * is not running. */
+static inline void spin_pause(unsigned n) {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__)
+    __asm__ __volatile__("yield" ::: "memory");
+#endif
+    if ((n & 63u) == 63u) {
+#ifdef _WIN32
+        SwitchToThread();
+#else
+        sched_yield();
+#endif
+    }
+}
+
+/* Split the arena into one equal slice per producer. Called before
+ * anything is produced, so resetting the cursors is safe. */
+static void split_arena(ringbuf_t *rb) {
+    uint64_t per = rb->arena_size / (uint64_t)rb->nprod;
+    for (int i = 0; i < rb->nprod; i++) {
+        ringbuf_prod_t *p = &rb->prods[i];
+        p->arena_base = per * (uint64_t)i;
+        p->arena_len  = per;
+        p->arena_off  = 0;
+        p->seq        = 0;
+        atomic_store(&p->arena_pos, 0);
+    }
+}
+
+ringbuf_t *ringbuf_create_mp(uint32_t capacity, uint32_t snaplen,
+                             uint64_t arena_bytes, int nproducers) {
+    if (nproducers < 1) nproducers = 1;
+    if (nproducers > RINGBUF_MAX_PRODUCERS) nproducers = RINGBUF_MAX_PRODUCERS;
+
     ringbuf_t *rb = calloc(1, sizeof(ringbuf_t));
     if (!rb) return NULL;
 
     rb->capacity = capacity;
     rb->snaplen  = snaplen;
+    rb->nprod    = nproducers;
+    rb->mp       = nproducers > 1;
 
     rb->records = calloc(capacity, sizeof(pkt_record_t));
     if (!rb->records) { free(rb); return NULL; }
@@ -24,8 +63,10 @@ ringbuf_t *ringbuf_create(uint32_t capacity, uint32_t snaplen,
         uint32_t per = snaplen < RINGBUF_ARENA_SLOT ? snaplen : RINGBUF_ARENA_SLOT;
         arena_bytes = (uint64_t)capacity * per;
     }
-    if (arena_bytes < snaplen) arena_bytes = snaplen;   /* one full packet fits */
-    if (arena_bytes == 0) arena_bytes = 1;              /* readers divide by it */
+    /* one full packet must fit in every producer's slice */
+    if (arena_bytes < (uint64_t)snaplen * (uint64_t)nproducers)
+        arena_bytes = (uint64_t)snaplen * (uint64_t)nproducers;
+    if (arena_bytes < (uint64_t)nproducers) arena_bytes = (uint64_t)nproducers;
     if (arena_bytes > SIZE_MAX / 2) { free(rb->records); free(rb); return NULL; }
     rb->arena_size = arena_bytes;
     rb->arena = calloc(1, (size_t)arena_bytes);
@@ -36,11 +77,26 @@ ringbuf_t *ringbuf_create(uint32_t capacity, uint32_t snaplen,
         free(rb->arena); free(rb->records); free(rb);
         return NULL;
     }
+    /* A zeroed generation would read as "holds record 0, published", so
+     * every slot starts as "record 0, still being written": no reader
+     * and no commit can mistake an untouched slot for a record. */
+    for (uint32_t i = 0; i < capacity; i++)
+        atomic_store(&rb->slot_gen[i], 1);
+
+    /* producers on their own cache lines (arena_pos is read by every
+     * consumer, written per packet by its owner) */
+    rb->prods_raw = calloc(1, sizeof(ringbuf_prod_t) * RINGBUF_MAX_PRODUCERS + 63);
+    if (!rb->prods_raw) {
+        free(rb->slot_gen); free(rb->arena); free(rb->records); free(rb);
+        return NULL;
+    }
+    rb->prods = (ringbuf_prod_t *)(void *)
+                (((uintptr_t)rb->prods_raw + 63u) & ~(uintptr_t)63u);
+    split_arena(rb);
 
     atomic_store(&rb->write_seq, 0);
     atomic_store(&rb->commit_seq, 0);
     atomic_store(&rb->clear_seq, 0);
-    atomic_store(&rb->arena_pos, 0);
     atomic_store(&rb->nwaiters, 0);
     atomic_store(&rb->nwaiting, 0);
     atomic_store(&rb->notify_sent, 0);
@@ -56,6 +112,7 @@ ringbuf_t *ringbuf_create(uint32_t capacity, uint32_t snaplen,
 
     /* slot 0: the display / headless consumer */
     if (ringbuf_waiter_add(rb) != 0) {
+        free(rb->prods_raw);
         free(rb->slot_gen);
         free(rb->arena);
         free(rb->records);
@@ -64,6 +121,28 @@ ringbuf_t *ringbuf_create(uint32_t capacity, uint32_t snaplen,
     }
 
     return rb;
+}
+
+ringbuf_t *ringbuf_create(uint32_t capacity, uint32_t snaplen,
+                          uint64_t arena_bytes) {
+    return ringbuf_create_mp(capacity, snaplen, arena_bytes, 1);
+}
+
+void ringbuf_set_producers(ringbuf_t *rb, int nproducers) {
+    if (!rb || nproducers < 1) return;
+    if (nproducers > RINGBUF_MAX_PRODUCERS) nproducers = RINGBUF_MAX_PRODUCERS;
+    /* a slice must still hold one whole packet (creation guarantees this
+     * for the count asked for there, so this only ever refuses a raise) */
+    if (rb->snaplen && (uint64_t)nproducers > rb->arena_size / rb->snaplen)
+        return;
+    if (nproducers == rb->nprod) return;
+    rb->nprod = nproducers;
+    rb->mp    = nproducers > 1;
+    split_arena(rb);
+}
+
+int ringbuf_producers(const ringbuf_t *rb) {
+    return rb ? rb->nprod : 1;
 }
 
 void ringbuf_destroy(ringbuf_t *rb) {
@@ -77,6 +156,7 @@ void ringbuf_destroy(ringbuf_t *rb) {
         close(rb->waiters[i].pipe[1]);
 #endif
     }
+    free(rb->prods_raw);
     free(rb->slot_gen);
     free(rb->arena);
     free(rb->records);
@@ -102,47 +182,144 @@ static void ringbuf_wake_waiters(ringbuf_t *rb) {
     }
 }
 
-pkt_record_t *ringbuf_producer_next(ringbuf_t *rb, uint32_t wanted) {
-    uint64_t seq = atomic_load(&rb->write_seq);
-    uint32_t idx = (uint32_t)(seq % rb->capacity);
-    atomic_fetch_add(&rb->slot_gen[idx], 1);   /* even -> odd: write begins */
+pkt_record_t *ringbuf_producer_next_w(ringbuf_t *rb, int pid, uint32_t wanted) {
+    ringbuf_prod_t *p = &rb->prods[pid];
+    uint64_t seq;
+    uint32_t idx;
 
-    /* Bump-allocate the payload. A packet never straddles the end of the
-     * arena: the unused tail is skipped (and counted as consumed, so
-     * position % size stays the offset). */
+    if (rb->mp) {
+        /* Reserve a sequence, then take exclusive ownership of its slot:
+         * the generation moves from "holds the record one lap back,
+         * published" to "holds seq, being written", and only the producer
+         * of seq can make that transition. That is what keeps two
+         * producers off one slot — a plain mark would let a producer that
+         * was descheduled for a whole lap scribble over the record that
+         * replaced it, with the generation of the new owner still in
+         * place, so no reader could tell. If the previous occupant is
+         * still being written (its producer is not running), wait for it:
+         * the producer holding the oldest reservation never waits, so the
+         * ring always drains. */
+        seq = atomic_fetch_add_explicit(&rb->write_seq, 1, memory_order_relaxed);
+        idx = (uint32_t)(seq % rb->capacity);
+        uint64_t prev = seq >= rb->capacity ? (seq - rb->capacity) * 2u : 1u;
+        uint64_t exp  = prev;
+        for (unsigned n = 0; !atomic_compare_exchange_weak_explicit(
+                 &rb->slot_gen[idx], &exp, seq * 2u + 1u,
+                 memory_order_acq_rel, memory_order_relaxed); n++) {
+            exp = prev;             /* the failed CAS overwrote it */
+            spin_pause(n);
+        }
+    } else {
+        seq = atomic_load_explicit(&rb->write_seq, memory_order_relaxed);
+        idx = (uint32_t)(seq % rb->capacity);
+        /* seq * 2 + 1: this slot now holds record seq and is being
+         * written. One producer cannot race itself. */
+        atomic_store_explicit(&rb->slot_gen[idx], seq * 2u + 1u,
+                              memory_order_relaxed);
+    }
+    p->seq = seq;
+
+    /* Bump-allocate the payload from this producer's arena slice. A
+     * packet never straddles the end of the slice: the unused tail is
+     * skipped (and counted as consumed, so position % len stays the
+     * offset). */
     if (wanted > rb->snaplen) wanted = rb->snaplen;
-    uint64_t pos = atomic_load_explicit(&rb->arena_pos, memory_order_relaxed);
-    uint64_t off = rb->arena_off;
-    if (wanted > rb->arena_size - off) {
-        pos += rb->arena_size - off;
+    uint64_t pos = atomic_load_explicit(&p->arena_pos, memory_order_relaxed);
+    uint64_t off = p->arena_off;
+    if (wanted > p->arena_len - off) {
+        pos += p->arena_len - off;
         off  = 0;
     }
     pkt_record_t *rec = &rb->records[idx];
-    rec->raw_data = rb->arena + off;
+    rec->raw_data = rb->arena + p->arena_base + off;
     rec->raw_len  = wanted;
     rec->data_pos = pos;
-    rb->arena_off = off + wanted;
+    rec->prod_id  = (uint32_t)pid;
+    p->arena_off  = off + wanted;
     /* The cursor moves before the bytes are written (readers rely on
      * seeing the move if they could see the bytes). Publishing it with
      * a release store is not enough: that orders *earlier* writes before
      * it, and the caller's payload copy comes after. The fence below
      * covers both this store and the slot generation. */
-    atomic_store_explicit(&rb->arena_pos, pos + wanted, memory_order_relaxed);
-    /* The RMW's store half doesn't order the caller's later plain data
-     * stores after it on weakly-ordered CPUs (arm64): a lapped reader
-     * could see new data before the odd generation and validate a torn
-     * copy. Fence so the odd mark is visible before any data write. */
+    atomic_store_explicit(&p->arena_pos, pos + wanted, memory_order_relaxed);
+    /* The stores above don't order the caller's later plain data stores
+     * after them on weakly-ordered CPUs (arm64): a lapped reader could
+     * see new data before the odd generation and validate a torn copy.
+     * Fence so the odd mark is visible before any data write. */
     atomic_thread_fence(memory_order_release);
     return rec;
 }
 
-void ringbuf_producer_commit(ringbuf_t *rb) {
-    uint64_t seq = atomic_load(&rb->write_seq);
+pkt_record_t *ringbuf_producer_next(ringbuf_t *rb, uint32_t wanted) {
+    return ringbuf_producer_next_w(rb, 0, wanted);
+}
+
+/* Multi-producer publication. Reservations complete out of order, so
+ * commit_seq — the point below which consumers may look — may only step
+ * over record c once slot c % capacity says c is finished with. Reading
+ * the slot's generation g (record g >> 1, still being written while
+ * g & 1):
+ *
+ *   g >> 1 <  c   the slot has not been claimed for c yet: stop.
+ *   g == c * 2+1  c's producer is still filling it: stop, so no consumer
+ *                 ever sees a record before its producer finished.
+ *   g == c * 2    c is published: step over it.
+ *   g >> 1 >  c   a later record owns the slot now. Claiming it required
+ *                 c to be published first (ringbuf_producer_next_w), so
+ *                 c did complete; its bytes are simply gone, and a
+ *                 consumer asking for c gets the same miss a
+ *                 single-producer overrun gives it. Stepping over this
+ *                 case is what keeps the ring from wedging the moment
+ *                 producers lap the publication point.
+ *
+ * Every producer runs this after publishing its own slot, so whoever
+ * finishes last also publishes the records that were waiting behind it;
+ * a producer that stalls holds back the records reserved after it until
+ * it comes back.
+ * Returns 1 if commit_seq moved (i.e. a consumer has something new). */
+static int mp_advance_commit(ringbuf_t *rb) {
+    int advanced = 0;
+    uint64_t c = atomic_load(&rb->commit_seq);
+    for (;;) {
+        uint64_t g = atomic_load_explicit(&rb->slot_gen[(uint32_t)(c % rb->capacity)],
+                                          memory_order_acquire);
+        uint64_t held = g >> 1;
+        if (held < c) break;                 /* slot not claimed for c */
+        if (held == c && (g & 1)) break;     /* c still being written */
+        if (atomic_compare_exchange_weak(&rb->commit_seq, &c, c + 1)) {
+            advanced = 1;
+            c++;
+        }
+        /* on failure the CAS reloaded c: another thread advanced it */
+    }
+    return advanced;
+}
+
+/* Consumer-side sync. A producer looks at the publication point once,
+ * after its own release store, and its store need not be visible to the
+ * next producer that looks: the consumer running the same loop is what
+ * guarantees the last records of a run always become visible. No-op with
+ * one producer, whose commit_seq is always current. Const because the
+ * callers are read-only queries: the publication point is not observable
+ * state to them. */
+static void mp_sync(const ringbuf_t *rb) {
+    if (rb->mp) (void)mp_advance_commit((ringbuf_t *)rb);
+}
+
+void ringbuf_producer_commit_w(ringbuf_t *rb, int pid) {
+    uint64_t seq = rb->prods[pid].seq;
     uint32_t idx = (uint32_t)(seq % rb->capacity);
     rb->records[idx].seq_num = seq;
-    atomic_fetch_add(&rb->slot_gen[idx], 1);   /* odd -> even: slot stable */
-    atomic_store(&rb->write_seq, seq + 1);
-    atomic_fetch_add(&rb->commit_seq, 1);
+    /* release: the record and its payload are complete before the slot
+     * is marked stable (seq * 2) */
+    atomic_store_explicit(&rb->slot_gen[idx], seq * 2u, memory_order_release);
+
+    if (!rb->mp) {
+        atomic_store_explicit(&rb->write_seq, seq + 1, memory_order_relaxed);
+        atomic_fetch_add(&rb->commit_seq, 1);
+    } else if (!mp_advance_commit(rb)) {
+        return;     /* nothing became visible: no wakeup owed */
+    }
 
     /* Wake the consumers that announced they are about to block. Both
      * this load and a consumer's flag/count stores are seq_cst, and so are
@@ -153,6 +330,10 @@ void ringbuf_producer_commit(ringbuf_t *rb) {
         ringbuf_wake_waiters(rb);
 }
 
+void ringbuf_producer_commit(ringbuf_t *rb) {
+    ringbuf_producer_commit_w(rb, 0);
+}
+
 uint64_t ringbuf_oldest(const ringbuf_t *rb) {
     uint64_t total = atomic_load(&rb->commit_seq);
     uint64_t clear = atomic_load(&rb->clear_seq);
@@ -161,11 +342,13 @@ uint64_t ringbuf_oldest(const ringbuf_t *rb) {
 }
 
 uint32_t ringbuf_count(const ringbuf_t *rb) {
+    mp_sync(rb);
     uint64_t total = atomic_load(&rb->commit_seq);
     return (uint32_t)(total - ringbuf_oldest(rb));
 }
 
 uint64_t ringbuf_total(const ringbuf_t *rb) {
+    mp_sync(rb);
     return atomic_load(&rb->commit_seq);
 }
 
@@ -179,34 +362,40 @@ uint64_t ringbuf_total(const ringbuf_t *rb) {
 static int read_slot(ringbuf_t *rb, uint32_t slot, uint64_t want,
                      pkt_record_t *out, uint8_t *data) {
     uint64_t g1 = atomic_load(&rb->slot_gen[slot]);
-    if (g1 & 1) return 0;   /* producer mid-write */
+    /* want * 2 = "holds record want, nobody writing". Any other value is
+     * a different record or a write in progress — including a producer
+     * lapping onto this slot while another is still filling it. */
+    if (g1 != want * 2u) return 0;
 
     *out = rb->records[slot];
     /* Bounds from a possibly torn record copy: clamp before touching
      * memory, the recheck below decides whether the copy counts. */
+    uint32_t pid = out->prod_id;
+    if (pid >= (uint32_t)rb->nprod) pid = 0;
+    const ringbuf_prod_t *p = &rb->prods[pid];
     uint32_t rl  = out->raw_len;
-    uint64_t off = out->data_pos % rb->arena_size;
+    uint64_t off = out->data_pos % p->arena_len;
     if (rl > rb->snaplen) rl = rb->snaplen;
-    if (rl > rb->arena_size - off) rl = (uint32_t)(rb->arena_size - off);
+    if (rl > p->arena_len - off) rl = (uint32_t)(p->arena_len - off);
     if (data && rl)
-        memcpy(data, rb->arena + off, rl);
+        memcpy(data, rb->arena + p->arena_base + off, rl);
 
     /* The copies above use plain loads; on weakly-ordered CPUs (arm64)
      * they may be satisfied after the recheck loads below, validating a
      * torn read. Fence so the copies complete first. */
     atomic_thread_fence(memory_order_acquire);
-    uint64_t cursor = atomic_load(&rb->arena_pos);
+    uint64_t cursor = atomic_load(&p->arena_pos);
     if (atomic_load(&rb->slot_gen[slot]) != g1 || out->seq_num != want)
         return 0;
-    /* Record consistent, so data_pos/raw_len are the producer's. The
-     * bytes at [data_pos, data_pos + rl) have been reused iff the cursor
-     * went past data_pos + arena_size (the skipped tail counts as used,
-     * which only makes this conservative). The cursor was loaded after
-     * the fence: if it still permits the copy, no overwrite could have
-     * been visible to it. (Loaded before the generation recheck so a
+    /* Record consistent, so prod_id/data_pos/raw_len are the producer's.
+     * The bytes at [data_pos, data_pos + rl) have been reused iff its
+     * cursor went past data_pos + slice size (the skipped tail counts as
+     * used, which only makes this conservative). The cursor was loaded
+     * after the fence: if it still permits the copy, no overwrite could
+     * have been visible to it. (Loaded before the generation recheck so a
      * claim that lands between the two costs a payload only when it is
      * about to be overwritten anyway.) */
-    if (rl && cursor - out->data_pos > rb->arena_size)
+    if (rl && cursor - out->data_pos > p->arena_len)
         rl = 0;
     out->raw_len  = rl;
     out->raw_data = data ? data : NULL;

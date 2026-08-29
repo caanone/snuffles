@@ -114,7 +114,7 @@ static void test_arena(void) {
     rb = ringbuf_create(8, 256, 1024);
     CHECK(rb->arena_size == 1024);
     for (uint8_t i = 0; i < 8; i++) push_len(rb, 200, (uint8_t)(0x10 + i));
-    CHECK(atomic_load(&rb->arena_pos) == 1624);
+    CHECK(atomic_load(&rb->prods[0].arena_pos) == 1624);
     uint8_t data[256];
     for (uint64_t i = 0; i < 8; i++) {
         int n = read_check(rb, i, (uint8_t)(0x10 + i), data, sizeof(data));
@@ -140,9 +140,9 @@ static void test_arena(void) {
     CHECK(read_check(rb, 5, 0x15, data, sizeof(data)) == 200);
     CHECK(read_check(rb, 8, 0xaa, data, sizeof(data)) == 256);
     /* zero-length records are always "intact" and never touch the arena */
-    uint64_t before = atomic_load(&rb->arena_pos);
+    uint64_t before = atomic_load(&rb->prods[0].arena_pos);
     push_len(rb, 0, 0);
-    CHECK(atomic_load(&rb->arena_pos) == before);
+    CHECK(atomic_load(&rb->prods[0].arena_pos) == before);
     CHECK(read_check(rb, 9, 0, data, sizeof(data)) == 0);
     CHECK(read_check(rb, 8, 0xaa, data, sizeof(data)) == 256);
     ringbuf_destroy(rb);
@@ -276,6 +276,138 @@ static void test_stress(void) {
     CHECK(reclaimed == 0);
     CHECK(ok > 1000);   /* the reader actually exercised the seqlock */
     ringbuf_destroy(g_rb);
+}
+
+/* ── multi-producer ──────────────────────────────────────────── */
+
+/* N producers on one ring. Record k of producer p carries k in
+ * summary.length, p in summary.src_port and a payload of 1 + k % 200
+ * bytes all equal to k * 7 + p + 1, so any consumer can tell a whole
+ * record from a torn one. */
+#define MP_PROD    4
+#define MP_N       10000ULL     /* records per producer, completeness run */
+#define MP_STRESS  50000ULL     /* records per producer, lapping run */
+
+static ringbuf_t     *g_mprb;
+static uint64_t       g_mp_n;
+
+static uint32_t mp_len(uint64_t k)  { return 1u + (uint32_t)(k % 200); }
+static uint8_t  mp_fill(uint64_t k, int pid) {
+    return (uint8_t)(k * 7 + (uint64_t)pid + 1);
+}
+
+static void *mp_producer(void *arg) {
+    int pid = (int)(intptr_t)arg;
+    for (uint64_t k = 0; k < g_mp_n; k++) {
+        uint32_t len = mp_len(k);
+        pkt_record_t *r = ringbuf_producer_next_w(g_mprb, pid, len);
+        memset(r->raw_data, mp_fill(k, pid), r->raw_len);
+        r->summary.length   = (uint32_t)k;
+        r->summary.src_port = (uint16_t)pid;
+        ringbuf_producer_commit_w(g_mprb, pid);
+    }
+    return NULL;
+}
+
+static void mp_start(pthread_t *t) {
+    for (int i = 0; i < MP_PROD; i++)
+        pthread_create(&t[i], NULL, mp_producer, (void *)(intptr_t)i);
+}
+
+static void mp_join(pthread_t *t) {
+    for (int i = 0; i < MP_PROD; i++) pthread_join(t[i], NULL);
+}
+
+/* Every reservation becomes visible exactly once, in one dense sequence
+ * range, with its payload intact — and a producer's own records keep
+ * their order. The ring holds every record, so a read of a committed
+ * sequence must never fail: that is the "commit_seq never runs past an
+ * unpublished slot, and never leaves a hole" invariant. */
+static void test_mp_complete(void) {
+    uint64_t total = MP_PROD * MP_N;
+    g_mp_n = MP_N;
+    /* one slot and 200 payload bytes per record: nothing is ever lapped */
+    g_mprb = ringbuf_create_mp((uint32_t)total, 256, total * 200, MP_PROD);
+    CHECK(g_mprb != NULL);
+    CHECK(ringbuf_producers(g_mprb) == MP_PROD);
+
+    static uint8_t seen[MP_PROD][MP_N];
+    memset(seen, 0, sizeof(seen));
+    uint64_t last_k[MP_PROD];
+    for (int i = 0; i < MP_PROD; i++) last_k[i] = (uint64_t)-1;
+
+    pthread_t t[MP_PROD];
+    mp_start(t);
+
+    uint64_t next = 0, bad = 0, dup = 0, misordered = 0, misses = 0;
+    uint8_t data[256];
+    while (next < total) {
+        if (ringbuf_total(g_mprb) <= next) { sched_yield(); continue; }
+        pkt_record_t rec;
+        if (!ringbuf_read_seq(g_mprb, next, &rec, data)) { misses++; next++; continue; }
+        uint64_t k   = rec.summary.length;
+        int      pid = rec.summary.src_port;
+        if (pid < 0 || pid >= MP_PROD || k >= MP_N) { bad++; next++; continue; }
+        if (seen[pid][k]++) dup++;
+        if (last_k[pid] != (uint64_t)-1 && k <= last_k[pid]) misordered++;
+        last_k[pid] = k;
+        if (rec.raw_len != mp_len(k)) bad++;
+        else for (uint32_t i = 0; i < rec.raw_len; i++)
+            if (data[i] != mp_fill(k, pid)) { bad++; break; }
+        next++;
+    }
+    mp_join(t);
+
+    CHECK(misses == 0);        /* no hole below commit_seq */
+    CHECK(bad == 0);           /* no torn record or payload */
+    CHECK(dup == 0);           /* every reservation exactly once */
+    CHECK(misordered == 0);    /* a producer's records keep their order */
+    CHECK(ringbuf_total(g_mprb) == total);
+    for (int p = 0; p < MP_PROD; p++)
+        for (uint64_t k = 0; k < MP_N; k++)
+            CHECK(seen[p][k] == 1);
+    ringbuf_destroy(g_mprb);
+}
+
+/* Same producers onto a ring that laps thousands of times, with a reader
+ * poking at random indices: nothing may ever come back torn, and every
+ * reservation must still reach commit_seq. */
+static void test_mp_stress(void) {
+    uint64_t total = MP_PROD * MP_STRESS;
+    g_mp_n = MP_STRESS;
+    g_mprb = ringbuf_create_mp(64, 256, 64 * 256, MP_PROD);
+    CHECK(g_mprb != NULL);
+
+    pthread_t t[MP_PROD];
+    mp_start(t);
+
+    uint64_t torn = 0, ok = 0, reclaimed = 0;
+    uint8_t data[256];
+    pkt_record_t rec;
+    unsigned seed = 99991;
+    while (ringbuf_total(g_mprb) < total) {
+        uint32_t c = ringbuf_count(g_mprb);
+        if (!c) { sched_yield(); continue; }
+        seed = seed * 1103515245u + 12345u;
+        if (!ringbuf_read(g_mprb, (seed >> 16) % c, &rec, data)) continue;
+        ok++;
+        uint64_t k   = rec.summary.length;
+        int      pid = rec.summary.src_port;
+        if (pid < 0 || pid >= MP_PROD || k >= MP_STRESS) { torn++; continue; }
+        if (rec.raw_len == 0) { reclaimed++; continue; }
+        if (rec.raw_len != mp_len(k)) { torn++; continue; }
+        for (uint32_t i = 0; i < rec.raw_len; i++)
+            if (data[i] != mp_fill(k, pid)) { torn++; break; }
+    }
+    mp_join(t);
+
+    printf("mp stress: reads=%llu reclaimed=%llu torn=%llu\n",
+           (unsigned long long)ok, (unsigned long long)reclaimed,
+           (unsigned long long)torn);
+    CHECK(torn == 0);
+    CHECK(ok > 1000);
+    CHECK(ringbuf_total(g_mprb) == total);   /* no reservation stuck */
+    ringbuf_destroy(g_mprb);
 }
 
 /* ── wakeup handshake ────────────────────────────────────────── */
@@ -604,6 +736,8 @@ int main(void) {
     test_arena();
     test_stress();
     test_arena_stress();
+    test_mp_complete();
+    test_mp_stress();
     test_wakeup();
     test_wakeup_quiet();
     test_waiters();
