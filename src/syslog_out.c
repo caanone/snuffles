@@ -59,9 +59,9 @@ struct syslog_out {
     atomic_uint_fast64_t sent;
     atomic_uint_fast64_t failed;
 
-    /* Outgoing batch, owned by the capture thread. Records are formatted
+    /* Outgoing batch, owned by the output thread. Records are formatted
      * straight into msgs[] and leave in one sendmmsg() (Linux) when the
-     * batch is full or the capture loop flushes on idle. */
+     * batch is full or the output thread flushes on idle. */
     unsigned            nbatch;
     int                 lens[SYSLOG_BATCH];
     char                msgs[SYSLOG_BATCH][SYSLOG_MSG_MAX];
@@ -374,8 +374,8 @@ void syslog_out_flush(syslog_out_t *sl) {
         }
         if (r < 0 && errno == EINTR) continue;
         /* EAGAIN/ENOBUFS (send queue full) or a hard error: drop the rest
-         * of the batch rather than wait for room. The capture thread must
-         * never stall here, or the kernel drops captured packets instead. */
+         * of the batch rather than wait for room: a stalled output thread
+         * would only be lapped by the ring (out_missed) instead. */
         atomic_fetch_add_explicit(&sl->failed, (uint64_t)(n - off), memory_order_relaxed);
         break;
     }
@@ -406,7 +406,7 @@ void syslog_out_counts(const syslog_out_t *sl, uint64_t *sent, uint64_t *failed)
 
 void syslog_out_destroy(syslog_out_t *sl) {
     if (!sl) return;
-    syslog_out_flush(sl);   /* capture thread is joined by now: nothing races */
+    syslog_out_flush(sl);   /* output thread is joined by now: nothing races */
     if (sl->sock != SOCK_INVALID) {
 #ifdef _WIN32
         closesocket(sl->sock);

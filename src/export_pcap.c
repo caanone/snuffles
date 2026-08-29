@@ -32,17 +32,34 @@ struct pcap_writer {
     uint32_t  snaplen;
     uint64_t  count;
     int       to_stdout;
+    char     *buf;      /* stdio buffer (file); stdout uses a static one */
 };
+
+/* stdio buffer: with the default 4 KB block a write() every ~3 small
+ * packets made -w to disk cost ~1.4 us per packet; 1 MB turns that into
+ * one write() per ~700 full-size frames. The writer's owner flushes when
+ * it goes idle. */
+#define PCAP_WRITER_BUF (1 << 20)
 
 pcap_writer_t *pcap_writer_open(const char *path, uint32_t snaplen, uint32_t linktype) {
     pcap_writer_t *pw = calloc(1, sizeof(pcap_writer_t));
     if (!pw) return NULL;
 
+    /* The buffer is supplied explicitly: given a NULL buf, glibc and musl
+       ignore the size and hand out their default block. Set before the
+       first write (setvbuf must precede any I/O on the stream). */
     if (strcmp(path, "-") == 0) {
+        static char outbuf[PCAP_WRITER_BUF];   /* outlives the stream */
         pw->fp = stdout;
         pw->to_stdout = 1;
+        setvbuf(pw->fp, outbuf, _IOFBF, sizeof(outbuf));
     } else {
         pw->fp = fopen(path, "wb");
+        if (pw->fp) {
+            pw->buf = malloc(PCAP_WRITER_BUF);
+            if (pw->buf)
+                setvbuf(pw->fp, pw->buf, _IOFBF, PCAP_WRITER_BUF);
+        }
     }
     if (!pw->fp) { free(pw); return NULL; }
 
@@ -59,7 +76,8 @@ pcap_writer_t *pcap_writer_open(const char *path, uint32_t snaplen, uint32_t lin
     };
 
     if (fwrite(&hdr, sizeof(hdr), 1, pw->fp) != 1) {
-        fclose(pw->fp);
+        if (!pw->to_stdout) fclose(pw->fp);
+        free(pw->buf);
         free(pw);
         return NULL;
     }
@@ -84,8 +102,12 @@ int pcap_writer_write(pcap_writer_t *pw, const pkt_record_t *rec) {
     if (fwrite(rec->raw_data, 1, incl, pw->fp) != incl) return -1;
 
     pw->count++;
-    if (pw->to_stdout) fflush(pw->fp);   /* live piping (e.g. into wireshark) */
     return 0;
+}
+
+int pcap_writer_flush(pcap_writer_t *pw) {
+    if (!pw || !pw->fp) return -1;
+    return fflush(pw->fp) == 0 ? 0 : -1;
 }
 
 uint64_t pcap_writer_count(const pcap_writer_t *pw) {
@@ -102,6 +124,7 @@ int pcap_writer_close(pcap_writer_t *pw) {
             rc = -1;
         }
     }
+    free(pw->buf);   /* after fclose: the stream used it until then */
     free(pw);
     return rc;
 }

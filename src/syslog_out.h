@@ -14,14 +14,14 @@ typedef struct syslog_out syslog_out_t;
 syslog_out_t   *syslog_out_create(const char *host_port,
                                    const char *src_iface);
 int             syslog_out_is_self(const syslog_out_t *sl, const pkt_summary_t *pkt);
-/* Format one CSV record into the outgoing batch (capture thread only).
- * Flushes by itself once SYSLOG_BATCH records are queued; the capture loop
- * calls syslog_out_flush() whenever it goes idle so a record never waits
- * longer than one dispatch cycle. */
+/* Format one CSV record into the outgoing batch (output thread only).
+ * Flushes by itself once SYSLOG_BATCH records are queued; the output
+ * thread calls syslog_out_flush() whenever it catches up with the ring so
+ * a record never waits longer than one wake-up. */
 void            syslog_out_send(syslog_out_t *sl, const pkt_summary_t *pkt);
 /* Transmit everything queued. Never blocks: datagrams the kernel cannot
  * take (EAGAIN/ENOBUFS, send buffer full) are dropped and counted as
- * failed. Capture thread only (also safe after the thread has been joined). */
+ * failed. Output thread only (also safe after the thread has been joined). */
 void            syslog_out_flush(syslog_out_t *sl);
 /* Records queued and not yet handed to the kernel. */
 unsigned        syslog_out_pending(const syslog_out_t *sl);

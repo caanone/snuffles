@@ -109,6 +109,9 @@ Stream every captured packet to a pcap file while capturing.
 .B \-w \-
 writes to stdout (combine with \fB\-q\fR), e.g. for
 .BR "snuffles \-q \-w \- | wireshark \-k \-i \-" .
+Written by the output thread from the ring buffer through a 1\ MB buffer
+flushed whenever it goes idle; a disk that cannot keep up costs records
+(\fIout_missed\fR in \fB\-\-stats\fR), never capture.
 .TP
 .B \-\-no\-ui
 Headless mode: print one line per packet to stdout.
@@ -121,15 +124,19 @@ No packet output (only the exit summary on stderr, see
 \fB\-\-no\-summary\fR); use with \fB\-\-syslog\fR or \fB\-w\fR.
 .TP
 .BI \-\-syslog " host:port"
-Forward per\-packet CSV records over UDP syslog. Records are batched (up
-to 32 per non\-blocking
+Forward per\-packet CSV records over UDP syslog. An output thread reads
+the records from the ring buffer (the capture thread is never slowed by
+the collector), batches them (up to 32 per non\-blocking
 .BR sendmmsg (2)
-on Linux) and flushed whenever the capture loop goes idle; the socket gets a
-16\ MB send buffer. Datagrams the kernel cannot queue are dropped, never
-waited for, and counted as
+on Linux) and flushes whenever it catches up; the socket gets a 16\ MB
+send buffer. Datagrams the kernel cannot queue are dropped, never waited
+for, and counted as
 .I syslog_fail
 by
-.BR \-\-stats .
+.BR \-\-stats ;
+records the ring overwrote before the thread reached them are counted as
+.IR out_missed .
+Without \fB\-b\fR the headless/quiet syslog modes use a 4096\-slot ring.
 .TP
 .BI \-\-syslog\-iface " ip|dev"
 Source address or device for syslog datagrams.
@@ -137,7 +144,8 @@ Source address or device for syslog datagrams.
 .BR \-\-stats [=\fIfile\fR]
 Print a counters line (captured, kernel and interface drops, ring
 occupancy, records emitted and missed by the consumer, syslog and stream
-counts, sessions, wake\-ups, RSS) every second and a
+counts, records missed by the output thread, sessions, wake\-ups, RSS)
+every second and a
 .B summary
 line at exit, to stderr or to \fIfile\fR (the TUI requires \fIfile\fR).
 .TP
@@ -155,7 +163,7 @@ once about GRO/GSO super\-frames (headless modes).
 .TP
 .BI \-\-cpu " N"
 Pin the capture thread to CPU \fIN\fR (Linux). The other threads (the
-headless consumer or the TUI, and the stats thread) are kept on the
+headless consumer or the TUI, the output and stats threads) are kept on the
 remaining CPUs of the process's affinity mask. Config key
 .BR cpu .
 .TP

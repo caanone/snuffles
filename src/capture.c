@@ -1,7 +1,5 @@
 #include "capture.h"
 #include "dissect.h"
-#include "export_pcap.h"
-#include "syslog_out.h"
 #include <pcap.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,11 +36,9 @@ struct capture_ctx {
     uint64_t            pkt_count;      /* capture thread only */
     atomic_uint_fast64_t drops;         /* published by capture thread */
     atomic_uint_fast64_t ifdrops;       /* pcap ps_ifdrop */
-    atomic_uint_fast64_t stream_pkts;   /* -w packets written */
     char                errbuf[PCAP_ERRBUF_SIZE];
     char                iface_name[64];
     char                bpf_active[512]; /* UI thread only (after create) */
-    syslog_out_t       *syslog;
 
     /* BPF changes are queued here by the UI thread and applied by the
      * capture thread between dispatch calls: the pcap_t handle must only
@@ -50,8 +46,6 @@ struct capture_ctx {
     ns_mutex_t          bpf_mtx;
     char                bpf_pending[512];
     atomic_int          bpf_req;
-
-    pcap_writer_t      *stream;     /* -w: capture thread only */
 
     atomic_int          had_error;  /* set by the capture thread on fatal error */
     char                err_msg[256]; /* written before had_error is set */
@@ -156,21 +150,7 @@ static void capture_callback(u_char *user, const struct pcap_pkthdr *hdr,
         if (sid) rec->summary.session_id = sid;
     }
 
-    /* syslog output (skip our own syslog traffic to prevent feedback loop) */
-    if (ctx->syslog && !syslog_out_is_self(ctx->syslog, &rec->summary))
-        syslog_out_send(ctx->syslog, &rec->summary);
-
-    /* streaming -w write (before commit: the slot is still ours) */
-    if (ctx->stream) {
-        if (pcap_writer_write(ctx->stream, rec) != 0) {
-            fprintf(stderr, "stream write failed; disabling -w output\n");
-            pcap_writer_close(ctx->stream);
-            ctx->stream = NULL;
-        } else {
-            atomic_fetch_add_explicit(&ctx->stream_pkts, 1, memory_order_relaxed);
-        }
-    }
-
+    /* --syslog and -w are served by the output thread from the ring */
     ringbuf_producer_commit(ctx->rb);
 
     ctx->pkt_count++;
@@ -234,11 +214,6 @@ static void *capture_thread_fn(void *arg) {
         int ret = pcap_dispatch(ctx->handle, CAPTURE_BATCH, capture_callback,
                                 (u_char *)ctx);
 
-        /* One non-blocking sendmmsg() per dispatch cycle for whatever the
-         * callbacks queued: a record waits at most one cycle (<= 100 ms)
-         * instead of costing a syscall each. */
-        syslog_out_flush(ctx->syslog);
-
         /* pcap_stats() is a getsockopt() round trip: sample it at most every
          * STATS_INTERVAL_MS while packets flow, and whenever dispatch came
          * back empty (idle, break-out, or exit) so the counters last
@@ -269,7 +244,6 @@ static void *capture_thread_fn(void *arg) {
         }
     }
 
-    syslog_out_flush(ctx->syslog);   /* records queued by the last cycle */
     atomic_store(&ctx->running, 0);
     return NULL;
 }
@@ -421,31 +395,12 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
         snprintf(ctx->bpf_active, sizeof(ctx->bpf_active), "%s", cfg->bpf_filter);
     }
 
-    /* open syslog output if configured: before the privilege drop, so the
-       16 MB send buffer (SO_SNDBUFFORCE) and --syslog-iface <dev>
-       (SO_BINDTODEVICE) get the capabilities they need */
-    if (cfg->syslog_target[0]) {
-        ctx->syslog = syslog_out_create(cfg->syslog_target, cfg->syslog_iface);
-        if (!ctx->syslog)
-            fprintf(stderr, "Warning: syslog output disabled\n");
-    }
-
     /* drop root privileges after capture device is opened */
 #ifndef _WIN32
     if (ns_drop_privileges() != 0)
         fprintf(stderr, "Warning: failed to drop root privileges; "
                         "continuing as root\n");
 #endif
-
-    /* streaming -w writer (opened after the privilege drop so the file is
-       owned by the invoking user, not root) */
-    if (cfg->stream_file[0]) {
-        ctx->stream = pcap_writer_open(cfg->stream_file, (uint32_t)cfg->snaplen,
-                                       (uint32_t)ctx->datalink);
-        if (!ctx->stream)
-            fprintf(stderr, "Warning: cannot open '%s' for -w streaming\n",
-                    cfg->stream_file);
-    }
 
     return ctx;
 }
@@ -471,16 +426,6 @@ void capture_stop(capture_ctx_t *ctx) {
 
 void capture_destroy(capture_ctx_t *ctx) {
     if (!ctx) return;
-    if (ctx->stream) {
-        uint64_t n = pcap_writer_count(ctx->stream);
-        if (pcap_writer_close(ctx->stream) != 0)
-            fprintf(stderr, "Warning: error finalizing -w stream file\n");
-        else
-            fprintf(stderr, "Streamed %llu packets to %s\n",
-                    (unsigned long long)n, ctx->cfg.stream_file);
-        ctx->stream = NULL;
-    }
-    syslog_out_destroy(ctx->syslog);
     if (ctx->handle)
         pcap_close(ctx->handle);
     ns_mutex_destroy(&ctx->bpf_mtx);
@@ -504,8 +449,6 @@ void capture_get_stats(capture_ctx_t *ctx, capture_stats_raw_t *out) {
     out->pkts_recv   = ringbuf_total(ctx->rb);
     out->pkts_drop   = atomic_load(&ctx->drops);
     out->pkts_ifdrop = atomic_load(&ctx->ifdrops);
-    out->stream_pkts = atomic_load_explicit(&ctx->stream_pkts, memory_order_relaxed);
-    syslog_out_counts(ctx->syslog, &out->syslog_sent, &out->syslog_failed);
 }
 
 int capture_get_datalink(const capture_ctx_t *ctx) {

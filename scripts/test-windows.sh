@@ -24,7 +24,7 @@ echo "== cross-compiling snuffles.exe (NO_PCAP) with $CC"
 $CC $CFLAGS -DNO_PCAP \
     src/main.c src/config.c src/capture_raw.c src/cbpf.c src/rawring.c src/dissect.c \
     src/filter.c src/ringbuf.c src/ui.c src/export_pcap.c src/export_json.c \
-    src/stats.c src/session.c src/syslog_out.c \
+    src/stats.c src/session.c src/syslog_out.c src/output.c \
     -o "$OUT/snuffles.exe" -static -lws2_32 -liphlpapi -lpthread
 
 echo "== cross-compiling unit tests"
@@ -39,13 +39,17 @@ $CC $CFLAGS tests/test_filter.c src/filter.c src/dissect.c \
 # export_json.c also walks the ring through the display filter
 $CC $CFLAGS tests/test_export_json.c src/export_json.c src/filter.c src/dissect.c \
     src/ringbuf.c -o "$OUT/test_export_json.exe" -static -lws2_32 -lpthread
+# the output thread drives both sinks off the ring
+$CC $CFLAGS tests/test_output.c src/output.c src/ringbuf.c src/syslog_out.c \
+    src/export_pcap.c src/filter.c src/dissect.c \
+    -o "$OUT/test_output.exe" -static -lws2_32 -lpthread
 
 WINE=${WINE:-wine}
 export WINEDEBUG=${WINEDEBUG:--all}
 
 echo "== running unit tests under Wine"
 rc=0
-for t in filter ringbuf session dissect cbpf rawring config export_json syslog_out; do
+for t in filter ringbuf session dissect cbpf rawring config export_json syslog_out output; do
     printf '%-10s ' "$t"
     if $WINE "$OUT/test_$t.exe"; then :; else
         echo "FAILED: test_$t.exe"
