@@ -26,8 +26,6 @@
 
 #include "capture.h"
 #include "dissect.h"
-#include "export_pcap.h"
-#include "syslog_out.h"
 #include <stdatomic.h>
 #ifdef __linux__
   #include <sys/prctl.h>
@@ -88,11 +86,8 @@ struct capture_ctx {
     int                 has_eth;    /* 1 if we get Ethernet headers (Linux AF_PACKET) */
     atomic_uint_fast64_t pkt_count;
     atomic_uint_fast64_t drops;         /* Linux PACKET_STATISTICS, cumulative */
-    atomic_uint_fast64_t stream_pkts;   /* -w packets written */
     char                iface_name[64];
     char                bpf_expr[512]; /* stored but not kernel-applied */
-    syslog_out_t       *syslog;
-    pcap_writer_t      *stream;     /* -w: capture thread only */
 #ifdef __linux__
     /* TPACKET_V3 block ring (NULL when the recvmmsg fallback is in use) */
     uint8_t            *ring;
@@ -172,27 +167,7 @@ static int process_packet(capture_ctx_t *ctx, const uint8_t *pkt,
         if (sid) rec->summary.session_id = sid;
     }
 
-    /* syslog output (skip own traffic to prevent feedback loop) */
-    if (ctx->syslog && !syslog_out_is_self(ctx->syslog, &rec->summary)) {
-        syslog_out_send(ctx->syslog, &rec->summary);
-#ifndef __linux__
-        /* no MSG_DONTWAIT drain on Winsock: flush per packet so a record
-         * never waits for the batch to fill */
-        syslog_out_flush(ctx->syslog);
-#endif
-    }
-
-    /* streaming -w write (before commit: the slot is still ours) */
-    if (ctx->stream) {
-        if (pcap_writer_write(ctx->stream, rec) != 0) {
-            fprintf(stderr, "stream write failed; disabling -w output\n");
-            pcap_writer_close(ctx->stream);
-            ctx->stream = NULL;
-        } else {
-            atomic_fetch_add_explicit(&ctx->stream_pkts, 1, memory_order_relaxed);
-        }
-    }
-
+    /* --syslog and -w are served by the output thread from the ring */
     ringbuf_producer_commit(ctx->rb);
 
     uint64_t n = atomic_fetch_add(&ctx->pkt_count, 1) + 1;
@@ -326,10 +301,8 @@ static void ring_loop(capture_ctx_t *ctx) {
         ctx->ring_cur = (ctx->ring_cur + 1 == ctx->geom.block_nr)
                         ? 0 : ctx->ring_cur + 1;
 
-        /* end of block: the syslog batch goes out (bounds record latency
-         * at the retire timeout) and the drop counter is refreshed — one
-         * syscall each per block, i.e. per ~1 500 small frames under load */
-        syslog_out_flush(ctx->syslog);
+        /* end of block: refresh the drop counter — one syscall per block,
+         * i.e. per ~1 500 small frames under load */
         poll_kernel_drops(ctx);
         if (w.done) break;
     }
@@ -373,28 +346,16 @@ static void recvmmsg_loop(capture_ctx_t *ctx) {
             if (left < vlen) vlen = left ? (unsigned)left : 1u;
         }
 
-        /* While syslog records are queued, only take what the socket
-         * already holds; once it runs dry, flush the batch and return to
-         * the blocking (100 ms timeout) read. Bounds syslog latency at
-         * "end of burst" without a send syscall per packet. */
-        int rflags = 0;
-        if (syslog_out_pending(ctx->syslog))
-            rflags = MSG_DONTWAIT;
-
         /* MSG_WAITFORONE: block (bounded by SO_RCVTIMEO, so stop_req is
          * still honoured) for the first frame, then drain whatever else
          * is queued without waiting — one syscall per burst, no added
          * latency at low rates. MSG_TRUNC: msg_len reports the wire
          * length even when the frame was cut to the buffer. */
         int n = recvmmsg(ctx->sock, msgs, vlen,
-                         MSG_WAITFORONE | MSG_TRUNC | rflags, NULL);
+                         MSG_WAITFORONE | MSG_TRUNC, NULL);
         int err = errno;   /* poll_kernel_drops() below may clobber it */
 
         if (n <= 0) {
-            if (rflags && (n == 0 || err == EAGAIN || err == EWOULDBLOCK)) {
-                syslog_out_flush(ctx->syslog);   /* socket drained: end of burst */
-                continue;
-            }
             poll_kernel_drops(ctx);
             since_poll = 0;
             if (atomic_load(&ctx->stop_req)) break;
@@ -447,7 +408,6 @@ static void *capture_thread_fn(void *arg) {
      * poll (up to a few thousand frames' worth under load) */
     poll_kernel_drops(ctx);
 
-    syslog_out_flush(ctx->syslog);   /* records queued by the last burst */
     atomic_store(&ctx->running, 0);
     return NULL;
 }
@@ -494,7 +454,6 @@ static void *capture_thread_fn(void *arg) {
             break;
     }
 
-    syslog_out_flush(ctx->syslog);   /* records queued by the last burst */
     atomic_store(&ctx->running, 0);
     return NULL;
 }
@@ -931,30 +890,12 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
     return NULL;
 #endif
 
-    /* open syslog output if configured: before the privilege drop, so the
-       16 MB send buffer (SO_SNDBUFFORCE) and --syslog-iface <dev>
-       (SO_BINDTODEVICE) get the capabilities they need */
-    if (cfg->syslog_target[0]) {
-        ctx->syslog = syslog_out_create(cfg->syslog_target, cfg->syslog_iface);
-        if (!ctx->syslog)
-            fprintf(stderr, "Warning: syslog output disabled\n");
-    }
-
     /* drop root privileges now that the raw socket is open */
 #ifndef _WIN32
     if (ns_drop_privileges() != 0)
         fprintf(stderr, "Warning: failed to drop root privileges; "
                         "continuing as root\n");
 #endif
-
-    /* streaming -w writer (after the privilege drop: file owned by user) */
-    if (cfg->stream_file[0]) {
-        ctx->stream = pcap_writer_open(cfg->stream_file, (uint32_t)cfg->snaplen,
-                                       ctx->has_eth ? 1u : 101u /* DLT_RAW */);
-        if (!ctx->stream)
-            fprintf(stderr, "Warning: cannot open '%s' for -w streaming\n",
-                    cfg->stream_file);
-    }
 
     return ctx;
 }
@@ -978,16 +919,6 @@ void capture_stop(capture_ctx_t *ctx) {
 
 void capture_destroy(capture_ctx_t *ctx) {
     if (!ctx) return;
-    if (ctx->stream) {
-        uint64_t n = pcap_writer_count(ctx->stream);
-        if (pcap_writer_close(ctx->stream) != 0)
-            fprintf(stderr, "Warning: error finalizing -w stream file\n");
-        else
-            fprintf(stderr, "Streamed %llu packets to %s\n",
-                    (unsigned long long)n, ctx->cfg.stream_file);
-        ctx->stream = NULL;
-    }
-    syslog_out_destroy(ctx->syslog);
 #ifdef __linux__
     linux_release(ctx);     /* unmap the ring before the socket goes */
 #endif
@@ -1029,8 +960,6 @@ void capture_get_stats(capture_ctx_t *ctx, capture_stats_raw_t *out) {
     if (!ctx) return;
     out->pkts_recv   = atomic_load(&ctx->pkt_count);
     out->pkts_drop   = atomic_load(&ctx->drops);
-    out->stream_pkts = atomic_load_explicit(&ctx->stream_pkts, memory_order_relaxed);
-    syslog_out_counts(ctx->syslog, &out->syslog_sent, &out->syslog_failed);
 }
 
 const char *capture_get_iface(const capture_ctx_t *ctx) {

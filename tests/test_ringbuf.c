@@ -133,7 +133,7 @@ static void wake_nap(void) {
  * Windows) for at most ms. Returns 1 if woken, 0 on timeout. */
 static int wake_block(ringbuf_t *rb, int ms) {
 #ifdef _WIN32
-    return WaitForSingleObject(rb->notify_event, (DWORD)ms) == WAIT_OBJECT_0;
+    return WaitForSingleObject(rb->waiters[0].event, (DWORD)ms) == WAIT_OBJECT_0;
 #else
     int fd = ringbuf_get_notify_fd(rb);
     fd_set fds;
@@ -148,7 +148,7 @@ static int wake_block(ringbuf_t *rb, int ms) {
  * pipe byte / the event was signalled), 0 if the channel was quiet. */
 static int wake_take(ringbuf_t *rb) {
 #ifdef _WIN32
-    return WaitForSingleObject(rb->notify_event, 0) == WAIT_OBJECT_0;
+    return WaitForSingleObject(rb->waiters[0].event, 0) == WAIT_OBJECT_0;
 #else
     char c;
     return read(ringbuf_get_notify_fd(rb), &c, 1) == 1;
@@ -265,6 +265,67 @@ static void test_wakeup_quiet(void) {
     ringbuf_destroy(rb);
 }
 
+/* Take one wakeup from waiter slot id without blocking. */
+static int wake_take_slot(ringbuf_t *rb, int id) {
+#ifdef _WIN32
+    return WaitForSingleObject(rb->waiters[id].event, 0) == WAIT_OBJECT_0;
+#else
+    char c;
+    return read(ringbuf_waiter_fd(rb, id), &c, 1) == 1;
+#endif
+}
+
+/* Two blocking consumers (headless printer + output thread): each gets
+ * its own wakeup, a slot that did not announce gets none, and the
+ * producer's per-commit check stays a single counter. */
+static void test_waiters(void) {
+    ringbuf_t *rb = ringbuf_create(64, 16);
+    CHECK(rb != NULL);
+    int w1 = ringbuf_waiter_add(rb);
+    CHECK(w1 == 1);
+    CHECK(atomic_load(&rb->nwaiters) == 2);
+
+    /* both announce: one commit wakes both, once each */
+    ringbuf_consumer_will_wait(rb);
+    ringbuf_waiter_will_wait(rb, w1);
+    CHECK(atomic_load(&rb->nwaiting) == 2);
+    push(rb, 1);
+    CHECK(ringbuf_notify_sent(rb) == 2);
+    CHECK(atomic_load(&rb->nwaiting) == 0);
+    push(rb, 2);
+    CHECK(ringbuf_notify_sent(rb) == 2);          /* claimed: no repeat */
+    CHECK(wake_take(rb));
+    CHECK(!wake_take(rb));
+    CHECK(wake_take_slot(rb, w1));
+    CHECK(!wake_take_slot(rb, w1));
+    ringbuf_drain_notify(rb);
+    ringbuf_waiter_drain(rb, w1);
+
+    /* only the second slot announces */
+    ringbuf_waiter_will_wait(rb, w1);
+    ringbuf_waiter_will_wait(rb, w1);             /* repeat: counted once */
+    CHECK(atomic_load(&rb->nwaiting) == 1);
+    push(rb, 3);
+    CHECK(ringbuf_notify_sent(rb) == 3);
+    CHECK(!wake_take(rb));
+    CHECK(wake_take_slot(rb, w1));
+    ringbuf_waiter_drain(rb, w1);
+
+    /* an announcement withdrawn by drain costs nothing */
+    ringbuf_waiter_will_wait(rb, w1);
+    ringbuf_waiter_drain(rb, w1);
+    CHECK(atomic_load(&rb->nwaiting) == 0);
+    push(rb, 4);
+    CHECK(ringbuf_notify_sent(rb) == 3);
+    CHECK(!wake_take_slot(rb, w1));
+
+    /* slots are finite */
+    CHECK(ringbuf_waiter_add(rb) == 2);
+    CHECK(ringbuf_waiter_add(rb) == 3);
+    CHECK(ringbuf_waiter_add(rb) == -1);
+    ringbuf_destroy(rb);
+}
+
 /* ── consumer position / producer back-pressure ──────────────── */
 
 static void test_backpressure_basic(void) {
@@ -310,6 +371,19 @@ static void test_backpressure_basic(void) {
     /* a consumer that is fully caught up never blocks the producer */
     ringbuf_consumer_publish(rb, ringbuf_total(rb));
     CHECK(ringbuf_producer_may_write(rb) == 1);
+
+    /* a second attached slot: the slowest one holds the producer */
+    int w1 = ringbuf_waiter_add(rb);
+    CHECK(w1 == 1);
+    ringbuf_waiter_attach(rb, w1);              /* at 0: 8 unread already */
+    CHECK(ringbuf_producer_may_write(rb) == 0);
+    ringbuf_waiter_publish(rb, w1, ringbuf_total(rb) - 6);
+    CHECK(ringbuf_producer_may_write(rb) == 1); /* 6 < 7 */
+    ringbuf_waiter_publish(rb, w1, ringbuf_total(rb) - 7);
+    CHECK(ringbuf_producer_may_write(rb) == 0);
+    ringbuf_consumer_publish(rb, ringbuf_total(rb) - 7);
+    ringbuf_waiter_publish(rb, w1, ringbuf_total(rb));
+    CHECK(ringbuf_producer_may_write(rb) == 0); /* slot 0 now the slow one */
     ringbuf_destroy(rb);
 }
 
@@ -372,6 +446,7 @@ int main(void) {
     test_stress();
     test_wakeup();
     test_wakeup_quiet();
+    test_waiters();
     test_backpressure_basic();
     test_backpressure_threads();
     TEST_MAIN_END();
