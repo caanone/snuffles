@@ -125,16 +125,16 @@ static void capture_callback(u_char *user, const struct pcap_pkthdr *hdr,
                     "for wire-sized frames try: ethtool -K %s gro off gso off "
                     "tso off\n", hdr->len, ctx->iface_name, ctx->iface_mtu,
                     ctx->iface_name);
+        else if (ctx->cfg.no_ui && hdr->len > (bpf_u_int32)ctx->cfg.snaplen)
+            fprintf(stderr, "snuffles: %u-byte frame on %s exceeds the snaplen "
+                    "(%d) and is truncated; use -s to keep whole jumbo "
+                    "frames\n", hdr->len, ctx->iface_name, ctx->cfg.snaplen);
     }
 
-    pkt_record_t *rec = ringbuf_producer_next(ctx->rb);
-
-    /* copy raw packet data */
-    uint32_t copylen = hdr->caplen;
-    if (copylen > (uint32_t)ctx->cfg.snaplen)
-        copylen = (uint32_t)ctx->cfg.snaplen;
-    memcpy(rec->raw_data, data, copylen);
-    rec->raw_len = copylen;
+    /* claim a slot and arena space, copy the raw bytes (granted length is
+     * min(caplen, snaplen)) */
+    pkt_record_t *rec = ringbuf_producer_next(ctx->rb, hdr->caplen);
+    memcpy(rec->raw_data, data, rec->raw_len);
 
     /* dissect */
     dissect_packet(data, hdr->caplen, ctx->datalink, &rec->summary);

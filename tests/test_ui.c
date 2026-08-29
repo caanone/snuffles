@@ -73,7 +73,7 @@ static void load_commit(load_t *l, uint32_t n) {
     s.dst_port = 53;
     s.length   = 60;
     s.ts.tv_sec = (long)(n / 1000);
-    pkt_record_t *r = ringbuf_producer_next(l->rb);
+    pkt_record_t *r = ringbuf_producer_next(l->rb, 0);
     r->summary = s;
     r->raw_len = 0;
     ringbuf_producer_commit(l->rb);
@@ -130,7 +130,7 @@ int main(void) {
     dup2(p[0], STDIN_FILENO);       /* read_key() polls this */
     g_key_w = p[1];
 
-    ringbuf_t *rb = ringbuf_create(4096, 256);
+    ringbuf_t *rb = ringbuf_create(4096, 256, 0);
     session_table_t *st = session_table_create(4096);
     capture_cfg_t cfg;
     capture_cfg_defaults(&cfg);

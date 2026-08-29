@@ -13,15 +13,15 @@
 /* ── single-thread semantics ─────────────────────────────────── */
 
 static void push(ringbuf_t *rb, uint8_t fill) {
-    pkt_record_t *r = ringbuf_producer_next(rb);
+    pkt_record_t *r = ringbuf_producer_next(rb, 32);
+    CHECK(r->raw_len == 32);
     memset(r->raw_data, fill, 32);
-    r->raw_len = 32;
     r->summary.length = fill;
     ringbuf_producer_commit(rb);
 }
 
 static void test_basic(void) {
-    ringbuf_t *rb = ringbuf_create(8, 64);
+    ringbuf_t *rb = ringbuf_create(8, 64, 0);
     CHECK(rb != NULL);
     CHECK(ringbuf_count(rb) == 0);
 
@@ -61,6 +61,162 @@ static void test_basic(void) {
     ringbuf_destroy(rb);
 }
 
+/* ── payload arena ───────────────────────────────────────────── */
+
+/* Push one record of len bytes filled with fill, summary.length = len. */
+static void push_len(ringbuf_t *rb, uint32_t len, uint8_t fill) {
+    pkt_record_t *r = ringbuf_producer_next(rb, len);
+    memset(r->raw_data, fill, r->raw_len);
+    r->summary.length = len;
+    ringbuf_producer_commit(rb);
+}
+
+/* Read sequence seq with payload; returns raw_len, -1 on failure, and
+ * checks every returned byte equals fill. */
+static int read_check(ringbuf_t *rb, uint64_t seq, uint8_t fill,
+                      uint8_t *data, uint32_t datalen) {
+    pkt_record_t rec;
+    memset(data, 0xee, datalen);
+    if (!ringbuf_read_seq(rb, seq, &rec, data)) return -1;
+    CHECK(rec.raw_data == data);
+    for (uint32_t i = 0; i < rec.raw_len; i++)
+        if (data[i] != fill) { CHECK(!"payload bytes"); break; }
+    return (int)rec.raw_len;
+}
+
+static void test_arena(void) {
+    /* sizing: 0 derives capacity x min(snaplen, 2048); explicit sizes are
+     * raised to snaplen; a grant never exceeds snaplen */
+    ringbuf_t *rb = ringbuf_create(8, 64, 0);
+    CHECK(rb->arena_size == 8 * 64);
+    ringbuf_destroy(rb);
+    rb = ringbuf_create(8, 4000, 0);
+    CHECK(rb->arena_size == 8 * 2048);
+    ringbuf_destroy(rb);
+    rb = ringbuf_create(8, 4000, 100);
+    CHECK(rb->arena_size == 4000);
+    pkt_record_t *r = ringbuf_producer_next(rb, 65535);
+    CHECK(r->raw_len == 4000);
+    CHECK(r->raw_data == rb->arena);
+    ringbuf_producer_commit(rb);
+    r = ringbuf_producer_next(rb, 1);          /* tail full: wraps to 0 */
+    CHECK(r->raw_data == rb->arena);
+    CHECK(r->data_pos == 4000);
+    ringbuf_producer_commit(rb);
+    ringbuf_destroy(rb);
+
+    /* wrap-around with mixed sizes: 8 slots, 1024-byte arena, 200-byte
+     * packets. Positions 0,200,400,600,800 fit; the sixth does not fit in
+     * the 24-byte tail, so it starts a new lap at position 1024 (offset
+     * 0), then 1224, 1424; cursor 1624. A payload at P is intact while
+     * cursor - P <= 1024: packets 3..7 (P = 600, 800, 1024, 1224, 1424),
+     * and packets 0..2 have been overlapped by the new lap. */
+    rb = ringbuf_create(8, 256, 1024);
+    CHECK(rb->arena_size == 1024);
+    for (uint8_t i = 0; i < 8; i++) push_len(rb, 200, (uint8_t)(0x10 + i));
+    CHECK(atomic_load(&rb->arena_pos) == 1624);
+    uint8_t data[256];
+    for (uint64_t i = 0; i < 8; i++) {
+        int n = read_check(rb, i, (uint8_t)(0x10 + i), data, sizeof(data));
+        CHECK(n == (i < 3 ? 0 : 200));
+    }
+    /* summary-only reads report the same availability */
+    pkt_record_t rec;
+    CHECK(ringbuf_read(rb, 0, &rec, NULL) && rec.raw_len == 0 &&
+          rec.summary.length == 200 && rec.raw_data == NULL);
+    CHECK(ringbuf_read(rb, 3, &rec, NULL) && rec.raw_len == 200);
+    CHECK(ringbuf_read_seq(rb, 3, &rec, data) && rec.raw_len == 200 &&
+          data[199] == 0x13);
+
+    /* a 256-byte packet: the tail (offset 600, 424 free) fits it, so it
+     * takes position 1624 = offsets [600, 856): all of packet 3's bytes
+     * and the first 56 of packet 4's. Cursor 1880: packet 4 (P = 800,
+     * 1080 > 1024) is reclaimed too — a partial overlap is enough —
+     * packet 5 (P = 1024, 856) is intact. Sequence 0 left the ring. */
+    push_len(rb, 256, 0xaa);
+    CHECK(ringbuf_oldest(rb) == 1);
+    CHECK(read_check(rb, 3, 0x13, data, sizeof(data)) == 0);
+    CHECK(read_check(rb, 4, 0x14, data, sizeof(data)) == 0);
+    CHECK(read_check(rb, 5, 0x15, data, sizeof(data)) == 200);
+    CHECK(read_check(rb, 8, 0xaa, data, sizeof(data)) == 256);
+    /* zero-length records are always "intact" and never touch the arena */
+    uint64_t before = atomic_load(&rb->arena_pos);
+    push_len(rb, 0, 0);
+    CHECK(atomic_load(&rb->arena_pos) == before);
+    CHECK(read_check(rb, 9, 0, data, sizeof(data)) == 0);
+    CHECK(read_check(rb, 8, 0xaa, data, sizeof(data)) == 256);
+    ringbuf_destroy(rb);
+
+    /* tiny arena: every packet evicts the previous one */
+    rb = ringbuf_create(16, 100, 100);
+    for (uint8_t i = 0; i < 16; i++) push_len(rb, 100, i);
+    for (uint64_t i = 0; i < 16; i++)
+        CHECK(read_check(rb, i, (uint8_t)i, data, sizeof(data)) == (i == 15 ? 100 : 0));
+    ringbuf_destroy(rb);
+}
+
+/* Concurrent: random sizes into a small arena that laps many times per
+ * ring lap. Every payload the reader gets back must be whole (all bytes
+ * carry the record's fill), never a torn or overwritten one; records
+ * whose bytes were reclaimed come back with raw_len 0 and a good summary. */
+#define ARENA_N 400000ULL
+
+static ringbuf_t *g_arb;
+
+static void *arena_producer(void *arg) {
+    (void)arg;
+    unsigned seed = 777;
+    for (uint64_t s = 0; s < ARENA_N; s++) {
+        seed = seed * 1103515245u + 12345u;
+        uint32_t len = 1 + (seed >> 16) % 256;       /* 1..256 */
+        pkt_record_t *r = ringbuf_producer_next(g_arb, len);
+        uint8_t v = (uint8_t)(s * 7 + 1);
+        memset(r->raw_data, v, r->raw_len);
+        r->summary.length = len;
+        r->summary.src_port = v;
+        ringbuf_producer_commit(g_arb);
+    }
+    return NULL;
+}
+
+static void test_arena_stress(void) {
+    g_arb = ringbuf_create(64, 256, 2048);   /* ~8 packets' worth of bytes */
+    CHECK(g_arb != NULL);
+
+    pthread_t t;
+    pthread_create(&t, NULL, arena_producer, NULL);
+
+    uint64_t torn = 0, ok = 0, whole = 0, reclaimed = 0, shortlen = 0;
+    uint8_t data[256];
+    pkt_record_t rec;
+    unsigned seed = 4242;
+    while (ringbuf_total(g_arb) < ARENA_N) {
+        uint32_t c = ringbuf_count(g_arb);
+        if (!c) continue;
+        seed = seed * 1103515245u + 12345u;
+        uint32_t idx = (seed >> 16) % c;
+        if (!ringbuf_read(g_arb, idx, &rec, data)) continue;
+        ok++;
+        uint8_t v = (uint8_t)(rec.seq_num * 7 + 1);
+        if (rec.summary.src_port != v) torn++;
+        if (rec.raw_len == 0) { reclaimed++; continue; }
+        if (rec.raw_len != rec.summary.length) shortlen++;
+        whole++;
+        for (uint32_t i = 0; i < rec.raw_len; i++)
+            if (data[i] != v) { torn++; break; }
+    }
+    pthread_join(t, NULL);
+
+    printf("arena stress: reads=%llu whole=%llu reclaimed=%llu torn=%llu\n",
+           (unsigned long long)ok, (unsigned long long)whole,
+           (unsigned long long)reclaimed, (unsigned long long)torn);
+    CHECK(torn == 0);
+    CHECK(shortlen == 0);
+    CHECK(whole > 100);        /* recent records still carry their bytes */
+    CHECK(reclaimed > 100);    /* ...and the arena really did lap */
+    ringbuf_destroy(g_arb);
+}
+
 /* ── concurrent seqlock stress ───────────────────────────────── */
 
 #define STRESS_N 1000000ULL
@@ -70,10 +226,9 @@ static ringbuf_t *g_rb;
 static void *producer(void *arg) {
     (void)arg;
     for (uint64_t s = 0; s < STRESS_N; s++) {
-        pkt_record_t *r = ringbuf_producer_next(g_rb);
+        pkt_record_t *r = ringbuf_producer_next(g_rb, 64);
         uint8_t v = (uint8_t)(s ^ (s >> 8));
         memset(r->raw_data, v, 64);
-        r->raw_len = 64;
         r->summary.length = (uint32_t)s;
         r->summary.src_port = v;
         ringbuf_producer_commit(g_rb);
@@ -82,13 +237,19 @@ static void *producer(void *arg) {
 }
 
 static void test_stress(void) {
-    g_rb = ringbuf_create(64, 64);
+    /* arena = one ring lap of 64-byte payloads plus one packet: the
+     * producer claims the bytes of the record it is about to overwrite
+     * (which no reader can validate) and nothing older, so a validated
+     * read must always find its payload — the reclaim bound is tight to
+     * within the one allocation in flight, never early. */
+    g_rb = ringbuf_create(64, 64, 65 * 64);
     CHECK(g_rb != NULL);
+    CHECK(g_rb->arena_size == 65 * 64);
 
     pthread_t t;
     pthread_create(&t, NULL, producer, NULL);
 
-    uint64_t torn = 0, ok = 0;
+    uint64_t torn = 0, ok = 0, reclaimed = 0;
     uint8_t data[64];
     pkt_record_t rec;
     unsigned seed = 12345;
@@ -104,6 +265,7 @@ static void test_stress(void) {
             if (rec.summary.length != (uint32_t)rec.seq_num ||
                 rec.summary.src_port != v)
                 torn++;
+            if (rec.raw_len != 64) { reclaimed++; continue; }
             for (int i = 0; i < 64; i++)
                 if (data[i] != v) { torn++; break; }
         }
@@ -111,6 +273,7 @@ static void test_stress(void) {
     pthread_join(t, NULL);
 
     CHECK(torn == 0);
+    CHECK(reclaimed == 0);
     CHECK(ok > 1000);   /* the reader actually exercised the seqlock */
     ringbuf_destroy(g_rb);
 }
@@ -162,9 +325,8 @@ static void *wake_producer(void *arg) {
          * blocks: those are the wakeups that must not be lost. */
         if (s && s % (WAKE_N / WAKE_PAUSE) == 0)
             wake_nap();
-        pkt_record_t *r = ringbuf_producer_next(g_rb);
+        pkt_record_t *r = ringbuf_producer_next(g_rb, 0);
         r->summary.length = (uint32_t)s;
-        r->raw_len = 0;
         ringbuf_producer_commit(g_rb);
     }
     return NULL;
@@ -175,7 +337,7 @@ static void *wake_producer(void *arg) {
  * have been lapped, and no wait may hit the (generous) timeout: a timeout
  * means a commit landed while we were blocked and nobody woke us. */
 static void test_wakeup(void) {
-    g_rb = ringbuf_create(1024, 16);
+    g_rb = ringbuf_create(1024, 16, 0);
     CHECK(g_rb != NULL);
 #ifndef _WIN32
     CHECK(ringbuf_get_notify_fd(g_rb) >= 0);
@@ -233,12 +395,11 @@ static void test_wakeup(void) {
 /* A consumer that never announces a wait must cost the producer no
  * syscalls at all; one announcement buys exactly one pipe byte. */
 static void test_wakeup_quiet(void) {
-    ringbuf_t *rb = ringbuf_create(64, 16);
+    ringbuf_t *rb = ringbuf_create(64, 16, 0);
     CHECK(rb != NULL);
 
     for (uint64_t s = 0; s < WAKE_N; s++) {
-        pkt_record_t *r = ringbuf_producer_next(rb);
-        r->raw_len = 0;
+        (void)ringbuf_producer_next(rb, 0);
         ringbuf_producer_commit(rb);
     }
     CHECK(ringbuf_total(rb) == WAKE_N);
@@ -247,8 +408,7 @@ static void test_wakeup_quiet(void) {
 
     ringbuf_consumer_will_wait(rb);
     for (uint64_t s = 0; s < WAKE_N; s++) {
-        pkt_record_t *r = ringbuf_producer_next(rb);
-        r->raw_len = 0;
+        (void)ringbuf_producer_next(rb, 0);
         ringbuf_producer_commit(rb);
     }
     CHECK(ringbuf_notify_sent(rb) == 1);
@@ -257,8 +417,7 @@ static void test_wakeup_quiet(void) {
 
     ringbuf_drain_notify(rb);                     /* withdraws the flag */
     for (int i = 0; i < 1000; i++) {
-        pkt_record_t *r = ringbuf_producer_next(rb);
-        r->raw_len = 0;
+        (void)ringbuf_producer_next(rb, 0);
         ringbuf_producer_commit(rb);
     }
     CHECK(ringbuf_notify_sent(rb) == 1);
@@ -268,7 +427,7 @@ static void test_wakeup_quiet(void) {
 /* ── consumer position / producer back-pressure ──────────────── */
 
 static void test_backpressure_basic(void) {
-    ringbuf_t *rb = ringbuf_create(8, 64);
+    ringbuf_t *rb = ringbuf_create(8, 64, 0);
     CHECK(rb != NULL);
 
     /* no consumer attached: never blocks, even after wrapping */
@@ -281,7 +440,7 @@ static void test_backpressure_basic(void) {
     /* attach at 0: capacity 8 leaves 6 records of headroom (one slot of
      * slack for the record being overwritten) */
     ringbuf_destroy(rb);
-    rb = ringbuf_create(8, 64);
+    rb = ringbuf_create(8, 64, 0);
     ringbuf_consumer_attach(rb);
     CHECK(ringbuf_consumer_seq(rb) == 0);
     for (int i = 0; i < 6; i++) {
@@ -324,9 +483,8 @@ static void *bp_producer(void *arg) {
     for (uint64_t s = 0; s < BP_N; s++) {
         while (!ringbuf_producer_may_write(rb))
             sched_yield();
-        pkt_record_t *r = ringbuf_producer_next(rb);
+        pkt_record_t *r = ringbuf_producer_next(rb, 8);
         r->summary.length = (uint32_t)s;
-        r->raw_len = 8;
         memset(r->raw_data, (int)(s & 0xff), 8);
         ringbuf_producer_commit(rb);
     }
@@ -334,7 +492,7 @@ static void *bp_producer(void *arg) {
 }
 
 static void test_backpressure_threads(void) {
-    ringbuf_t *rb = ringbuf_create(BP_CAP, 64);
+    ringbuf_t *rb = ringbuf_create(BP_CAP, 64, 0);
     CHECK(rb != NULL);
     ringbuf_consumer_attach(rb);
 
@@ -369,7 +527,9 @@ static void test_backpressure_threads(void) {
 
 int main(void) {
     test_basic();
+    test_arena();
     test_stress();
+    test_arena_stress();
     test_wakeup();
     test_wakeup_quiet();
     test_backpressure_basic();

@@ -91,8 +91,11 @@ static void print_usage(const char *prog) {
            "  -r <file.pcap>    Read from pcap file instead of live capture\n"
            "  -f <bpf_filter>   BPF capture filter (e.g. \"tcp port 80\")\n"
            "  -c <count>        Stop after N packets\n"
-           "  -s <snaplen>      Snapshot length (default: 65535)\n"
+           "  -s <snaplen>      Snapshot length (default: 65535 in the TUI;\n"
+           "                    1518 for --no-ui/--jsonl/-q/-w)\n"
            "  -b <ring_size>    Ring buffer size (default: 10000)\n"
+           "  --arena-mb <MB>   Packet payload arena shared by the ring, 1-65536\n"
+           "                    (default: ring_size x min(snaplen, 2048) bytes)\n"
            "  -B <MB>           Kernel capture buffer in MB, 1-2047 (default: 64;\n"
            "                    TPACKET_V3 ring; raw build: socket buffer if no ring)\n"
            "  -o <file>         Auto-export on exit (.pcap or .json)\n"
@@ -502,6 +505,7 @@ int main(int argc, char *argv[]) {
         {"snaplen",     required_argument, 0, 's'},
         {"ring-size",   required_argument, 0, 'b'},
         {"buffer-mb",   required_argument, 0, 'B'},
+        {"arena-mb",    required_argument, 0, 'A'},
         {"immediate",   no_argument,       0, 'I'},
         {"output",      required_argument, 0, 'o'},
         {"write",       required_argument, 0, 'w'},
@@ -521,7 +525,9 @@ int main(int argc, char *argv[]) {
     };
 
     int opt;
-    int ring_set = 0, snaplen_set = 0, buffer_set = 0;
+    int ring_set = 0, buffer_set = 0;
+    /* a config-file snaplen counts as explicit, like -s */
+    int snaplen_set = cfg.snaplen != NS_DEFAULT_SNAPLEN;
     int stats_on = 0;
     char stats_path[512] = "";
     while ((opt = getopt_long(argc, argv, "i:r:f:c:s:b:B:o:w:qvh", long_opts, NULL)) != -1) {
@@ -538,6 +544,7 @@ int main(int argc, char *argv[]) {
                       ring_set    = 1; break;
             case 'B': cfg.buffer_mb = (int)parse_num(optarg, "buffer size (MB)", 1, 2047);
                       buffer_set = 1; break;
+            case 'A': cfg.arena_mb = (int)parse_num(optarg, "arena size (MB)", 1, 65536); break;
             case 'I': cfg.immediate = 1; break;
             case 'N': cfg.no_ui       = 1; break;
             case 'q': cfg.quiet      = 1; cfg.no_ui = 1; break;
@@ -593,6 +600,14 @@ int main(int argc, char *argv[]) {
                                       8 MB still buffers ~30 ms at 1 M pps */
     }
 
+    /* Headless modes and -w default to a wire-sized snaplen: nothing there
+       shows more than the headers (-o still gets whole MTU frames), and
+       GRO/GSO super-frames would otherwise cost a 64 KB copy each. The
+       TUI keeps 65535 for its hex view; the arena bounds memory anyway. */
+    if ((cfg.no_ui || cfg.stream_file[0]) && !snaplen_set &&
+        cfg.snaplen > NS_HEADLESS_SNAPLEN)
+        cfg.snaplen = NS_HEADLESS_SNAPLEN;
+
     if (stats_on && !cfg.no_ui && !stats_path[0]) {
         fprintf(stderr, "snuffles: --stats needs a file in TUI mode "
                         "(--stats=FILE), stderr would corrupt the screen\n");
@@ -609,10 +624,11 @@ int main(int argc, char *argv[]) {
 #endif
 
     /* create ring buffer */
-    ringbuf_t *rb = ringbuf_create((uint32_t)cfg.ring_size, (uint32_t)cfg.snaplen);
+    ringbuf_t *rb = ringbuf_create((uint32_t)cfg.ring_size, (uint32_t)cfg.snaplen,
+                                   (uint64_t)cfg.arena_mb << 20);
     if (!rb) {
-        fprintf(stderr, "Failed to create ring buffer (%d slots x %d bytes)\n",
-                cfg.ring_size, cfg.snaplen);
+        fprintf(stderr, "Failed to create ring buffer (%d slots, snaplen %d, "
+                "arena %d MB)\n", cfg.ring_size, cfg.snaplen, cfg.arena_mb);
         return 1;
     }
 
