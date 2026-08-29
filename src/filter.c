@@ -1,4 +1,5 @@
 #include "filter.h"
+#include "dissect.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -290,6 +291,7 @@ static int alloc_node(parser_t *p) {
 static int setup_cmp_extras(filter_node_t *n, char *errbuf) {
     n->cmp.has_cidr = 0;
     n->cmp.has_range = 0;
+    n->cmp.addr_family = 0;
 
     int ip_field   = (n->cmp.field == FIELD_SRC_IP || n->cmp.field == FIELD_DST_IP ||
                       n->cmp.field == FIELD_IP);
@@ -303,6 +305,18 @@ static int setup_cmp_extras(filter_node_t *n, char *errbuf) {
         } else if (ip_field) {
             snprintf(errbuf, 128, "Invalid CIDR '%s'", n->cmp.value);
             return -1;
+        }
+    } else if (ip_field) {
+        /* an IP literal compares against the binary address pair */
+        struct in_addr a4;
+        struct in6_addr a6;
+        if (inet_pton(AF_INET, n->cmp.value, &a4) == 1) {
+            memset(n->cmp.addr, 0, sizeof(n->cmp.addr));
+            memcpy(n->cmp.addr, &a4, 4);
+            n->cmp.addr_family = 4;
+        } else if (inet_pton(AF_INET6, n->cmp.value, &a6) == 1) {
+            memcpy(n->cmp.addr, &a6, 16);
+            n->cmp.addr_family = 6;
         }
     }
 
@@ -486,6 +500,30 @@ static int parse_expr(parser_t *p) {
 
 /* ── Evaluator ───────────────────────────────────────────────── */
 
+/* Records come straight from the ring with their text columns still
+ * pending. The predicates that need text (MAC, info, and IP values the
+ * binary compare cannot settle) format a private copy on first use; the
+ * others read the binary fields and never pay for it. */
+typedef struct {
+    const pkt_summary_t *pkt;
+    pkt_summary_t        text;
+    int                  have_text;
+} eval_ctx_t;
+
+static const pkt_summary_t *text_of(eval_ctx_t *c) {
+    if (!c->pkt->text_pending) return c->pkt;
+    if (!c->have_text) {
+        c->text = *c->pkt;
+        summary_format(&c->text);
+        c->have_text = 1;
+    }
+    return &c->text;
+}
+
+static const char *protocol_text(const pkt_summary_t *pkt) {
+    return pkt->proto_label ? proto_label_str(pkt->proto_label) : pkt->protocol;
+}
+
 static bool str_contains_ci(const char *haystack, const char *needle) {
     if (!needle[0]) return true;
     size_t nlen = strlen(needle);
@@ -533,7 +571,7 @@ static bool match_proto(const pkt_summary_t *pkt, const char *val) {
     if (strcasecmp(proto_name(pkt->l4_proto), val) == 0) return true;
     if (strcasecmp(proto_name(pkt->l7_proto), val) == 0) return true;
     /* also match protocol field string */
-    if (strcasecmp(pkt->protocol, val) == 0) return true;
+    if (strcasecmp(protocol_text(pkt), val) == 0) return true;
     return false;
 }
 
@@ -541,15 +579,37 @@ static bool match_proto(const pkt_summary_t *pkt, const char *val) {
  * This keeps CIDR/range values honoring the operator, and lets the
  * either-side fields negate the combined result instead of OR-ing two
  * negations into match-nearly-everything. */
-static bool ip_field_matches(const char *ip, const filter_node_t *n) {
+static bool ip_field_matches(eval_ctx_t *c, int dst, const filter_node_t *n) {
+    const pkt_summary_t *pkt = c->pkt;
+    filter_op_t op = (n->cmp.op == OP_NEQ) ? OP_EQ : n->cmp.op;
+
+    /* binary address present (every dissected IP/ARP packet): CIDR and
+     * equality are settled without text */
+    if (pkt->addr_family) {
+        const uint8_t *addr = dst ? pkt->dst_addr : pkt->src_addr;
+        if (n->cmp.has_cidr) {
+            if (pkt->addr_family != 4) return false;
+            uint32_t ip = ((uint32_t)addr[0] << 24) | ((uint32_t)addr[1] << 16) |
+                          ((uint32_t)addr[2] << 8)  |  (uint32_t)addr[3];
+            return (ip & n->cmp.cidr_mask) == n->cmp.cidr_ip;
+        }
+        if (n->cmp.addr_family && op == OP_EQ) {
+            if (pkt->addr_family != n->cmp.addr_family) return false;
+            return memcmp(addr, n->cmp.addr, pkt->addr_family == 4 ? 4 : 16) == 0;
+        }
+    }
+
+    /* text compare: no IP in the packet, a summary built without the
+     * binary pair, an ordering operator or a value that is not an address */
+    const pkt_summary_t *t = text_of(c);
+    const char *ip = dst ? t->dst_ip : t->src_ip;
     if (n->cmp.has_cidr)
         return ip_matches_cidr(ip, n->cmp.cidr_ip, n->cmp.cidr_mask);
-    filter_op_t op = (n->cmp.op == OP_NEQ) ? OP_EQ : n->cmp.op;
     return cmp_str(ip, n->cmp.value, op);
 }
 
-static bool eval_ip_field(const char *ip, const filter_node_t *n) {
-    bool m = ip_field_matches(ip, n);
+static bool eval_ip_field(eval_ctx_t *c, int dst, const filter_node_t *n) {
+    bool m = ip_field_matches(c, dst, n);
     return (n->cmp.op == OP_NEQ) ? !m : m;
 }
 
@@ -565,29 +625,29 @@ static bool eval_port_field(uint16_t port, const filter_node_t *n) {
     return (n->cmp.op == OP_NEQ) ? !m : m;
 }
 
-static bool eval_node(const display_filter_t *filt, int idx,
-                      const pkt_summary_t *pkt) {
+static bool eval_node(const display_filter_t *filt, int idx, eval_ctx_t *c) {
     if (idx < 0 || idx >= filt->node_count) return false;
     const filter_node_t *n = &filt->nodes[idx];
+    const pkt_summary_t *pkt = c->pkt;
 
     switch (n->type) {
         case NODE_AND:
-            return eval_node(filt, n->binary.left, pkt) &&
-                   eval_node(filt, n->binary.right, pkt);
+            return eval_node(filt, n->binary.left, c) &&
+                   eval_node(filt, n->binary.right, c);
         case NODE_OR:
-            return eval_node(filt, n->binary.left, pkt) ||
-                   eval_node(filt, n->binary.right, pkt);
+            return eval_node(filt, n->binary.left, c) ||
+                   eval_node(filt, n->binary.right, c);
         case NODE_NOT:
-            return !eval_node(filt, n->unary.child, pkt);
+            return !eval_node(filt, n->unary.child, c);
         case NODE_CMP: {
             switch (n->cmp.field) {
                 case FIELD_SRC_IP:
-                    return eval_ip_field(pkt->src_ip, n);
+                    return eval_ip_field(c, 0, n);
                 case FIELD_DST_IP:
-                    return eval_ip_field(pkt->dst_ip, n);
+                    return eval_ip_field(c, 1, n);
                 case FIELD_IP: {
-                    bool m = ip_field_matches(pkt->src_ip, n) ||
-                             ip_field_matches(pkt->dst_ip, n);
+                    bool m = ip_field_matches(c, 0, n) ||
+                             ip_field_matches(c, 1, n);
                     return (n->cmp.op == OP_NEQ) ? !m : m;
                 }
                 case FIELD_SRC_PORT:
@@ -606,13 +666,13 @@ static bool eval_node(const display_filter_t *filt, int idx,
                 case FIELD_LENGTH:
                     return cmp_int((long)pkt->length, atol(n->cmp.value), n->cmp.op);
                 case FIELD_SRC_MAC:
-                    return cmp_str(pkt->src_mac, n->cmp.value, n->cmp.op);
+                    return cmp_str(text_of(c)->src_mac, n->cmp.value, n->cmp.op);
                 case FIELD_DST_MAC:
-                    return cmp_str(pkt->dst_mac, n->cmp.value, n->cmp.op);
+                    return cmp_str(text_of(c)->dst_mac, n->cmp.value, n->cmp.op);
                 case FIELD_VLAN:
                     return cmp_int(pkt->vlan_id, atol(n->cmp.value), n->cmp.op);
                 case FIELD_INFO:
-                    return cmp_str(pkt->info, n->cmp.value, n->cmp.op);
+                    return cmp_str(text_of(c)->info, n->cmp.value, n->cmp.op);
                 case FIELD_SESSION:
                     return cmp_int((long)pkt->session_id, atol(n->cmp.value), n->cmp.op);
             }
@@ -662,7 +722,8 @@ int filter_compile(const char *expr, display_filter_t *filt) {
 
 bool filter_eval(const display_filter_t *filt, const pkt_summary_t *pkt) {
     if (!filt || !filt->valid || filt->root < 0) return true;
-    return eval_node(filt, filt->root, pkt);
+    eval_ctx_t c = { .pkt = pkt, .have_text = 0 };
+    return eval_node(filt, filt->root, &c);
 }
 
 const char *filter_error(const display_filter_t *filt) {

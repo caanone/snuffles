@@ -20,6 +20,37 @@
   position hook and `ringbuf_producer_may_write()`.
 
 ### Changed
+- **Lazy dissection: no string formatting on the capture thread.**
+  `dissect_packet()` used to fill the text columns of every record
+  (`src_mac`/`dst_mac` via `snprintf`, `src_ip`/`dst_ip` via `snprintf`/
+  `inet_ntop`, `protocol`, and the `info` line through several more
+  `snprintf` calls) — after the wakeup and syscall work of this release it
+  was the largest user-space cost left on the capture thread. It now
+  records a binary summary only (raw MAC bytes, a protocol label id, an
+  `info_kind` and a small union with the line's ingredients: ICMP
+  type/code/id/seq, UDP length, DNS name/type/rcode/answer, HTTP first
+  line, TLS handshake type and SNI, DHCP/NTP/QUIC fields, ARP sender MAC;
+  strings that come from the packet are copied with `memcpy`) and sets
+  `text_pending`; the new `summary_format()` produces the text columns
+  from it, once, on the consumer's copy — the headless printer, `--jsonl`,
+  the JSON export, the TUI rows/detail panel/search and the display
+  filter's MAC and `info` predicates (IP, port, protocol and the other
+  predicates evaluate on the binary fields; IP literals in a filter now
+  compare as addresses, so `fe80:0:0:0:0:0:0:1` matches `fe80::1`).
+  Session display strings are still formatted once per new session
+  (`ns_ip_str`, a hand-written dotted-quad writer, `inet_ntop` for IPv6);
+  `--syslog` formats only the two addresses of each record with it, and
+  its self-check compares binary addresses. Output is byte-identical
+  (checked with `-r ... --no-ui` and `--jsonl` on a 10 000-frame corpus
+  covering every info line). Measured on `lo` (libpcap build, `-q`,
+  ~580 kpps captured: ~390 kpps background ICMP echo plus a 240 kpps UDP
+  flood): capture-thread CPU per packet 0.69 -> 0.13 µs (40.7% -> 7.6%
+  of a core), 0.71 -> 0.13 µs at ~950 kpps captured (65.8% -> 12.1%),
+  0.74 -> 0.17 µs with a DNS-query flood instead of plain UDP; raw-socket
+  build (TPACKET_V3 ring) 1.01 -> 0.17 µs. `pkt_summary_t` grows from 392 to
+  560 bytes (the text columns are kept for compatibility); tests that
+  build summaries by hand keep working (a summary with text in place and
+  `text_pending` clear is used as is).
 - **Session table rebuilt for flow churn.** Keys are now a packed binary
   5-tuple (canonical order, so both directions of a flow hit one entry)
   compared with `memcmp` and hashed with a per-process seeded xxHash-style

@@ -45,13 +45,15 @@ void format_mac(const uint8_t *mac, char *buf, size_t len) {
 }
 
 static void format_ipv4(const uint8_t *ip, char *buf, size_t len) {
-    snprintf(buf, len, "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+    ns_ip_str(4, ip, buf, len);
 }
 
 static void format_ipv6(const uint8_t *ip, char *buf, size_t len) {
-    struct in6_addr addr;
-    memcpy(&addr, ip, 16);
-    inet_ntop(AF_INET6, &addr, buf, (socklen_t)len);
+    ns_ip_str(6, ip, buf, len);
+}
+
+static inline void set_label(pkt_summary_t *out, proto_id_t id) {
+    out->proto_label = proto_label_of(id);
 }
 
 static void format_tcp_flags(uint8_t flags, char *buf, size_t len) {
@@ -97,7 +99,10 @@ static void dissect_dns(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
     int is_response = (flags >> 15) & 1;
     uint16_t qdcount = rd16(data + 4);
 
-    char name[128];
+    memset(&out->u, 0, sizeof(out->u));   /* was the L4 dissector's */
+    out->info_kind = INFO_DNS;
+    out->u.dns.response = (uint8_t)is_response;
+    char *name = out->u.dns.name;
     size_t npos = 0;
     uint32_t offset = 12;
 
@@ -108,52 +113,36 @@ static void dissect_dns(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
             if ((llen & 0xC0) == 0xC0) break;  /* compression pointer */
             if (llen > 63) break;               /* RFC max label = 63 */
             if (offset + llen > len) break;     /* bounds check */
-            if (npos > 0 && npos < sizeof(name) - 1)
+            if (npos > 0 && npos < sizeof(out->u.dns.name) - 1)
                 name[npos++] = '.';
-            for (uint8_t i = 0; i < llen && npos < sizeof(name) - 1; i++)
+            for (uint8_t i = 0; i < llen && npos < sizeof(out->u.dns.name) - 1; i++)
                 name[npos++] = (char)data[offset++];
             labels++;
         }
     }
     name[npos] = '\0';
 
-    const char *qr = is_response ? "R" : "Q";
     /* extract qtype if present */
-    const char *qtype = "";
     if (offset + 1 < len) {
         offset++; /* skip null terminator */
-        if (offset + 2 <= len) {
-            uint16_t qt = rd16(data + offset);
-            switch (qt) {
-                case 1:   qtype = "A";     break;
-                case 28:  qtype = "AAAA";  break;
-                case 5:   qtype = "CNAME"; break;
-                case 15:  qtype = "MX";    break;
-                case 2:   qtype = "NS";    break;
-                case 12:  qtype = "PTR";   break;
-                case 6:   qtype = "SOA";   break;
-                case 16:  qtype = "TXT";   break;
-                case 33:  qtype = "SRV";   break;
-                default:  qtype = "";      break;
-            }
-        }
+        if (offset + 2 <= len)
+            out->u.dns.qtype = rd16(data + offset);
     }
 
-    snprintf(out->protocol, sizeof(out->protocol), "DNS");
+    set_label(out, PROTO_DNS);
 
-    if (!is_response) {
-        snprintf(out->info, sizeof(out->info), "DNS %s %s %s", qr, qtype, name);
+    if (!is_response)
         return;
-    }
 
     /* Response: surface rcode, and the first A/AAAA answer if present. */
     uint8_t  rcode   = flags & 0x0F;
     uint16_t ancount = rd16(data + 6);
-    char rdata[64] = "";
+    out->u.dns.rcode = rcode;
 
     if (rcode == 0 && qdcount > 0 && ancount > 0 && offset + 4 <= len) {
         uint32_t aoff = offset + 4;   /* past qtype + qclass */
-        for (uint16_t a = 0; a < ancount && a < 16 && aoff < len && !rdata[0]; a++) {
+        for (uint16_t a = 0; a < ancount && a < 16 && aoff < len &&
+             !out->u.dns.rdata_kind; a++) {
             /* skip the answer name: compression pointer or label sequence */
             if ((data[aoff] & 0xC0) == 0xC0) {
                 aoff += 2;
@@ -172,26 +161,17 @@ static void dissect_dns(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
             uint16_t rdlen = rd16(data + aoff + 8);
             aoff += 10;
             if (rdlen > len - aoff) break;
-            if (atype == 1 && rdlen == 4)
-                format_ipv4(data + aoff, rdata, sizeof(rdata));
-            else if (atype == 28 && rdlen == 16)
-                format_ipv6(data + aoff, rdata, sizeof(rdata));
-            else if (atype == 5)
-                snprintf(rdata, sizeof(rdata), "CNAME");
+            if (atype == 1 && rdlen == 4) {
+                memcpy(out->u.dns.rdata, data + aoff, 4);
+                out->u.dns.rdata_kind = DNS_RDATA_A;
+            } else if (atype == 28 && rdlen == 16) {
+                memcpy(out->u.dns.rdata, data + aoff, 16);
+                out->u.dns.rdata_kind = DNS_RDATA_AAAA;
+            } else if (atype == 5) {
+                out->u.dns.rdata_kind = DNS_RDATA_CNAME;
+            }
             aoff += rdlen;
         }
-    }
-
-    static const char *rcodes[] = { "", "FormErr", "ServFail", "NXDOMAIN",
-                                    "NotImp", "Refused" };
-    if (rcode != 0) {
-        const char *rstr = (rcode <= 5) ? rcodes[rcode] : "Err";
-        snprintf(out->info, sizeof(out->info), "DNS R %s %s", rstr, name);
-    } else if (rdata[0]) {
-        snprintf(out->info, sizeof(out->info), "DNS R %s %s = %s",
-                 qtype, name, rdata);
-    } else {
-        snprintf(out->info, sizeof(out->info), "DNS R %s %s", qtype, name);
     }
 }
 
@@ -210,8 +190,12 @@ static void dissect_http(const uint8_t *data, uint32_t len, pkt_summary_t *out) 
             size_t end = mlen;
             while (end < len && end < 120 && data[end] != '\r' && data[end] != '\n')
                 end++;
-            snprintf(out->info, sizeof(out->info), "HTTP %.*s", (int)(end), (const char *)data);
-            snprintf(out->protocol, sizeof(out->protocol), "HTTP");
+            memset(&out->u, 0, sizeof(out->u));
+            out->info_kind = INFO_HTTP;
+            out->u.http.request = 1;
+            out->u.http.len = (uint8_t)end;
+            memcpy(out->u.http.line, data, end);
+            set_label(out, PROTO_HTTP);
             return;
         }
     }
@@ -222,8 +206,12 @@ static void dissect_http(const uint8_t *data, uint32_t len, pkt_summary_t *out) 
         size_t end = 0;
         while (end < len && end < 120 && data[end] != '\r' && data[end] != '\n')
             end++;
-        snprintf(out->info, sizeof(out->info), "%.*s", (int)end, (const char *)data);
-        snprintf(out->protocol, sizeof(out->protocol), "HTTP");
+        memset(&out->u, 0, sizeof(out->u));
+        out->info_kind = INFO_HTTP;
+        out->u.http.request = 0;
+        out->u.http.len = (uint8_t)end;
+        memcpy(out->u.http.line, data, end);
+        set_label(out, PROTO_HTTP);
     }
 }
 
@@ -237,28 +225,31 @@ static void dissect_tls(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
     uint8_t hs_type = data[5];
     out->l7_proto = PROTO_TLS;
     out->highest_proto = PROTO_TLS;
+    set_label(out, PROTO_TLS);
+    memset(&out->u, 0, sizeof(out->u));
+    out->info_kind = INFO_TLS;
+    out->u.tls.hs_type = hs_type;
 
     if (hs_type == 0x01) {
         /* ClientHello — try to extract SNI */
-        snprintf(out->protocol, sizeof(out->protocol), "TLS");
         /* ClientHello: skip handshake header (4) + version(2) + random(32) */
         uint32_t off = 5 + 4 + 2 + 32;
-        if (off + 1 >= len) goto tls_done;
+        if (off + 1 >= len) return;
 
         /* session ID length */
         uint8_t sid_len = data[off++];
         off += sid_len;
-        if (off + 2 > len) goto tls_done;
+        if (off + 2 > len) return;
 
         /* cipher suites length */
         uint16_t cs_len = rd16(data + off); off += 2;
         off += cs_len;
-        if (off + 1 > len) goto tls_done;
+        if (off + 1 > len) return;
 
         /* compression methods length */
         uint8_t cm_len = data[off++];
         off += cm_len;
-        if (off + 2 > len) goto tls_done;
+        if (off + 2 > len) return;
 
         /* extensions length */
         uint16_t ext_total = rd16(data + off); off += 2;
@@ -278,33 +269,19 @@ static void dissect_tls(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
                 sni_off++;
                 uint16_t name_len = rd16(data + sni_off); sni_off += 2;
                 if (sni_off + name_len <= off + ext_len && name_len > 0 && name_len < 254) {
-                    char sni[256];
-                    memcpy(sni, data + sni_off, name_len);
-                    sni[name_len] = '\0';
-                    snprintf(out->info, sizeof(out->info),
-                             "TLS ClientHello SNI=%s", sni);
+                    /* the info line holds at most sizeof(sni) - 1 of it
+                     * after its "TLS ClientHello SNI=" prefix anyway */
+                    uint16_t keep = name_len;
+                    if (keep > sizeof(out->u.tls.sni) - 1)
+                        keep = sizeof(out->u.tls.sni) - 1;
+                    memcpy(out->u.tls.sni, data + sni_off, keep);
+                    out->u.tls.sni[keep] = '\0';
+                    out->u.tls.sni_len = (uint8_t)keep;
                     return;
                 }
             }
             off += ext_len;
         }
-
-tls_done:
-        snprintf(out->info, sizeof(out->info), "TLS ClientHello");
-    } else if (hs_type == 0x02) {
-        snprintf(out->protocol, sizeof(out->protocol), "TLS");
-        snprintf(out->info, sizeof(out->info), "TLS ServerHello");
-    } else {
-        snprintf(out->protocol, sizeof(out->protocol), "TLS");
-        const char *desc = "Handshake";
-        switch (hs_type) {
-            case 0x0b: desc = "Certificate";      break;
-            case 0x0c: desc = "ServerKeyExchange"; break;
-            case 0x0e: desc = "ServerHelloDone";   break;
-            case 0x10: desc = "ClientKeyExchange";  break;
-            case 0x14: desc = "Finished";          break;
-        }
-        snprintf(out->info, sizeof(out->info), "TLS %s", desc);
     }
 }
 
@@ -316,7 +293,9 @@ static void dissect_dhcp(const uint8_t *data, uint32_t len, pkt_summary_t *out) 
 
     out->l7_proto = PROTO_DHCP;
     out->highest_proto = PROTO_DHCP;
-    snprintf(out->protocol, sizeof(out->protocol), "DHCP");
+    set_label(out, PROTO_DHCP);
+    memset(&out->u, 0, sizeof(out->u));
+    out->info_kind = INFO_DHCP;
 
     uint8_t op = data[0];
     int msg_type = -1;
@@ -332,39 +311,18 @@ static void dissect_dhcp(const uint8_t *data, uint32_t len, pkt_summary_t *out) 
         off += olen;
     }
 
-    char type[16];
-    switch (msg_type) {
-        case 1:  snprintf(type, sizeof(type), "DISCOVER"); break;
-        case 2:  snprintf(type, sizeof(type), "OFFER");    break;
-        case 3:  snprintf(type, sizeof(type), "REQUEST");  break;
-        case 5:  snprintf(type, sizeof(type), "ACK");      break;
-        case 6:  snprintf(type, sizeof(type), "NAK");      break;
-        case 7:  snprintf(type, sizeof(type), "RELEASE");  break;
-        default:
-            if (msg_type >= 0)
-                snprintf(type, sizeof(type), "type=%d", msg_type);
-            else if (op == 1 || op == 2)
-                snprintf(type, sizeof(type), "%s",
-                         (op == 1) ? "request" : "reply");
-            else
-                snprintf(type, sizeof(type), "op=%u", op);
-            break;
-    }
+    out->u.dhcp.msg_type = (int16_t)msg_type;
+    out->u.dhcp.op = op;
 
     /* OFFER/ACK carry the assigned address in yiaddr; other messages
      * may carry the client's current address in ciaddr. */
-    char addr[24] = "";
     if ((msg_type == 2 || msg_type == 5) && rd32(data + 16) != 0) {
-        char ip[16];
-        format_ipv4(data + 16, ip, sizeof(ip));
-        snprintf(addr, sizeof(addr), " %s", ip);
+        memcpy(out->u.dhcp.addr, data + 16, 4);
+        out->u.dhcp.has_addr = 1;
     } else if (msg_type != 2 && msg_type != 5 && rd32(data + 12) != 0) {
-        char ip[16];
-        format_ipv4(data + 12, ip, sizeof(ip));
-        snprintf(addr, sizeof(addr), " %s", ip);
+        memcpy(out->u.dhcp.addr, data + 12, 4);
+        out->u.dhcp.has_addr = 1;
     }
-
-    snprintf(out->info, sizeof(out->info), "DHCP %s%s", type, addr);
 }
 
 static void dissect_ntp(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
@@ -376,15 +334,12 @@ static void dissect_ntp(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
 
     out->l7_proto = PROTO_NTP;
     out->highest_proto = PROTO_NTP;
-    snprintf(out->protocol, sizeof(out->protocol), "NTP");
-
-    if (mode == 3)
-        snprintf(out->info, sizeof(out->info), "NTP client v%u", vn);
-    else if (mode == 4)
-        snprintf(out->info, sizeof(out->info),
-                 "NTP server v%u stratum %u", vn, stratum);
-    else
-        snprintf(out->info, sizeof(out->info), "NTP mode=%u v%u", mode, vn);
+    set_label(out, PROTO_NTP);
+    memset(&out->u, 0, sizeof(out->u));
+    out->info_kind = INFO_NTP;
+    out->u.ntp.vn = vn;
+    out->u.ntp.mode = mode;
+    out->u.ntp.stratum = stratum;
 }
 
 static void dissect_quic(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
@@ -398,15 +353,11 @@ static void dissect_quic(const uint8_t *data, uint32_t len, pkt_summary_t *out) 
 
     out->l7_proto = PROTO_QUIC;
     out->highest_proto = PROTO_QUIC;
-    snprintf(out->protocol, sizeof(out->protocol), "QUIC");
-
-    static const char *types[] = { "Initial", "0-RTT", "Handshake", "Retry" };
-    char ver[16];
-    if (version == 0x00000001)
-        snprintf(ver, sizeof(ver), "v1");
-    else
-        snprintf(ver, sizeof(ver), "v0x%08x", version);
-    snprintf(out->info, sizeof(out->info), "QUIC %s %s", types[ptype], ver);
+    set_label(out, PROTO_QUIC);
+    memset(&out->u, 0, sizeof(out->u));
+    out->info_kind = INFO_QUIC;
+    out->u.quic.version = version;
+    out->u.quic.ptype = ptype;
 }
 
 /* ── Layer 4 dissectors ──────────────────────────────────────── */
@@ -432,13 +383,8 @@ static int dissect_tcp(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
     out->l7_len       = len - doff;
     out->l4_proto     = PROTO_TCP;
     out->highest_proto = PROTO_TCP;
-    snprintf(out->protocol, sizeof(out->protocol), "TCP");
-
-    char flagstr[16];
-    format_tcp_flags(flags, flagstr, sizeof(flagstr));
-    snprintf(out->info, sizeof(out->info),
-             "%u -> %u %s Seq=%u Ack=%u Win=%u",
-             out->src_port, out->dst_port, flagstr, seq, ack, win);
+    set_label(out, PROTO_TCP);
+    out->info_kind = INFO_TCP;
 
     /* try L7 if there's payload */
     if (doff < len) {
@@ -475,9 +421,9 @@ static int dissect_udp(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
 
     out->l4_proto    = PROTO_UDP;
     out->highest_proto = PROTO_UDP;
-    snprintf(out->protocol, sizeof(out->protocol), "UDP");
-    snprintf(out->info, sizeof(out->info),
-             "%u -> %u Len=%u", out->src_port, out->dst_port, ulen);
+    set_label(out, PROTO_UDP);
+    out->info_kind = INFO_UDP;
+    out->u.udp.len = ulen;
 
     /* try L7 */
     if (len > 8) {
@@ -497,7 +443,7 @@ static int dissect_udp(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
             if (out->l7_proto == PROTO_DNS) {
                 out->l7_proto = PROTO_MDNS;
                 out->highest_proto = PROTO_MDNS;
-                snprintf(out->protocol, sizeof(out->protocol), "mDNS");
+                set_label(out, PROTO_MDNS);
             }
         } else if (out->src_port == 443 || out->dst_port == 443) {
             dissect_quic(payload, plen, out);
@@ -515,9 +461,8 @@ static int dissect_sctp(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
 
     out->l4_proto    = PROTO_SCTP;
     out->highest_proto = PROTO_SCTP;
-    snprintf(out->protocol, sizeof(out->protocol), "SCTP");
-    snprintf(out->info, sizeof(out->info),
-             "%u -> %u", out->src_port, out->dst_port);
+    set_label(out, PROTO_SCTP);
+    out->info_kind = INFO_SCTP;
     return 0;
 }
 
@@ -531,25 +476,15 @@ static int dissect_icmpv4(const uint8_t *data, uint32_t len, pkt_summary_t *out)
 
     out->l4_proto    = PROTO_ICMP4;
     out->highest_proto = PROTO_ICMP4;
-    snprintf(out->protocol, sizeof(out->protocol), "ICMP");
-
-    const char *desc = "Other";
-    switch (type) {
-        case 0:  desc = "Echo Reply";              break;
-        case 3:  desc = "Destination Unreachable";  break;
-        case 5:  desc = "Redirect";                break;
-        case 8:  desc = "Echo Request";            break;
-        case 11: desc = "Time Exceeded";           break;
-    }
+    set_label(out, PROTO_ICMP4);
+    out->info_kind = INFO_ICMP4;
+    out->u.icmp.type = type;
+    out->u.icmp.code = code;
 
     if ((type == 0 || type == 8) && len >= 8) {
-        uint16_t id  = rd16(data + 4);
-        uint16_t seq = rd16(data + 6);
-        snprintf(out->info, sizeof(out->info),
-                 "%s id=%u seq=%u", desc, id, seq);
-    } else {
-        snprintf(out->info, sizeof(out->info),
-                 "%s (type=%u code=%u)", desc, type, code);
+        out->u.icmp.echo = 1;
+        out->u.icmp.id  = rd16(data + 4);
+        out->u.icmp.seq = rd16(data + 6);
     }
     return 0;
 }
@@ -562,23 +497,10 @@ static int dissect_icmpv6(const uint8_t *data, uint32_t len, pkt_summary_t *out)
 
     out->l4_proto    = PROTO_ICMP6;
     out->highest_proto = PROTO_ICMP6;
-    snprintf(out->protocol, sizeof(out->protocol), "ICMPv6");
-
-    const char *desc = "Other";
-    switch (type) {
-        case 1:   desc = "Destination Unreachable"; break;
-        case 2:   desc = "Packet Too Big";          break;
-        case 3:   desc = "Time Exceeded";           break;
-        case 128: desc = "Echo Request";            break;
-        case 129: desc = "Echo Reply";              break;
-        case 133: desc = "Router Solicitation";     break;
-        case 134: desc = "Router Advertisement";    break;
-        case 135: desc = "Neighbor Solicitation";   break;
-        case 136: desc = "Neighbor Advertisement";  break;
-    }
-
-    snprintf(out->info, sizeof(out->info),
-             "%s (type=%u code=%u)", desc, type, code);
+    set_label(out, PROTO_ICMP6);
+    out->info_kind = INFO_ICMP6;
+    out->u.icmp.type = type;
+    out->u.icmp.code = code;
     return 0;
 }
 
@@ -597,8 +519,6 @@ static int dissect_ipv4(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
     out->ip_checksum = rd16(data + 10);
     out->l3_proto    = PROTO_IPV4;
 
-    format_ipv4(data + 12, out->src_ip, sizeof(out->src_ip));
-    format_ipv4(data + 16, out->dst_ip, sizeof(out->dst_ip));
     memcpy(out->src_addr, data + 12, 4);
     memcpy(out->dst_addr, data + 16, 4);
     out->addr_family = 4;
@@ -607,11 +527,8 @@ static int dissect_ipv4(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
      * would fill sessions and syslog with garbage ports. */
     if ((out->ip_frag_off & 0x1FFF) != 0) {
         out->highest_proto = PROTO_IPV4;
-        snprintf(out->protocol, sizeof(out->protocol), "IPv4");
-        snprintf(out->info, sizeof(out->info),
-                 "%s -> %s fragment proto=%u off=%u",
-                 out->src_ip, out->dst_ip, proto,
-                 (unsigned)((out->ip_frag_off & 0x1FFF) * 8));
+        set_label(out, PROTO_IPV4);
+        out->info_kind = INFO_IP4_FRAG;
         return 0;
     }
 
@@ -634,10 +551,8 @@ static int dissect_ipv4(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
             break;
         default:
             out->highest_proto = PROTO_IPV4;
-            snprintf(out->protocol, sizeof(out->protocol), "IPv4");
-            snprintf(out->info, sizeof(out->info),
-                     "%s -> %s proto=%u",
-                     out->src_ip, out->dst_ip, proto);
+            set_label(out, PROTO_IPV4);
+            out->info_kind = INFO_IP4_PROTO;
             break;
     }
     return 0;
@@ -652,8 +567,6 @@ static int dissect_ipv6(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
     out->ip_ttl   = hop_limit;
     out->l3_proto = PROTO_IPV6;
 
-    format_ipv6(data + 8, out->src_ip, sizeof(out->src_ip));
-    format_ipv6(data + 24, out->dst_ip, sizeof(out->dst_ip));
     memcpy(out->src_addr, data + 8, 16);
     memcpy(out->dst_addr, data + 24, 16);
     out->addr_family = 6;
@@ -687,9 +600,8 @@ static int dissect_ipv6(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
                 if (l4len >= 8 && (rd16(l4 + 2) & 0xFFF8) != 0) {
                     /* non-first fragment: no L4 header follows */
                     out->highest_proto = PROTO_IPV6;
-                    snprintf(out->protocol, sizeof(out->protocol), "IPv6");
-                    snprintf(out->info, sizeof(out->info),
-                             "%s -> %s fragment", out->src_ip, out->dst_ip);
+                    set_label(out, PROTO_IPV6);
+                    out->info_kind = INFO_IP6_FRAG;
                     return 0;
                 }
                 ext_len = (l4len >= 8) ? 8 : 0;
@@ -702,10 +614,8 @@ static int dissect_ipv6(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
         if (guard >= 8) break;
         if (ext_len == 0 || ext_len > l4len) {
             out->highest_proto = PROTO_IPV6;
-            snprintf(out->protocol, sizeof(out->protocol), "IPv6");
-            snprintf(out->info, sizeof(out->info),
-                     "%s -> %s truncated extension chain",
-                     out->src_ip, out->dst_ip);
+            set_label(out, PROTO_IPV6);
+            out->info_kind = INFO_IP6_TRUNC;
             return 0;
         }
         next_hdr = l4[0];
@@ -730,10 +640,8 @@ static int dissect_ipv6(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
             break;
         default:
             out->highest_proto = PROTO_IPV6;
-            snprintf(out->protocol, sizeof(out->protocol), "IPv6");
-            snprintf(out->info, sizeof(out->info),
-                     "%s -> %s next=%u",
-                     out->src_ip, out->dst_ip, next_hdr);
+            set_label(out, PROTO_IPV6);
+            out->info_kind = INFO_IP6_NEXT;
             break;
     }
     return 0;
@@ -748,39 +656,25 @@ static int dissect_arp(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
 
     out->l3_proto    = PROTO_ARP;
     out->highest_proto = PROTO_ARP;
-    snprintf(out->protocol, sizeof(out->protocol), "ARP");
+    set_label(out, PROTO_ARP);
 
-    char sha[18], spa[16], tha[18], tpa[16];
-    format_mac(data + 8, sha, sizeof(sha));
-    format_ipv4(data + 14, spa, sizeof(spa));
-    format_mac(data + 18, tha, sizeof(tha));
-    format_ipv4(data + 24, tpa, sizeof(tpa));
-
-    /* set IP fields for filtering (and the binary pair for sessions) */
-    snprintf(out->src_ip, sizeof(out->src_ip), "%s", spa);
-    snprintf(out->dst_ip, sizeof(out->dst_ip), "%s", tpa);
+    /* sender/target protocol addresses double as the IP pair (filtering,
+     * sessions); the sender hardware address feeds the reply line */
     memcpy(out->src_addr, data + 14, 4);
     memcpy(out->dst_addr, data + 24, 4);
     out->addr_family = 4;
-
-    if (op == 1) {
-        snprintf(out->info, sizeof(out->info),
-                 "Who has %s? Tell %s", tpa, spa);
-    } else if (op == 2) {
-        snprintf(out->info, sizeof(out->info),
-                 "%s is at %s", spa, sha);
-    } else {
-        snprintf(out->info, sizeof(out->info),
-                 "ARP op=%u", op);
-    }
+    out->info_kind = INFO_ARP;
+    out->u.arp.op = op;
+    memcpy(out->u.arp.sha, data + 8, 6);
     return 0;
 }
 
 static int dissect_ethernet(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
     if (len < ETH_HLEN) return -1;
 
-    format_mac(data, out->src_mac, sizeof(out->src_mac));
-    format_mac(data + 6, out->dst_mac, sizeof(out->dst_mac));
+    memcpy(out->src_mac_raw, data, 6);
+    memcpy(out->dst_mac_raw, data + 6, 6);
+    out->has_mac = 1;
     uint16_t ethertype = rd16(data + 12);
     out->ethertype = ethertype;
 
@@ -809,10 +703,8 @@ static int dissect_ethernet(const uint8_t *data, uint32_t len, pkt_summary_t *ou
             return dissect_ipv6(payload, plen, out);
         default:
             out->highest_proto = PROTO_ETH;
-            snprintf(out->protocol, sizeof(out->protocol), "ETH");
-            snprintf(out->info, sizeof(out->info),
-                     "%s -> %s type=0x%04x",
-                     out->src_mac, out->dst_mac, ethertype);
+            set_label(out, PROTO_ETH);
+            out->info_kind = INFO_ETH;
             return 0;
     }
 }
@@ -821,7 +713,7 @@ static int dissect_ethernet(const uint8_t *data, uint32_t len, pkt_summary_t *ou
 
 static int dissect_by_ethertype(uint16_t ethertype, const uint8_t *p,
                                 uint32_t plen, pkt_summary_t *out,
-                                const char *l2name) {
+                                uint8_t l2label) {
     out->ethertype = ethertype;
     switch (ethertype) {
         case ETH_P_IP:   return dissect_ipv4(p, plen, out);
@@ -829,9 +721,8 @@ static int dissect_by_ethertype(uint16_t ethertype, const uint8_t *p,
         case ETH_P_ARP:  return dissect_arp(p, plen, out);
         default:
             out->highest_proto = PROTO_ETH;
-            snprintf(out->protocol, sizeof(out->protocol), "%s", l2name);
-            snprintf(out->info, sizeof(out->info),
-                     "%s frame type=0x%04x", l2name, ethertype);
+            out->proto_label = l2label;
+            out->info_kind = INFO_L2_FRAME;
             return 0;
     }
 }
@@ -841,14 +732,14 @@ static int dissect_by_ethertype(uint16_t ethertype, const uint8_t *p,
 static int dissect_sll(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
     if (len < 16) return -1;
     out->l7_off += 16;
-    return dissect_by_ethertype(rd16(data + 14), data + 16, len - 16, out, "SLL");
+    return dissect_by_ethertype(rd16(data + 14), data + 16, len - 16, out, LABEL_SLL);
 }
 
 /* Linux cooked capture v2 (DLT_LINUX_SLL2): 20-byte header, EtherType first. */
 static int dissect_sll2(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
     if (len < 20) return -1;
     out->l7_off += 20;
-    return dissect_by_ethertype(rd16(data), data + 20, len - 20, out, "SLL2");
+    return dissect_by_ethertype(rd16(data), data + 20, len - 20, out, LABEL_SLL2);
 }
 
 /* DLT_NULL / DLT_LOOP (BSD and macOS loopback): 4-byte address family in
@@ -869,8 +760,9 @@ static int dissect_null(const uint8_t *data, uint32_t len, pkt_summary_t *out) {
         return dissect_ipv6(p, plen, out);
 
     out->highest_proto = PROTO_UNKNOWN;
-    snprintf(out->protocol, sizeof(out->protocol), "LOOP");
-    snprintf(out->info, sizeof(out->info), "loopback family=%u", fam);
+    out->proto_label = LABEL_LOOP;
+    out->info_kind = INFO_LOOP;
+    out->u.loop.family = fam;
     return 0;
 }
 
@@ -881,6 +773,7 @@ void dissect_packet(const uint8_t *data, uint32_t caplen,
     memset(out, 0, sizeof(*out));
     out->length = caplen;
     out->highest_proto = PROTO_UNKNOWN;
+    out->text_pending = 1;      /* proto_label/info_kind: none, from memset */
 
     switch (datalink_type) {
         case 1:   /* DLT_EN10MB (Ethernet) */
@@ -903,8 +796,9 @@ void dissect_packet(const uint8_t *data, uint32_t caplen,
             dissect_null(data, caplen, out);
             break;
         default:
-            snprintf(out->protocol, sizeof(out->protocol), "???");
-            snprintf(out->info, sizeof(out->info), "Unknown datalink %d", datalink_type);
+            set_label(out, PROTO_UNKNOWN);   /* "???" */
+            out->info_kind = INFO_BAD_DLT;
+            out->u.bad_dlt.dlt = datalink_type;
             break;
     }
 
@@ -916,12 +810,268 @@ void dissect_packet(const uint8_t *data, uint32_t caplen,
     }
     if (out->l7_len > caplen - out->l7_off)
         out->l7_len = caplen - out->l7_off;
+}
+
+/* ── Text columns, produced on demand ────────────────────────── */
+
+static const char *dns_qtype_str(uint16_t qt) {
+    switch (qt) {
+        case 1:   return "A";
+        case 28:  return "AAAA";
+        case 5:   return "CNAME";
+        case 15:  return "MX";
+        case 2:   return "NS";
+        case 12:  return "PTR";
+        case 6:   return "SOA";
+        case 16:  return "TXT";
+        case 33:  return "SRV";
+        default:  return "";
+    }
+}
+
+/* The info column is a fixed 128-byte line: packet-derived strings (DNS
+ * names, HTTP request lines, SNI) are cut to fit by design. */
+#if defined(__GNUC__) && !defined(__clang__)
+  #pragma GCC diagnostic push
+  #pragma GCC diagnostic ignored "-Wformat-truncation"
+#endif
+
+static void format_info(pkt_summary_t *s) {
+    char *info = s->info;
+    size_t cap = sizeof(s->info);
+
+    switch ((info_kind_t)s->info_kind) {
+    case INFO_NONE:
+        info[0] = '\0';
+        break;
+    case INFO_ETH:
+        snprintf(info, cap, "%s -> %s type=0x%04x",
+                 s->src_mac, s->dst_mac, s->ethertype);
+        break;
+    case INFO_L2_FRAME:
+        snprintf(info, cap, "%s frame type=0x%04x",
+                 proto_label_str(s->proto_label), s->ethertype);
+        break;
+    case INFO_LOOP:
+        snprintf(info, cap, "loopback family=%u", s->u.loop.family);
+        break;
+    case INFO_BAD_DLT:
+        snprintf(info, cap, "Unknown datalink %d", s->u.bad_dlt.dlt);
+        break;
+    case INFO_RAWIP:
+        snprintf(info, cap, "Raw IP (ver=%d, len=%u)",
+                 s->u.rawip.ver, s->u.rawip.len);
+        break;
+    case INFO_ARP:
+        if (s->u.arp.op == 1) {
+            snprintf(info, cap, "Who has %s? Tell %s", s->dst_ip, s->src_ip);
+        } else if (s->u.arp.op == 2) {
+            char sha[18];
+            format_mac(s->u.arp.sha, sha, sizeof(sha));
+            snprintf(info, cap, "%s is at %s", s->src_ip, sha);
+        } else {
+            snprintf(info, cap, "ARP op=%u", s->u.arp.op);
+        }
+        break;
+    case INFO_IP4_FRAG:
+        snprintf(info, cap, "%s -> %s fragment proto=%u off=%u",
+                 s->src_ip, s->dst_ip, s->ip_proto,
+                 (unsigned)((s->ip_frag_off & 0x1FFF) * 8));
+        break;
+    case INFO_IP4_PROTO:
+        snprintf(info, cap, "%s -> %s proto=%u",
+                 s->src_ip, s->dst_ip, s->ip_proto);
+        break;
+    case INFO_IP6_FRAG:
+        snprintf(info, cap, "%s -> %s fragment", s->src_ip, s->dst_ip);
+        break;
+    case INFO_IP6_TRUNC:
+        snprintf(info, cap, "%s -> %s truncated extension chain",
+                 s->src_ip, s->dst_ip);
+        break;
+    case INFO_IP6_NEXT:
+        snprintf(info, cap, "%s -> %s next=%u",
+                 s->src_ip, s->dst_ip, s->ip_proto);
+        break;
+    case INFO_ICMP4: {
+        const char *desc = "Other";
+        switch (s->u.icmp.type) {
+            case 0:  desc = "Echo Reply";              break;
+            case 3:  desc = "Destination Unreachable";  break;
+            case 5:  desc = "Redirect";                break;
+            case 8:  desc = "Echo Request";            break;
+            case 11: desc = "Time Exceeded";           break;
+        }
+        if (s->u.icmp.echo)
+            snprintf(info, cap, "%s id=%u seq=%u",
+                     desc, s->u.icmp.id, s->u.icmp.seq);
+        else
+            snprintf(info, cap, "%s (type=%u code=%u)",
+                     desc, s->u.icmp.type, s->u.icmp.code);
+        break;
+    }
+    case INFO_ICMP6: {
+        const char *desc = "Other";
+        switch (s->u.icmp.type) {
+            case 1:   desc = "Destination Unreachable"; break;
+            case 2:   desc = "Packet Too Big";          break;
+            case 3:   desc = "Time Exceeded";           break;
+            case 128: desc = "Echo Request";            break;
+            case 129: desc = "Echo Reply";              break;
+            case 133: desc = "Router Solicitation";     break;
+            case 134: desc = "Router Advertisement";    break;
+            case 135: desc = "Neighbor Solicitation";   break;
+            case 136: desc = "Neighbor Advertisement";  break;
+        }
+        snprintf(info, cap, "%s (type=%u code=%u)",
+                 desc, s->u.icmp.type, s->u.icmp.code);
+        break;
+    }
+    case INFO_TCP: {
+        char flagstr[16];
+        format_tcp_flags(s->tcp_flags, flagstr, sizeof(flagstr));
+        snprintf(info, cap, "%u -> %u %s Seq=%u Ack=%u Win=%u",
+                 s->src_port, s->dst_port, flagstr,
+                 s->tcp_seq, s->tcp_ack, s->tcp_window);
+        break;
+    }
+    case INFO_UDP:
+        snprintf(info, cap, "%u -> %u Len=%u",
+                 s->src_port, s->dst_port, s->u.udp.len);
+        break;
+    case INFO_SCTP:
+        snprintf(info, cap, "%u -> %u", s->src_port, s->dst_port);
+        break;
+    case INFO_DNS: {
+        const char *qtype = dns_qtype_str(s->u.dns.qtype);
+        const char *name  = s->u.dns.name;
+        if (!s->u.dns.response) {
+            snprintf(info, cap, "DNS Q %s %s", qtype, name);
+            break;
+        }
+        static const char *rcodes[] = { "", "FormErr", "ServFail", "NXDOMAIN",
+                                        "NotImp", "Refused" };
+        if (s->u.dns.rcode != 0) {
+            const char *rstr = (s->u.dns.rcode <= 5) ? rcodes[s->u.dns.rcode]
+                                                     : "Err";
+            snprintf(info, cap, "DNS R %s %s", rstr, name);
+        } else if (s->u.dns.rdata_kind != DNS_RDATA_NONE) {
+            char rdata[64];
+            if (s->u.dns.rdata_kind == DNS_RDATA_A)
+                format_ipv4(s->u.dns.rdata, rdata, sizeof(rdata));
+            else if (s->u.dns.rdata_kind == DNS_RDATA_AAAA)
+                format_ipv6(s->u.dns.rdata, rdata, sizeof(rdata));
+            else
+                snprintf(rdata, sizeof(rdata), "CNAME");
+            snprintf(info, cap, "DNS R %s %s = %s", qtype, name, rdata);
+        } else {
+            snprintf(info, cap, "DNS R %s %s", qtype, name);
+        }
+        break;
+    }
+    case INFO_HTTP:
+        if (s->u.http.request)
+            snprintf(info, cap, "HTTP %.*s", (int)s->u.http.len, s->u.http.line);
+        else
+            snprintf(info, cap, "%.*s", (int)s->u.http.len, s->u.http.line);
+        break;
+    case INFO_TLS:
+        if (s->u.tls.hs_type == 0x01) {
+            if (s->u.tls.sni_len)
+                snprintf(info, cap, "TLS ClientHello SNI=%s", s->u.tls.sni);
+            else
+                snprintf(info, cap, "TLS ClientHello");
+        } else if (s->u.tls.hs_type == 0x02) {
+            snprintf(info, cap, "TLS ServerHello");
+        } else {
+            const char *desc = "Handshake";
+            switch (s->u.tls.hs_type) {
+                case 0x0b: desc = "Certificate";      break;
+                case 0x0c: desc = "ServerKeyExchange"; break;
+                case 0x0e: desc = "ServerHelloDone";   break;
+                case 0x10: desc = "ClientKeyExchange";  break;
+                case 0x14: desc = "Finished";          break;
+            }
+            snprintf(info, cap, "TLS %s", desc);
+        }
+        break;
+    case INFO_DHCP: {
+        int msg_type = s->u.dhcp.msg_type;
+        char type[16];
+        switch (msg_type) {
+            case 1:  snprintf(type, sizeof(type), "DISCOVER"); break;
+            case 2:  snprintf(type, sizeof(type), "OFFER");    break;
+            case 3:  snprintf(type, sizeof(type), "REQUEST");  break;
+            case 5:  snprintf(type, sizeof(type), "ACK");      break;
+            case 6:  snprintf(type, sizeof(type), "NAK");      break;
+            case 7:  snprintf(type, sizeof(type), "RELEASE");  break;
+            default:
+                if (msg_type >= 0)
+                    snprintf(type, sizeof(type), "type=%d", msg_type);
+                else if (s->u.dhcp.op == 1 || s->u.dhcp.op == 2)
+                    snprintf(type, sizeof(type), "%s",
+                             (s->u.dhcp.op == 1) ? "request" : "reply");
+                else
+                    snprintf(type, sizeof(type), "op=%u", s->u.dhcp.op);
+                break;
+        }
+        char addr[24] = "";
+        if (s->u.dhcp.has_addr) {
+            char ip[16];
+            format_ipv4(s->u.dhcp.addr, ip, sizeof(ip));
+            snprintf(addr, sizeof(addr), " %s", ip);
+        }
+        snprintf(info, cap, "DHCP %s%s", type, addr);
+        break;
+    }
+    case INFO_NTP:
+        if (s->u.ntp.mode == 3)
+            snprintf(info, cap, "NTP client v%u", s->u.ntp.vn);
+        else if (s->u.ntp.mode == 4)
+            snprintf(info, cap, "NTP server v%u stratum %u",
+                     s->u.ntp.vn, s->u.ntp.stratum);
+        else
+            snprintf(info, cap, "NTP mode=%u v%u", s->u.ntp.mode, s->u.ntp.vn);
+        break;
+    case INFO_QUIC: {
+        static const char *types[] = { "Initial", "0-RTT", "Handshake", "Retry" };
+        char ver[16];
+        if (s->u.quic.version == 0x00000001)
+            snprintf(ver, sizeof(ver), "v1");
+        else
+            snprintf(ver, sizeof(ver), "v0x%08x", s->u.quic.version);
+        snprintf(info, cap, "QUIC %s %s", types[s->u.quic.ptype & 3], ver);
+        break;
+    }
+    }
 
     /* Packet bytes flow into info (HTTP lines, DNS names, TLS SNI) and are
      * later printed to the operator's terminal: strip anything that could
      * carry escape sequences or break the JSON export's UTF-8. */
-    for (char *ip = out->info; *ip; ip++) {
+    for (char *ip = info; *ip; ip++) {
         unsigned char ch = (unsigned char)*ip;
         if (ch < 0x20 || ch >= 0x7f) *ip = '.';
     }
+}
+
+#if defined(__GNUC__) && !defined(__clang__)
+  #pragma GCC diagnostic pop
+#endif
+
+void summary_format(pkt_summary_t *s) {
+    if (!s->text_pending) return;
+
+    if (s->has_mac) {
+        format_mac(s->src_mac_raw, s->src_mac, sizeof(s->src_mac));
+        format_mac(s->dst_mac_raw, s->dst_mac, sizeof(s->dst_mac));
+    } else {
+        s->src_mac[0] = s->dst_mac[0] = '\0';
+    }
+    ns_ip_str(s->addr_family, s->src_addr, s->src_ip, sizeof(s->src_ip));
+    ns_ip_str(s->addr_family, s->dst_addr, s->dst_ip, sizeof(s->dst_ip));
+    snprintf(s->protocol, sizeof(s->protocol), "%s",
+             proto_label_str(s->proto_label));
+    format_info(s);
+
+    s->text_pending = 0;
 }

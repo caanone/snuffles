@@ -1,4 +1,5 @@
 #include "export_json.h"
+#include "dissect.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -223,6 +224,7 @@ int export_json(const char *path, ringbuf_t *rb,
         if (filt && filt->valid && filt->root >= 0) {
             if (!filter_eval(filt, &rec.summary)) continue;
         }
+        summary_format(&rec.summary);   /* text columns, our copy */
 
         if (!first_pkt) fputs(",\n", f);
         first_pkt = 0;

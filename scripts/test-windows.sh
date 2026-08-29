@@ -29,13 +29,16 @@ $CC $CFLAGS -DNO_PCAP \
 
 echo "== cross-compiling unit tests"
 # test_ui is POSIX-only (drives ui_run() through a pipe): not built here.
-for t in filter ringbuf session dissect cbpf rawring config syslog_out; do
+for t in ringbuf session dissect cbpf rawring config syslog_out; do
     $CC $CFLAGS "tests/test_$t.c" "src/$t.c" -o "$OUT/test_$t.exe" \
         -static -lws2_32 -lpthread
 done
+# the display filter formats text columns on demand (summary_format)
+$CC $CFLAGS tests/test_filter.c src/filter.c src/dissect.c \
+    -o "$OUT/test_filter.exe" -static -lws2_32 -lpthread
 # export_json.c also walks the ring through the display filter
-$CC $CFLAGS tests/test_export_json.c src/export_json.c src/filter.c src/ringbuf.c \
-    -o "$OUT/test_export_json.exe" -static -lws2_32 -lpthread
+$CC $CFLAGS tests/test_export_json.c src/export_json.c src/filter.c src/dissect.c \
+    src/ringbuf.c -o "$OUT/test_export_json.exe" -static -lws2_32 -lpthread
 
 WINE=${WINE:-wine}
 export WINEDEBUG=${WINEDEBUG:--all}

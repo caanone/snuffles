@@ -50,6 +50,8 @@ typedef struct {
             uint32_t       cidr_ip;     /* for CIDR: network address */
             uint32_t       cidr_mask;   /* for CIDR: mask */
             int            has_cidr;
+            uint8_t        addr[16];    /* value parsed as an IP literal, for */
+            uint8_t        addr_family; /* the binary compare (4 or 6; 0: none) */
             long           range_lo;    /* for port ranges */
             long           range_hi;
             int            has_range;
@@ -69,6 +71,9 @@ typedef struct {
 } display_filter_t;
 
 int   filter_compile(const char *expr, display_filter_t *filt);
+/* Evaluate against a summary straight from the ring: IP, port, protocol,
+ * length, VLAN and session predicates read the binary fields; MAC and
+ * info predicates format the text columns on a private copy. */
 bool  filter_eval(const display_filter_t *filt, const pkt_summary_t *pkt);
 const char *filter_error(const display_filter_t *filt);
 

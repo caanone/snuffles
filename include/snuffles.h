@@ -73,6 +73,7 @@
   #include <pthread.h>
   #include <sys/time.h>
   #include <unistd.h>
+  #include <arpa/inet.h>
   #include <pwd.h>
   #include <grp.h>
   #include <stdlib.h>
@@ -215,8 +216,77 @@ static inline const char *proto_name(proto_id_t id) {
     return names[id];
 }
 
+/* ── Protocol label (text for pkt_summary_t.protocol) ─────────── */
+
+/* The dissector records which label the protocol column gets; the text
+ * is produced later by summary_format(). Zero means nothing was decoded
+ * (empty column, e.g. a truncated frame). proto_id_t values are shifted
+ * by one, and the link-layer labels that have no proto_id_t follow. */
+typedef enum {
+    LABEL_NONE   = 0,
+    LABEL_PROTO0 = 1,                       /* LABEL_PROTO0 + proto_id_t */
+    LABEL_SLL    = LABEL_PROTO0 + PROTO_MAX,
+    LABEL_SLL2,
+    LABEL_LOOP,
+    LABEL_RAW,
+} proto_label_t;
+
+static inline uint8_t proto_label_of(proto_id_t id) {
+    return (uint8_t)(LABEL_PROTO0 + id);
+}
+
+static inline const char *proto_label_str(uint8_t label) {
+    if (label == LABEL_NONE) return "";
+    if (label < LABEL_SLL)   return proto_name((proto_id_t)(label - LABEL_PROTO0));
+    switch (label) {
+        case LABEL_SLL:  return "SLL";
+        case LABEL_SLL2: return "SLL2";
+        case LABEL_LOOP: return "LOOP";
+        case LABEL_RAW:  return "RAW";
+        default:         return "";
+    }
+}
+
+/* ── Info line ingredients ───────────────────────────────────── */
+
+/* Which member of pkt_summary_t.u is live and which sentence
+ * summary_format() builds from it. INFO_NONE leaves the line empty. */
+typedef enum {
+    INFO_NONE = 0,
+    INFO_ETH,           /* "src -> dst type=0x%04x" (unknown EtherType) */
+    INFO_L2_FRAME,      /* "SLL frame type=0x%04x" (cooked, unknown EtherType) */
+    INFO_LOOP,          /* "loopback family=%u" */
+    INFO_BAD_DLT,       /* "Unknown datalink %d" */
+    INFO_RAWIP,         /* "Raw IP (ver=%d, len=%u)" (raw backend, no Ethernet) */
+    INFO_ARP,
+    INFO_IP4_FRAG,      /* non-first IPv4 fragment */
+    INFO_IP4_PROTO,     /* IPv4 with an undissected protocol */
+    INFO_IP6_FRAG,
+    INFO_IP6_TRUNC,     /* IPv6 extension chain runs past the capture */
+    INFO_IP6_NEXT,      /* IPv6 with an undissected next header */
+    INFO_ICMP4,
+    INFO_ICMP6,
+    INFO_TCP,
+    INFO_UDP,
+    INFO_SCTP,
+    INFO_DNS,
+    INFO_HTTP,
+    INFO_TLS,
+    INFO_DHCP,
+    INFO_NTP,
+    INFO_QUIC,
+} info_kind_t;
+
+/* DNS answer surfaced in the info line (u.dns.rdata_kind) */
+enum { DNS_RDATA_NONE = 0, DNS_RDATA_A, DNS_RDATA_AAAA, DNS_RDATA_CNAME };
+
 /* ── Packet summary (filled by dissector) ────────────────────── */
 
+/* The dissector fills the binary fields only (addresses, ports, ids, the
+ * info-line ingredients in .u) and sets text_pending; the text columns
+ * are produced from them by summary_format() when a consumer displays or
+ * exports the record, never on the capture thread. A summary built by
+ * hand with its text columns filled and text_pending clear is used as is. */
 typedef struct {
     char        src_mac[18];
     char        dst_mac[18];
@@ -259,6 +329,40 @@ typedef struct {
      * dissect_packet: l7_off + l7_len <= caplen. */
     uint32_t    l7_off;
     uint32_t    l7_len;
+
+    /* ── Binary form of the text columns (see summary_format) ── */
+    uint8_t     src_mac_raw[6];
+    uint8_t     dst_mac_raw[6];
+    uint8_t     has_mac;        /* an Ethernet header was decoded */
+    uint8_t     proto_label;    /* proto_label_t: text for .protocol */
+    uint8_t     info_kind;      /* info_kind_t: which .u member is live */
+    uint8_t     text_pending;   /* 1: text columns not yet produced */
+    union {
+        struct { uint32_t family; }                 loop;   /* INFO_LOOP */
+        struct { int32_t  dlt; }                    bad_dlt;
+        struct { uint32_t len; uint8_t ver; }       rawip;
+        struct { uint16_t op; uint8_t sha[6]; }     arp;    /* spa/tpa: src/dst_addr */
+        struct { uint16_t id, seq;
+                 uint8_t  type, code, echo; }       icmp;   /* echo: "id= seq=" form */
+        struct { uint16_t len; }                    udp;
+        struct {
+            uint16_t qtype;                 /* 0 when absent */
+            uint8_t  response;
+            uint8_t  rcode;
+            uint8_t  rdata_kind;            /* DNS_RDATA_* */
+            uint8_t  rdata[16];             /* A: 4 bytes, AAAA: 16 */
+            char     name[128];             /* NUL-terminated, from the packet */
+        } dns;
+        struct { uint8_t request; uint8_t len;
+                 char line[120]; }                  http;   /* first line, no NUL */
+        struct { uint8_t hs_type; uint8_t sni_len;
+                 char sni[110]; }                   tls;    /* NUL-terminated */
+        struct { int16_t msg_type;              /* -1 when absent */
+                 uint8_t op, has_addr;
+                 uint8_t addr[4]; }                 dhcp;
+        struct { uint8_t vn, mode, stratum; }       ntp;
+        struct { uint32_t version; uint8_t ptype; } quic;
+    } u;
 } pkt_summary_t;
 
 /* ── Packet record (stored in ring buffer) ───────────────────── */
@@ -322,6 +426,32 @@ static inline void capture_cfg_defaults(capture_cfg_t *cfg) {
 #define NS_MAX(a, b) ((a) > (b) ? (a) : (b))
 
 #define NS_ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
+
+/* Dotted-quad / RFC 5952 text of a binary address (family 4 or 6, as in
+ * pkt_summary_t.src_addr); an unknown family yields "". IPv4 is written
+ * by hand — the capture thread's syslog path and new-session bookkeeping
+ * use this, and they must not pay for snprintf. buf must hold 46 bytes. */
+static inline void ns_ip_str(uint8_t family, const uint8_t *addr,
+                             char *buf, size_t len) {
+    if (family == 4 && len >= 16) {
+        char *p = buf;
+        for (int i = 0; i < 4; i++) {
+            unsigned v = addr[i];
+            if (v >= 100) { *p++ = (char)('0' + v / 100); v %= 100;
+                            *p++ = (char)('0' + v / 10);  v %= 10; }
+            else if (v >= 10) { *p++ = (char)('0' + v / 10); v %= 10; }
+            *p++ = (char)('0' + v);
+            *p++ = '.';
+        }
+        p[-1] = '\0';
+    } else if (family == 6 && len >= 46) {
+        struct in6_addr a6;
+        memcpy(&a6, addr, 16);
+        if (!inet_ntop(AF_INET6, &a6, buf, (socklen_t)len)) buf[0] = '\0';
+    } else if (len > 0) {
+        buf[0] = '\0';
+    }
+}
 
 /* Portable localtime into caller storage. */
 static inline struct tm *ns_localtime(const time_t *t, struct tm *out) {

@@ -512,9 +512,9 @@ uint32_t session_table_update(session_table_t *st,
         e->id = st->next_id++;
         e->first_seen = pkt->ts;
         e->tcp_state = SESS_NEW;
-        /* display fields: formatted once, here, never on the packet path */
-        memcpy(e->key.ip_a, a2b ? pkt->src_ip : pkt->dst_ip, sizeof(e->key.ip_a));
-        memcpy(e->key.ip_b, a2b ? pkt->dst_ip : pkt->src_ip, sizeof(e->key.ip_b));
+        /* display fields: formatted once, here, never per packet */
+        ns_ip_str(key.family, key.addr_a, e->key.ip_a, sizeof(e->key.ip_a));
+        ns_ip_str(key.family, key.addr_b, e->key.ip_b, sizeof(e->key.ip_b));
         e->key.port_a = key.port_a;
         e->key.port_b = key.port_b;
         e->key.proto  = key.proto;

@@ -3,7 +3,7 @@
  * Build:
  *   clang -std=c11 -g -O1 -fsanitize=fuzzer,address,undefined \
  *         -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -Iinclude -Isrc \
- *         fuzz/fuzz_filter.c src/filter.c -o fuzz_filter
+ *         fuzz/fuzz_filter.c src/filter.c src/dissect.c -o fuzz_filter
  */
 #include "filter.h"
 #include <stddef.h>
