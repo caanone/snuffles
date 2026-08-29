@@ -984,6 +984,14 @@ static void render_frame(ui_ctx_t *ctx) {
                     used++;
                 }
 
+                if (rec->raw_len == 0 && s->length > 0 && used < detail_rows) {
+                    /* the arena reused these bytes for newer packets */
+                    ob_moveto(ctx, row++);
+                    ob_str(ctx, ESC_DIM " (payload no longer buffered: raise "
+                                "--arena-mb to keep more)" ESC_RESET);
+                    used++;
+                }
+
                 for (uint32_t off = (uint32_t)ctx->hex_scroll * 16;
                      off < rec->raw_len && used < detail_rows; off += 16) {
                     ob_moveto(ctx, row++);

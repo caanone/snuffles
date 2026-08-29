@@ -122,13 +122,10 @@ struct capture_ctx {
 static int process_packet(capture_ctx_t *ctx, const uint8_t *pkt,
                           uint32_t caplen, uint32_t wirelen,
                           struct timeval ts) {
-    pkt_record_t *rec = ringbuf_producer_next(ctx->rb);
-
-    uint32_t copylen = caplen;
-    if (copylen > (uint32_t)ctx->cfg.snaplen)
-        copylen = (uint32_t)ctx->cfg.snaplen;
-    memcpy(rec->raw_data, pkt, copylen);
-    rec->raw_len = copylen;
+    /* claim a slot and arena space, copy the raw bytes (granted length is
+     * min(caplen, snaplen)) */
+    pkt_record_t *rec = ringbuf_producer_next(ctx->rb, caplen);
+    memcpy(rec->raw_data, pkt, rec->raw_len);
 
     /* dissect */
     if (ctx->has_eth) {

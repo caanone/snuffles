@@ -118,6 +118,9 @@ static void parse_keyval(const char *path, int lineno, char *line,
     } else if (strcmp(key, "buffer_mb") == 0) {
         if (!cfg_num(val, 1, 2047, &cfg->buffer_mb))
             warn_line(path, lineno, "buffer_mb out of range (1-2047)", val);
+    } else if (strcmp(key, "arena_mb") == 0) {
+        if (!cfg_num(val, 1, 65536, &cfg->arena_mb))
+            warn_line(path, lineno, "arena_mb out of range (1-65536)", val);
     } else if (strcmp(key, "promisc") == 0) {
         if (!cfg_num(val, 0, 1, &cfg->promisc))
             warn_line(path, lineno, "promisc must be 0 or 1", val);
