@@ -152,7 +152,10 @@ Options:
   -b <ring_size>      Ring buffer size (default: 10000)
   --arena-mb <MB>     Packet payload arena shared by the ring, 1-65536
                       (default: ring_size x min(snaplen, 2048) bytes)
-  -B <MB>             Kernel capture buffer in MB, 1-2047 (default: 64)
+  -B <MB>             Kernel capture buffer in MB, 1-2047 (default: 64,
+                      per worker: -j N uses N x this much)
+  -j, --workers <N>   Capture workers in a PACKET_FANOUT group, 1-16
+                      (default 1; Linux live capture only)
   -o <file>           Export on exit (.pcap or .json)
   -w <file>           Stream packets to a pcap file while capturing
                       ('-w -' writes to stdout; combine with -q)
@@ -230,13 +233,14 @@ file is silently ignored. CLI flags always override config values.
 interface    = eth0
 snaplen      = 1500            # 64-65535 (explicit: no headless default)
 ring_size    = 50000           # 16-1000000
-buffer_mb    = 64              # 1-2047, kernel capture buffer
+buffer_mb    = 64              # 1-2047, kernel capture buffer (per worker)
 arena_mb     = 96              # 1-65536, payload arena (default derived)
 promisc      = 1               # 0 or 1
 syslog       = 10.0.0.100:514
 syslog_iface = 192.168.1.5
 cpu          = 3               # pin the capture thread (Linux)
 rt           = 0               # 1: SCHED_FIFO capture thread (root)
+workers      = 1               # 1-16, PACKET_FANOUT capture workers (Linux)
 
 # Saved display-filter presets (name: alnum/_/-, max 31 chars)
 preset web = tcp and (port 80 or port 443)
@@ -378,7 +382,7 @@ Press `S` to switch view. Bidirectional flow aggregation by normalized 5-tuple.
 
 Color-coded: green = EST, yellow = SYN, red = RST, dim = CLOSED.
 
-Press `T` to cycle sort. Press `Enter` to drill into a session's packets. Capped at 100,000 entries with LRU eviction.
+Press `T` to cycle sort. Press `Enter` to drill into a session's packets. Capped at 100,000 entries with LRU eviction (per worker with `-j N`; the view is the union of the shards).
 
 ---
 
@@ -489,6 +493,40 @@ reader waits for the consumer instead of lapping the ring, so
 `snuffles -r big.pcap --jsonl | slow-tool` emits every packet with
 `missed=0` regardless of `-b`.
 
+### Multi-worker capture (`-j N`)
+
+`-j N` / `--workers N` (config key `workers`, 1-16, default 1) opens N
+capture sockets on the same interface and puts them in one
+`PACKET_FANOUT` group in `PACKET_FANOUT_HASH` mode, each with its own
+thread. The kernel hashes every frame's flow and always delivers it to
+the same socket, so a flow stays on one worker and in order, and the work
+of one interface spreads over N cores instead of one — what to reach for
+when a single capture thread is the ceiling (kernel drops with the CPU
+pinned and the buffer already large). Linux live capture only: `-r` and
+other platforms warn once and use one worker, as does a capture whose
+handle is not an `AF_PACKET` socket.
+
+Packets reach the ring in the order the workers commit them, so with
+`-j N > 1` the packet list, `-w` and the exports are no longer strictly
+sorted by timestamp across flows (a flow's own packets stay in order: the
+fan-out hash keeps them on one worker). On a loopback run of 4 flows,
+17% of records stepped back in time by up to one block-retire interval
+(16 ms); `-j 1` is exactly ordered, as before. `--cpu` pins *every*
+worker to the one CPU, so it is meant for `-j 1` (it warns otherwise).
+
+Each worker has its own kernel buffer, so **`-B` is per worker: `-j 4 -B 64`
+reserves 256 MB**. Each worker also keeps its own session table shard —
+a session never spans shards (the flow hash guarantees it), the shards
+hand out disjoint session ids, and the TUI, `--stats` and exports show
+their union. Everything else is shared and unchanged: one ring buffer
+(the workers are its producers), one `-c` budget across workers, one
+display filter, one `-w` stream, one syslog sink. The TUI title bar shows
+`N workers`, and `--stats` breaks the kernel drops out per worker:
+
+```
+summary t=1.402 captured=4000 kdrop=0 ifdrop=0 kdrop_w=0,0,0,0 ring=4000 ...
+```
+
 ### Memory
 
 | Mode | Memory |
@@ -571,13 +609,13 @@ sudo ./snuffles -i en0 -c 100 -o capture.json
                       | socket backend  |
                       +-------+---------+
                               |
-                       capture thread
-                              |
+                  capture thread(s)  -j N: one per
+                              |      PACKET_FANOUT socket
               +---------------+---------------+
               |               |               |
               v               v               v
-         Ring Buffer     Syslog Out     Session Table
-         (pre-alloc)    (UDP sendto)    (FNV-1a hash)
+         Ring Buffer    Output thread    Session Table
+        (shared, MP)   (syslog, -w)     (one per worker)
               |                               |
               +---------- UI Thread ----------+
                           (select)
@@ -585,8 +623,14 @@ sudo ./snuffles -i en0 -c 100 -o capture.json
                   Packet View   Session View
 ```
 
-- **Two threads**: capture (producer) + UI (consumer)
-- **Ring buffer**: pre-allocated, no malloc in hot path
+- **Threads**: N capture producers (`-j`, default 1) + UI/headless consumer
+  + the output thread when `--syslog`/`-w` is on
+- **Ring buffer**: pre-allocated, no malloc in hot path. Multi-producer
+  when `-j N > 1`: a producer reserves a sequence with one fetch-add, takes
+  the slot from the record one lap back with a CAS (so two producers can
+  never write one slot), fills it and publishes; the publication point
+  then steps over the published prefix. With one producer none of those
+  atomics are taken and the path is exactly what it was
 - **Lazy dissection**: the capture thread stores a binary summary only
   (addresses, ports, ids, MAC bytes, the info line's ingredients); the text
   columns (`src_ip`, `info`, ...) are produced by `summary_format()` on the

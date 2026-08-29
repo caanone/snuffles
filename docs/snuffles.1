@@ -79,7 +79,11 @@ is cut to the arena size.
 Kernel capture buffer size in megabytes (1\-2047, default 64). This is the
 buffer the kernel fills while the capture thread is not scheduled, so it
 decides how much burst or scheduling jitter can be absorbed before the
-kernel drops packets; the kernel may cap or shrink the request.
+kernel drops packets; the kernel may cap or shrink the request. Every
+capture worker gets one of this size, so
+.B \-j
+.I N
+reserves N times as much.
 libpcap build: the TPACKET ring mapped into the process.
 Raw\-socket build (Linux): a TPACKET_V3 ring of 256\ KiB blocks mapped into
 the process; the kernel hands over a block when it is full or 10\ ms after
@@ -142,7 +146,8 @@ Without \fB\-b\fR the headless/quiet syslog modes use a 4096\-slot ring.
 Source address or device for syslog datagrams.
 .TP
 .BR \-\-stats [=\fIfile\fR]
-Print a counters line (captured, kernel and interface drops, ring
+Print a counters line (captured, kernel and interface drops \(em per
+worker as well with \fB\-j\fR, ring
 occupancy, records emitted and missed by the consumer, syslog and stream
 counts, records missed by the output thread, sessions, wake\-ups, RSS)
 every second and a
@@ -160,6 +165,37 @@ prints one
 line at any time (headless modes; with \fB\-\-stats=\fIfile\fR also in
 the TUI). A frame longer than 1518 bytes on a non\-jumbo interface warns
 once about GRO/GSO super\-frames (headless modes).
+.TP
+.BI \-j " N" "\fR, \fP" \-\-workers " N"
+Capture with \fIN\fR workers (1\-16, default 1). The workers open \fIN\fR
+sockets on the same interface in one PACKET_FANOUT group in
+PACKET_FANOUT_HASH mode (group id: the process id), each with its own
+thread, its own kernel buffer and its own session table shard; the kernel
+hashes every frame's flow and always delivers it to the same socket, so a
+flow stays on one worker and in order, and one interface's capture work
+spreads over \fIN\fR cores. All workers feed the one ring buffer, share
+the \fB\-c\fR budget and the \fB\-w\fR/\fB\-\-syslog\fR sinks, and their
+session shards are shown as one table.
+.B \-B
+applies per worker, so total kernel memory is \fIN\fR x \fB\-B\fR.
+Records reach the ring in the order the workers commit them, so with
+.I N
+> 1 the packet list,
+.B \-w
+and the exports are no longer strictly timestamp\-sorted across flows
+(one flow's packets stay in order), and
+.B \-\-cpu
+would pin every worker to the same CPU.
+Linux live capture only: reading a file with
+.BR \-r ,
+another platform, or a capture handle that is not an AF_PACKET socket
+prints one warning and uses a single worker. With
+.I N
+> 1 the TUI title bar shows "\fIN\fR workers" and
+.B \-\-stats
+adds per\-worker kernel drops as \fBkdrop_w=\fIa\fB,\fIb\fB,\fIc\fR.
+Config key
+.BR workers .
 .TP
 .BI \-\-cpu " N"
 Pin the capture thread to CPU \fIN\fR (Linux). The other threads (the

@@ -144,7 +144,8 @@ int main(void) {
     session_table_t *st = session_table_create(4096);
     capture_cfg_t cfg;
     capture_cfg_defaults(&cfg);
-    ui_ctx_t *ui = ui_create(rb, NULL, &cfg, st, NULL, 0);
+    session_table_t *shards[1] = { st };
+    ui_ctx_t *ui = ui_create(rb, NULL, &cfg, shards, 1, NULL, 0);
     CHECK(rb && st && ui);
 
     /* 1. Flood, packets view: ~30 frames/s, never per packet; stats keep

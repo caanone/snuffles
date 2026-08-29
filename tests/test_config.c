@@ -33,6 +33,8 @@ int main(void) {
         "promisc = 0\n"
         "syslog = 10.0.0.1:514\n"
         "syslog_iface = eth1\n"
+        "workers = 4\n"
+        "workers = 99\n"                /* out of range: keep 4 */
         "cpu = 3\n"
         "rt = 1\n"
         "cpu = 8192\n"                  /* out of range: keep 3 */
@@ -71,6 +73,7 @@ int main(void) {
     CHECK(cfg.promisc == 0);
     CHECK(strcmp(cfg.syslog_target, "10.0.0.1:514") == 0);
     CHECK(strcmp(cfg.syslog_iface, "eth1") == 0);
+    CHECK(cfg.workers == 4);
     CHECK(cfg.cpu == 3);
     CHECK(cfg.rt == 1);
     CHECK(strcmp(presets[0].name, "web") == 0);
@@ -112,6 +115,7 @@ int main(void) {
     CHECK(cfg4.buffer_mb == 64);
     CHECK(cfg4.arena_mb == 0);
     CHECK(cfg4.promisc == 1);
+    CHECK(cfg4.workers == 1);           /* unset: one capture worker */
     CHECK(cfg4.cpu == -1);              /* unset: no pinning */
     CHECK(cfg4.rt == 0);
     CHECK(cfg4.iface[0] == '\0');

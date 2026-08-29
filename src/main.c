@@ -99,7 +99,10 @@ static void print_usage(const char *prog) {
            "  --arena-mb <MB>   Packet payload arena shared by the ring, 1-65536\n"
            "                    (default: ring_size x min(snaplen, 2048) bytes)\n"
            "  -B <MB>           Kernel capture buffer in MB, 1-2047 (default: 64;\n"
-           "                    TPACKET_V3 ring; raw build: socket buffer if no ring)\n"
+           "                    TPACKET_V3 ring; raw build: socket buffer if no ring;\n"
+           "                    per worker, so -j N uses N x this much)\n"
+           "  -j, --workers <N> Capture workers in a PACKET_FANOUT group, 1-16\n"
+           "                    (default 1; Linux live capture only)\n"
            "  -o <file>         Auto-export on exit (.pcap or .json)\n"
            "  -w <file>         Stream packets to a pcap file while capturing\n"
            "                    ('-w -' writes to stdout; combine with -q)\n"
@@ -141,7 +144,8 @@ typedef struct {
     ringbuf_t          *rb;
     capture_ctx_t      *cap;
     output_t           *outp;       /* --syslog / -w thread, or NULL */
-    session_table_t    *st;
+    session_table_t   **sts;        /* one shard per capture worker */
+    int                 nsts;
     struct timeval      t0;
     atomic_int          stop;
     int                 poll_usr1;   /* this thread answers SIGUSR1 (TUI) */
@@ -185,14 +189,26 @@ static void stats_report_line(stats_reporter_t *r, const char *tag) {
     output_get_stats(r->outp, &os);
     struct timeval now;
     wall_now(&now);
+    /* -j N: the per-worker kernel drops behind the kdrop total */
+    char kw[CAPTURE_MAX_WORKERS * 22 + 16];
+    kw[0] = '\0';
+    if (cs.nworkers > 1) {
+        size_t off = (size_t)snprintf(kw, sizeof(kw), "kdrop_w=");
+        for (int i = 0; i < cs.nworkers && off < sizeof(kw) - 2; i++)
+            off += (size_t)snprintf(kw + off, sizeof(kw) - off, "%s%llu",
+                                    i ? "," : "",
+                                    (unsigned long long)cs.kdrop_w[i]);
+        if (off < sizeof(kw) - 2) { kw[off] = ' '; kw[off + 1] = '\0'; }
+    }
     fprintf(r->out,
-            "%s t=%.3f captured=%llu kdrop=%llu ifdrop=%llu ring=%u "
+            "%s t=%.3f captured=%llu kdrop=%llu ifdrop=%llu %sring=%u "
             "emitted=%llu missed=%llu syslog_sent=%llu syslog_fail=%llu "
             "streamed=%llu out_missed=%llu sessions=%u wakeups=%llu rss_kb=%ld\n",
             tag, tv_secs(&now, &r->t0),
             (unsigned long long)cs.pkts_recv,
             (unsigned long long)cs.pkts_drop,
             (unsigned long long)cs.pkts_ifdrop,
+            kw,
             ringbuf_count(r->rb),
             (unsigned long long)atomic_load_explicit(&g_emitted, memory_order_relaxed),
             (unsigned long long)atomic_load_explicit(&g_missed, memory_order_relaxed),
@@ -200,7 +216,7 @@ static void stats_report_line(stats_reporter_t *r, const char *tag) {
             (unsigned long long)os.syslog_failed,
             (unsigned long long)os.streamed,
             (unsigned long long)os.missed,
-            r->st ? session_table_count(r->st) : 0u,
+            session_tables_count(r->sts, r->nsts),
             (unsigned long long)ringbuf_notify_sent(r->rb),
             rss_kb());
     fflush(r->out);
@@ -524,6 +540,7 @@ int main(int argc, char *argv[]) {
         {"stats",        optional_argument, 0, 'S'},
         {"no-summary",   no_argument,       0, 'X'},
         {"cpu",          required_argument, 0, 'C'},
+        {"workers",      required_argument, 0, 'j'},
         {"rt",           no_argument,       0, 'R'},
         {"version",     no_argument,       0, 'v'},
         {"help",        no_argument,       0, 'h'},
@@ -536,7 +553,7 @@ int main(int argc, char *argv[]) {
     int snaplen_set = cfg.snaplen != NS_DEFAULT_SNAPLEN;
     int stats_on = 0;
     char stats_path[512] = "";
-    while ((opt = getopt_long(argc, argv, "i:r:f:c:s:b:B:o:w:qvh", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "i:r:f:c:s:b:B:o:w:j:qvh", long_opts, NULL)) != -1) {
         switch (opt) {
             case 'i': snprintf(cfg.iface,      sizeof(cfg.iface),      "%s", optarg); break;
             case 'r': snprintf(cfg.pcap_file,   sizeof(cfg.pcap_file),  "%s", optarg); break;
@@ -563,6 +580,8 @@ int main(int argc, char *argv[]) {
                       break;
             case 'X': cfg.no_summary = 1; break;
             case 'C': cfg.cpu = (int)parse_num(optarg, "cpu", 0, 8191); break;   /* AFF_CPUS - 1 */
+            case 'j': cfg.workers = (int)parse_num(optarg, "workers", 1,
+                                                   CAPTURE_MAX_WORKERS); break;
             case 'R': cfg.rt  = 1; break;
             case 'v': print_version(); return 0;
             case 'h': print_usage(argv[0]); return 0;
@@ -631,19 +650,43 @@ int main(int argc, char *argv[]) {
     }
 #endif
 
-    /* create ring buffer */
-    ringbuf_t *rb = ringbuf_create((uint32_t)cfg.ring_size, (uint32_t)cfg.snaplen,
-                                   (uint64_t)cfg.arena_mb << 20);
+    /* Capture workers (-j). The ring's producer set and the session
+       shards are sized with the same number; if the fan-out group cannot
+       be built, capture_create falls back to one and both shrink below. */
+    int nworkers = capture_cfg_workers(&cfg);
+    if (nworkers > 1 && cfg.cpu >= 0)
+        fprintf(stderr, "snuffles: --cpu pins every capture worker to CPU %d; "
+                "it is meant for -j 1\n", cfg.cpu);
+
+    /* create ring buffer (shared by every worker) */
+    ringbuf_t *rb = ringbuf_create_mp((uint32_t)cfg.ring_size,
+                                      (uint32_t)cfg.snaplen,
+                                      (uint64_t)cfg.arena_mb << 20, nworkers);
     if (!rb) {
         fprintf(stderr, "Failed to create ring buffer (%d slots, snaplen %d, "
                 "arena %d MB)\n", cfg.ring_size, cfg.snaplen, cfg.arena_mb);
         return 1;
     }
 
-    /* create session table (skip in headless-minimal mode to save memory) */
-    session_table_t *sessions = headless_minimal ? NULL : session_table_create(4096);
-    if (sessions)
-        session_table_enable_reasm(sessions, 16 * 1024 * 1024);
+    /* Session tables: one shard per worker (skipped in headless-minimal
+       mode to save memory). PACKET_FANOUT_HASH keeps a flow on one
+       worker, so a session never spans shards; the shards hand out
+       disjoint id sequences and the UI shows their union. */
+    session_table_t *sessions[CAPTURE_MAX_WORKERS];
+    int nsessions = 0;
+    memset(sessions, 0, sizeof(sessions));
+    if (!headless_minimal) {
+        size_t reasm = (size_t)16 * 1024 * 1024 / (size_t)nworkers;
+        if (reasm < 1024 * 1024) reasm = 1024 * 1024;
+        for (int i = 0; i < nworkers; i++) {
+            sessions[i] = session_table_create(4096);
+            if (!sessions[i]) break;
+            session_table_set_ids(sessions[i], (uint32_t)i + 1,
+                                  (uint32_t)nworkers);
+            session_table_enable_reasm(sessions[i], reasm);
+            nsessions++;
+        }
+    }
 
     /* --rt: take SCHED_FIFO now, while capture_create() still has root
        (it drops privileges after opening the device); the capture thread
@@ -662,14 +705,30 @@ int main(int argc, char *argv[]) {
     }
 
     /* create capture context */
-    capture_ctx_t *cap = capture_create(&cfg, rb, sessions);
+    capture_ctx_t *cap = capture_create(&cfg, rb, sessions, nsessions);
     if (!cap) {
         syslog_out_destroy(syslog);
-        session_table_destroy(sessions);
+        for (int i = 0; i < nsessions; i++) session_table_destroy(sessions[i]);
         ringbuf_destroy(rb);
         return 1;
     }
     g_capture = cap;
+
+    /* The fan-out group may not have been available: match the ring's
+       producers and the shard set to what capture really runs (nothing
+       has been produced yet, so re-splitting the arena is safe). */
+    if (capture_worker_count(cap) < nworkers) {
+        nworkers = capture_worker_count(cap);
+        ringbuf_set_producers(rb, nworkers);
+        for (int i = nworkers; i < nsessions; i++) {
+            session_table_destroy(sessions[i]);
+            sessions[i] = NULL;
+        }
+        if (nsessions > nworkers) nsessions = nworkers;
+        for (int i = 0; i < nsessions; i++)
+            session_table_set_ids(sessions[i], (uint32_t)i + 1,
+                                  (uint32_t)nworkers);
+    }
 
     /* -w writer after the privilege drop (file owned by the invoking
        user, not root); both sinks are served by the output thread, which
@@ -689,7 +748,7 @@ int main(int argc, char *argv[]) {
             pcap_writer_close(stream);
             syslog_out_destroy(syslog);
             capture_destroy(cap);
-            session_table_destroy(sessions);
+            for (int i = 0; i < nsessions; i++) session_table_destroy(sessions[i]);
             ringbuf_destroy(rb);
             return 1;
         }
@@ -725,7 +784,7 @@ int main(int argc, char *argv[]) {
     if (started != 0) {
         output_destroy(outp);
         capture_destroy(cap);
-        session_table_destroy(sessions);
+        for (int i = 0; i < nsessions; i++) session_table_destroy(sessions[i]);
         ringbuf_destroy(rb);
         return 1;
     }
@@ -736,7 +795,7 @@ int main(int argc, char *argv[]) {
         capture_stop(cap);
         output_destroy(outp);
         capture_destroy(cap);
-        session_table_destroy(sessions);
+        for (int i = 0; i < nsessions; i++) session_table_destroy(sessions[i]);
         ringbuf_destroy(rb);
         return 1;
     }
@@ -746,7 +805,8 @@ int main(int argc, char *argv[]) {
     stats_reporter_t rep;
     memset(&rep, 0, sizeof(rep));
     rep.out = stderr;
-    rep.rb = rb; rep.cap = cap; rep.outp = outp; rep.st = sessions;
+    rep.rb = rb; rep.cap = cap; rep.outp = outp;
+    rep.sts = sessions; rep.nsts = nsessions;
     wall_now(&rep.t0);
     atomic_store(&rep.stop, 0);
     if (stats_on) {
@@ -770,13 +830,14 @@ int main(int argc, char *argv[]) {
     if (cfg.no_ui) {
         run_headless(rb, cap, &cfg, &rep);
     } else {
-        ui_ctx_t *ui = ui_create(rb, cap, &cfg, sessions, presets, npresets);
+        ui_ctx_t *ui = ui_create(rb, cap, &cfg, sessions, nsessions,
+                                 presets, npresets);
         if (!ui) {
             fprintf(stderr, "Failed to create UI\n");
             capture_stop(cap);
             output_destroy(outp);
             capture_destroy(cap);
-            session_table_destroy(sessions);
+            for (int i = 0; i < nsessions; i++) session_table_destroy(sessions[i]);
             ringbuf_destroy(rb);
             return 1;
         }
@@ -838,7 +899,7 @@ int main(int argc, char *argv[]) {
 
     capture_destroy(cap);
     g_capture = NULL;
-    session_table_destroy(sessions);
+    for (int i = 0; i < nsessions; i++) session_table_destroy(sessions[i]);
     ringbuf_destroy(rb);
 
     return exit_rc;

@@ -98,7 +98,8 @@ struct ui_ctx {
     capture_cfg_t       cfg;
     stats_t             stats;
     display_filter_t    dfilter;
-    session_table_t    *sessions;
+    session_table_t   *const *sessions;  /* one shard per capture worker */
+    int                 nsessions;
 
     int                 rows, cols;
     int                 scroll_off;
@@ -523,7 +524,8 @@ static void follow_open(ui_ctx_t *ctx, uint32_t id) {
     if (!a || !b) { free(a); free(b); return; }
     ctx->follow_a = a;
     ctx->follow_b = b;
-    session_streams_copy(ctx->sessions, id, a, b, SESSION_STREAM_CAP,
+    session_tables_streams_copy(ctx->sessions, ctx->nsessions, id, a, b,
+                         SESSION_STREAM_CAP,
                          &ctx->follow_len_a, &ctx->follow_len_b);
     ctx->follow_id     = id;
     ctx->follow_scroll = 0;
@@ -563,6 +565,8 @@ static void render_frame(ui_ctx_t *ctx) {
               capture_get_iface(ctx->cap),
               (unsigned long long)ringbuf_total(ctx->rb),
               (unsigned long long)cstats.pkts_drop);
+    if (cstats.nworkers > 1)
+        ob_printf(ctx, "| %d workers ", cstats.nworkers);
     ob_str(ctx, ESC_RESET);
     if (!capture_is_running(ctx->cap)) {
         if (capture_had_error(ctx->cap))
@@ -707,7 +711,7 @@ static void render_frame(ui_ctx_t *ctx) {
                   up / 3600, (up % 3600) / 60, up % 60,
                   (unsigned long long)ctx->stats.total_packets,
                   (unsigned long long)cstats.pkts_drop,
-                  session_table_count(ctx->sessions));
+                  session_tables_count(ctx->sessions, ctx->nsessions));
 
         char sline[128];
         stats_format(&ctx->stats, sline, sizeof(sline));
@@ -787,7 +791,8 @@ static void render_frame(ui_ctx_t *ctx) {
         if (ctx->sess_snap_stale ||
             now_us - ctx->sess_snap_us >= UI_SNAPSHOT_US) {
             free(ctx->sess_snap);
-            ctx->sess_snap = session_table_snapshot(ctx->sessions,
+            ctx->sess_snap = session_tables_snapshot(ctx->sessions,
+                                                     ctx->nsessions,
                                                      &ctx->sess_snap_count,
                                                      ctx->sess_sort);
             ctx->sess_snap_us    = now_us;
@@ -1426,7 +1431,7 @@ static void handle_key(ui_ctx_t *ctx, int c) {
         }
     } else if (c == 'c' || c == 'C') {
         ringbuf_clear(ctx->rb);
-        if (ctx->sessions) session_table_clear(ctx->sessions);
+        session_tables_clear(ctx->sessions, ctx->nsessions);
         stats_init(&ctx->stats);
         fcache_reset(ctx);
         ctx->last_total = ringbuf_total(ctx->rb);
@@ -1562,15 +1567,16 @@ static uint64_t ui_wait_budget(const ui_ctx_t *ctx, uint64_t now_us,
 /* ── Public API ──────────────────────────────────────────────── */
 
 ui_ctx_t *ui_create(ringbuf_t *rb, capture_ctx_t *cap,
-                     const capture_cfg_t *cfg, session_table_t *st,
-                     const filter_preset_t *presets, int npresets) {
+                     const capture_cfg_t *cfg, session_table_t *const *sts,
+                     int nsts, const filter_preset_t *presets, int npresets) {
     ui_ctx_t *ctx = calloc(1, sizeof(ui_ctx_t));
     if (!ctx) return NULL;
 
     ctx->rb       = rb;
     ctx->cap      = cap;
     ctx->cfg      = *cfg;
-    ctx->sessions = st;
+    ctx->sessions  = sts;
+    ctx->nsessions = (sts && nsts > 0) ? nsts : 0;
     ctx->presets  = presets;
     ctx->npresets = (presets && npresets > 0) ? npresets : 0;
     ctx->outbuf_size = 65536;

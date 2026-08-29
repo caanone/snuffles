@@ -416,11 +416,22 @@ session_table_t *session_table_create(uint32_t bucket_count) {
     st->bucket_count   = bucket_count;
     st->bucket_mask    = bucket_count - 1;
     st->next_id        = 1;
+    st->id_first       = 1;
+    st->id_stride      = 1;
     st->max_sessions   = SESSION_DEFAULT_MAX;
     st->hash_seed      = random_seed();
     st->reasm_idle_sec = SESSION_REASM_IDLE_DEFAULT;
     ns_mutex_init(&st->mtx);
     return st;
+}
+
+void session_table_set_ids(session_table_t *st, uint32_t first, uint32_t stride) {
+    if (!st || stride == 0) return;
+    ns_mutex_lock(&st->mtx);
+    st->id_first  = first ? first : 1;
+    st->id_stride = stride;
+    if (st->session_count == 0) st->next_id = st->id_first;
+    ns_mutex_unlock(&st->mtx);
 }
 
 /* Drops every session and every stream buffer (lock held by caller). */
@@ -439,7 +450,7 @@ static void table_reset_locked(session_table_t *st) {
     st->free_list = NULL;
     st->pool_used = 0;
     st->session_count = 0;
-    st->next_id = 1;
+    st->next_id = st->id_first;
     buf_pool_drain(st);
 }
 
@@ -509,7 +520,8 @@ uint32_t session_table_update(session_table_t *st,
         if (!e) { ns_mutex_unlock(&st->mtx); return 0; }
         e->bkey = key;
         e->hash = h;
-        e->id = st->next_id++;
+        e->id = st->next_id;
+        st->next_id += st->id_stride;
         e->first_seen = pkt->ts;
         e->tcp_state = SESS_NEW;
         /* display fields: formatted once, here, never per packet */
@@ -650,24 +662,32 @@ static int cmp_duration(const void *a, const void *b) {
     return (da < db) ? 1 : (da > db) ? -1 : 0;
 }
 
-session_entry_t *session_table_snapshot(session_table_t *st,
-                                        uint32_t *out_count,
-                                        session_sort_t sort) {
-    if (!st) { *out_count = 0; return NULL; }
+static int (*snapshot_cmp(session_sort_t sort))(const void *, const void *) {
+    switch (sort) {
+        case SORT_PACKETS:  return cmp_packets;
+        case SORT_RECENT:   return cmp_recent;
+        case SORT_DURATION: return cmp_duration;
+        case SORT_BYTES:    break;
+    }
+    return cmp_bytes;
+}
+
+/* Entry copies of one table, unsorted, taken under its lock. */
+static session_entry_t *snapshot_one(session_table_t *st, uint32_t *out_count) {
+    *out_count = 0;
+    if (!st) return NULL;
 
     ns_mutex_lock(&st->mtx);
 
     uint32_t count = st->session_count;
     if (count == 0) {
         ns_mutex_unlock(&st->mtx);
-        *out_count = 0;
         return NULL;
     }
 
     session_entry_t *arr = malloc(count * sizeof(session_entry_t));
     if (!arr) {
         ns_mutex_unlock(&st->mtx);
-        *out_count = 0;
         return NULL;
     }
 
@@ -688,21 +708,76 @@ session_entry_t *session_table_snapshot(session_table_t *st,
         arr[idx].stream_b = NULL;
         idx++;
     }
-    count = idx;
 
     ns_mutex_unlock(&st->mtx);
-
-    int (*cmpfn)(const void *, const void *) = cmp_bytes;
-    switch (sort) {
-        case SORT_BYTES:    cmpfn = cmp_bytes;    break;
-        case SORT_PACKETS:  cmpfn = cmp_packets;  break;
-        case SORT_RECENT:   cmpfn = cmp_recent;   break;
-        case SORT_DURATION: cmpfn = cmp_duration;  break;
-    }
-    qsort(arr, count, sizeof(session_entry_t), cmpfn);
-
-    *out_count = count;
+    *out_count = idx;
     return arr;
+}
+
+session_entry_t *session_table_snapshot(session_table_t *st,
+                                        uint32_t *out_count,
+                                        session_sort_t sort) {
+    session_entry_t *arr = snapshot_one(st, out_count);
+    if (arr) qsort(arr, *out_count, sizeof(session_entry_t), snapshot_cmp(sort));
+    return arr;
+}
+
+/* ── Shard set ───────────────────────────────────────────────── */
+
+uint32_t session_tables_count(session_table_t *const *sts, int n) {
+    uint32_t c = 0;
+    for (int i = 0; sts && i < n; i++) c += session_table_count(sts[i]);
+    return c;
+}
+
+void session_tables_clear(session_table_t *const *sts, int n) {
+    for (int i = 0; sts && i < n; i++) session_table_clear(sts[i]);
+}
+
+session_entry_t *session_tables_snapshot(session_table_t *const *sts, int n,
+                                         uint32_t *out_count,
+                                         session_sort_t sort) {
+    *out_count = 0;
+    if (!sts || n <= 0) return NULL;
+    if (n == 1) return session_table_snapshot(sts[0], out_count, sort);
+
+    /* Each shard is copied under its own lock, then the union is sorted
+     * once: the shards are disjoint, so there is nothing to merge. */
+    session_entry_t *all = NULL;
+    uint32_t total = 0;
+    for (int i = 0; i < n; i++) {
+        uint32_t c = 0;
+        session_entry_t *part = snapshot_one(sts[i], &c);
+        if (!part) continue;
+        session_entry_t *grown = realloc(all, (size_t)(total + c) *
+                                              sizeof(session_entry_t));
+        if (!grown) { free(part); break; }
+        all = grown;
+        memcpy(all + total, part, (size_t)c * sizeof(session_entry_t));
+        total += c;
+        free(part);
+    }
+    if (total) qsort(all, total, sizeof(session_entry_t), snapshot_cmp(sort));
+    else { free(all); all = NULL; }
+    *out_count = total;
+    return all;
+}
+
+void session_tables_streams_copy(session_table_t *const *sts, int n,
+                                 uint32_t id, uint8_t *out_a, uint8_t *out_b,
+                                 uint32_t cap, uint32_t *len_a, uint32_t *len_b) {
+    *len_a = *len_b = 0;
+    if (!sts || n <= 0) return;
+    /* the id names its shard: shard i hands out id_first + k * id_stride */
+    for (int i = 0; i < n; i++) {
+        session_table_t *st = sts[i];
+        if (!st) continue;
+        if (n > 1 && (id < st->id_first ||
+                      (id - st->id_first) % st->id_stride != 0))
+            continue;
+        session_streams_copy(st, id, out_a, out_b, cap, len_a, len_b);
+        return;
+    }
 }
 
 const char *session_state_str(session_state_t s) {

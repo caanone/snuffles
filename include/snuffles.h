@@ -371,6 +371,7 @@ typedef struct {
     pkt_summary_t   summary;
     uint8_t        *raw_data;
     uint32_t        raw_len;
+    uint32_t        prod_id;    /* ring buffer: producer that wrote it */
     uint64_t        data_pos;   /* ring buffer: arena position of raw_data */
     uint64_t        seq_num;
 } pkt_record_t;
@@ -399,6 +400,7 @@ typedef struct {
     int         immediate;      /* --immediate: per-packet delivery (no TPACKET_V3 blocks) */
     int         no_summary;     /* --no-summary: no exit counters in headless modes */
     int         cpu;            /* --cpu: pin the capture thread to this CPU (-1: unset) */
+    int         workers;        /* -j/--workers: capture workers (PACKET_FANOUT), 1 = default */
     int         rt;             /* --rt: SCHED_FIFO for the capture thread */
 } capture_cfg_t;
 
@@ -416,6 +418,7 @@ static inline void capture_cfg_defaults(capture_cfg_t *cfg) {
     cfg->count     = 0;
     cfg->buffer_mb = 64;
     cfg->cpu       = -1;
+    cfg->workers   = 1;
 }
 
 /* ── Default interface ───────────────────────────────────────── */
