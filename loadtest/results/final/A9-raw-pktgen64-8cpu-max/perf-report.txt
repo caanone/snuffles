@@ -1,0 +1,120 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 5K of event 'cycles:P'
+# Event count (approx.): 9188326799
+#
+# Overhead  Command      Shared Object      Symbol                                   
+# ........  ...........  .................  .........................................
+#
+    36.89%  snf-capture  snuffles           [.] dissect_packet
+            |          
+            |--11.96%--dissect_packet
+            |          |          
+            |           --11.85%--process_packet
+            |                     ring_frame_cb
+            |                     rawring_walk_block
+            |                     capture_thread_fn
+            |                     0x7f90f576bb7b
+            |          
+            |--9.80%--session_table_update
+            |          |          
+            |           --9.71%--process_packet
+            |                     ring_frame_cb
+            |                     rawring_walk_block
+            |                     capture_thread_fn
+            |                     0x7f90f576bb7b
+            |          
+            |--3.26%--ringbuf_producer_commit
+            |          |          
+            |           --3.03%--process_packet
+            |                     ring_frame_cb
+            |                     rawring_walk_block
+            |                     capture_thread_fn
+            |                     0x7f90f576bb7b
+            |          
+            |--2.32%--process_packet
+            |          |          
+            |           --2.20%--ring_frame_cb
+            |                     rawring_walk_block
+            |                     capture_thread_fn
+            |                     0x7f90f576bb7b
+            |          
+            |--1.59%--ringbuf_producer_next
+            |          ring_frame_cb
+            |          rawring_walk_block
+            |          capture_thread_fn
+            |          0x7f90f576bb7b
+            |          
+            |--1.28%--dissect_udp.isra.0
+            |          |          
+            |          |--0.69%--dissect_packet
+            |          |          process_packet
+            |          |          ring_frame_cb
+            |          |          rawring_walk_block
+            |          |          capture_thread_fn
+            |          |          0x7f90f576bb7b
+            |          |          
+            |           --0.59%--process_packet
+            |                     ring_frame_cb
+            |                     rawring_walk_block
+            |                     capture_thread_fn
+            |                     0x7f90f576bb7b
+            |          
+            |--1.01%--dissect_ipv4.isra.0
+            |          process_packet
+            |          ring_frame_cb
+            |          rawring_walk_block
+            |          capture_thread_fn
+            |          0x7f90f576bb7b
+            |          
+            |--0.94%--rawring_walk_block
+            |          capture_thread_fn
+            |          0x7f90f576bb7b
+            |          
+             --0.89%--pthread_mutex_lock
+                       process_packet
+                       ring_frame_cb
+                       rawring_walk_block
+                       capture_thread_fn
+                       0x7f90f576bb7b
+
+    21.67%  snf-capture  snuffles           [.] session_table_update
+            |          
+            |--6.04%--dissect_packet
+            |          |          
+            |           --5.96%--process_packet
+            |                     ring_frame_cb
+            |                     rawring_walk_block
+            |                     capture_thread_fn
+            |                     0x7f90f576bb7b
+            |          
+            |--5.48%--session_table_update
+            |          |          
+            |           --5.41%--process_packet
+            |                     ring_frame_cb
+            |                     rawring_walk_block
+            |                     capture_thread_fn
+            |                     0x7f90f576bb7b
+            |          
+            |--2.77%--ringbuf_producer_commit
+            |          |          
+            |           --2.59%--process_packet
+            |                     ring_frame_cb
+            |                     rawring_walk_block
+            |                     capture_thread_fn
+            |                     0x7f90f576bb7b
+            |          
+            |--1.57%--process_packet
+            |          |          
+            |           --1.49%--ring_frame_cb
+            |                     rawring_walk_block
+            |                     capture_thread_fn
+            |                     0x7f90f576bb7b
+            |          
+            |--0.83%--dissect_ipv4.isra.0
+            |          process_packet
+            |          ring_frame_cb
+            |          rawring_walk_block

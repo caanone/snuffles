@@ -1,0 +1,120 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 5K of event 'cycles:P'
+# Event count (approx.): 6652876163
+#
+# Overhead  Command      Shared Object      Symbol                                    
+# ........  ...........  .................  ..........................................
+#
+    18.88%  snf-capture  snuffles           [.] dissect_packet
+            |          
+            |--3.62%--0x7efd1e276972
+            |          
+            |--2.72%--capture_callback
+            |          |          
+            |           --2.70%--0x7efd1e276527
+            |          
+            |--2.19%--dissect_packet
+            |          |          
+            |           --2.16%--capture_callback
+            |                     0x7efd1e276527
+            |          
+            |--1.64%--0x7efd1e0ebcb1
+            |          0x7efd1e276527
+            |          
+            |--1.28%--0x7efd1e276ac4
+            |          
+             --1.18%--session_table_update
+                       |          
+                        --1.15%--capture_callback
+                                  0x7efd1e276527
+
+     3.75%  snf-capture  snuffles           [.] session_table_update
+            |          
+             --0.69%--dissect_packet
+                       capture_callback
+                       0x7efd1e276527
+
+     3.53%  snf-capture  snuffles           [.] dissect_http
+            |          
+            |--0.72%--0x7efd1e0ebcb1
+            |          0x7efd1e276527
+            |          
+             --0.61%--dissect_packet
+
+     3.05%  snf-capture  snuffles           [.] dissect_tcp.isra.0
+            |          
+             --0.60%--capture_callback
+                       0x7efd1e276527
+
+     2.85%  snf-capture  snuffles           [.] ringbuf_producer_next
+            |          
+             --1.01%--dissect_packet
+                       |          
+                        --0.99%--capture_callback
+                                  0x7efd1e276527
+
+     2.70%  snf-capture  libc.so.6          [.] 0x0000000000162cf3
+     2.65%  snf-capture  [kernel.kallsyms]  [k] do_sys_poll
+     2.55%  snf-capture  libc.so.6          [.] 0x0000000000162cf7
+            |          
+             --0.51%--dissect_packet
+                       capture_callback
+                       0x7efd1e276527
+
+     2.34%  snf-capture  [kernel.kallsyms]  [k] entry_SYSRETQ_unsafe_stack
+     2.04%  snf-capture  [kernel.kallsyms]  [k] sched_balance_update_blocked_averages
+     1.89%  snf-capture  libc.so.6          [.] 0x0000000000162b49
+            |          
+             --0.83%--dissect_packet
+                       capture_callback
+                       0x7efd1e276527
+
+     1.80%  snf-capture  [kernel.kallsyms]  [k] dequeue_entity
+            |          
+             --0.74%--sched_balance_update_blocked_averages
+                       sched_balance_newidle
+                       pick_next_task_fair
+                       __schedule
+                       schedule
+                       schedule_hrtimeout_range_clock
+                       do_sys_poll
+                       __x64_sys_poll
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7efd1e0239ee
+                       0
+                       0x5541d689495641ff
+
+     1.71%  snf-capture  [vdso]             [.] 0x00000000000007f5
+     1.65%  snf-capture  snuffles           [.] capture_callback
+     1.44%  snf-capture  [kernel.kallsyms]  [k] packet_poll
+            |          
+             --0.51%--entry_SYSRETQ_unsafe_stack
+                       0x7efd1e0239ee
+                       0
+                       0x5541d689495641ff
+
+     1.42%  snf-capture  [kernel.kallsyms]  [k] update_load_avg
+     1.24%  snf-capture  snuffles           [.] dissect_ipv4.isra.0
+     1.22%  snf-capture  [kernel.kallsyms]  [k] srso_alias_safe_ret
+     1.16%  snf-capture  libc.so.6          [.] 0x0000000000162cee
+     1.15%  snf-capture  libc.so.6          [.] 0x0000000000162ce4
+     1.13%  snf-capture  [kernel.kallsyms]  [k] srso_alias_return_thunk
+     1.08%  snf-capture  [kernel.kallsyms]  [k] __schedule
+     0.96%  snf-capture  libc.so.6          [.] 0x0000000000162d0a
+     0.93%  snf-capture  libc.so.6          [.] 0x0000000000162cfb
+     0.90%  snf-capture  [kernel.kallsyms]  [k] sched_balance_newidle
+     0.79%  snf-capture  libc.so.6          [.] 0x0000000000162ce9
+     0.76%  snf-capture  [kernel.kallsyms]  [k] update_curr
+     0.70%  snf-capture  [kernel.kallsyms]  [k] remove_wait_queue
+     0.70%  snf-capture  libc.so.6          [.] 0x0000000000162d0e
+     0.67%  snf-capture  [kernel.kallsyms]  [k] __update_load_avg_cfs_rq
+     0.62%  snf-capture  [kernel.kallsyms]  [k] fdget
+     0.62%  snf-capture  libc.so.6          [.] 0x0000000000162ce0
+     0.53%  snf-capture  [kernel.kallsyms]  [k] schedule_hrtimeout_range_clock
+     0.53%  snf-capture  [kernel.kallsyms]  [k] dequeue_entities
+     0.53%  snf-capture  [kernel.kallsyms]  [k] syscall_exit_to_user_mode
