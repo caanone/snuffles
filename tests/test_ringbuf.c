@@ -284,9 +284,14 @@ static void test_stress(void) {
  * summary.length, p in summary.src_port and a payload of 1 + k % 200
  * bytes all equal to k * 7 + p + 1, so any consumer can tell a whole
  * record from a torn one. */
-#define MP_PROD    4
+#define MP_PROD    4            /* producers, completeness run */
+/* Lapping run: more producers than the CI runners have cores, so a
+ * producer is regularly descheduled between claiming a slot and
+ * publishing it. That is the window a lapping claim shares with a
+ * reader's copy, and the only one where a missing barrier shows. */
+#define MP_HOT     12
 #define MP_N       10000ULL     /* records per producer, completeness run */
-#define MP_STRESS  50000ULL     /* records per producer, lapping run */
+#define MP_STRESS  16000ULL     /* records per producer, lapping run */
 
 static ringbuf_t     *g_mprb;
 static uint64_t       g_mp_n;
@@ -309,13 +314,13 @@ static void *mp_producer(void *arg) {
     return NULL;
 }
 
-static void mp_start(pthread_t *t) {
-    for (int i = 0; i < MP_PROD; i++)
+static void mp_start(pthread_t *t, int n) {
+    for (int i = 0; i < n; i++)
         pthread_create(&t[i], NULL, mp_producer, (void *)(intptr_t)i);
 }
 
-static void mp_join(pthread_t *t) {
-    for (int i = 0; i < MP_PROD; i++) pthread_join(t[i], NULL);
+static void mp_join(pthread_t *t, int n) {
+    for (int i = 0; i < n; i++) pthread_join(t[i], NULL);
 }
 
 /* Every reservation becomes visible exactly once, in one dense sequence
@@ -337,7 +342,7 @@ static void test_mp_complete(void) {
     for (int i = 0; i < MP_PROD; i++) last_k[i] = (uint64_t)-1;
 
     pthread_t t[MP_PROD];
-    mp_start(t);
+    mp_start(t, MP_PROD);
 
     uint64_t next = 0, bad = 0, dup = 0, misordered = 0, misses = 0;
     uint8_t data[256];
@@ -356,7 +361,7 @@ static void test_mp_complete(void) {
             if (data[i] != mp_fill(k, pid)) { bad++; break; }
         next++;
     }
-    mp_join(t);
+    mp_join(t, MP_PROD);
 
     CHECK(misses == 0);        /* no hole below commit_seq */
     CHECK(bad == 0);           /* no torn record or payload */
@@ -369,41 +374,75 @@ static void test_mp_complete(void) {
     ringbuf_destroy(g_mprb);
 }
 
-/* Same producers onto a ring that laps thousands of times, with a reader
- * poking at random indices: nothing may ever come back torn, and every
- * reservation must still reach commit_seq. */
+/* Check one record the ring handed back: it must be one whole record —
+ * the (k, pid) in its summary, the length that k implies and a payload of
+ * exactly the byte that (k, pid) implies. A torn copy mixes fields from
+ * two records, so any of those three disagreeing is a failure. Returns 1
+ * if it was torn. */
+static int mp_check(const pkt_record_t *rec, const uint8_t *data,
+                    uint64_t *reclaimed) {
+    uint64_t k   = rec->summary.length;
+    int      pid = rec->summary.src_port;
+    if (pid < 0 || pid >= MP_HOT || k >= g_mp_n) return 1;
+    if (rec->raw_len == 0) { (*reclaimed)++; return 0; }
+    if (rec->raw_len != mp_len(k)) return 1;
+    for (uint32_t i = 0; i < rec->raw_len; i++)
+        if (data[i] != mp_fill(k, pid)) return 1;
+    return 0;
+}
+
+/* More producers than cores onto a 64-slot ring that laps thousands of
+ * times, with a reader that keeps its attention on the oldest visible
+ * records — the ones a producer is about to lap onto. Nothing may ever
+ * come back torn, and every reservation must still reach commit_seq.
+ *
+ * The reader deliberately mixes the two entry points: ringbuf_read at a
+ * display index (which re-resolves the floor each call) and
+ * ringbuf_read_seq on the exact oldest sequence, which is the record
+ * whose slot the next claim takes. Every record that comes back, from
+ * either, is validated whole. */
 static void test_mp_stress(void) {
-    uint64_t total = MP_PROD * MP_STRESS;
+    uint64_t total = MP_HOT * MP_STRESS;
     g_mp_n = MP_STRESS;
-    g_mprb = ringbuf_create_mp(64, 256, 64 * 256, MP_PROD);
+    g_mprb = ringbuf_create_mp(64, 256, 64 * 256, MP_HOT);
     CHECK(g_mprb != NULL);
+    CHECK(ringbuf_producers(g_mprb) == MP_HOT);
 
-    pthread_t t[MP_PROD];
-    mp_start(t);
+    pthread_t t[MP_HOT];
+    mp_start(t, MP_HOT);
 
-    uint64_t torn = 0, ok = 0, reclaimed = 0;
+    uint64_t torn = 0, ok = 0, reclaimed = 0, edge = 0;
     uint8_t data[256];
     pkt_record_t rec;
     unsigned seed = 99991;
     while (ringbuf_total(g_mprb) < total) {
         uint32_t c = ringbuf_count(g_mprb);
         if (!c) { sched_yield(); continue; }
-        seed = seed * 1103515245u + 12345u;
-        if (!ringbuf_read(g_mprb, (seed >> 16) % c, &rec, data)) continue;
-        ok++;
-        uint64_t k   = rec.summary.length;
-        int      pid = rec.summary.src_port;
-        if (pid < 0 || pid >= MP_PROD || k >= MP_STRESS) { torn++; continue; }
-        if (rec.raw_len == 0) { reclaimed++; continue; }
-        if (rec.raw_len != mp_len(k)) { torn++; continue; }
-        for (uint32_t i = 0; i < rec.raw_len; i++)
-            if (data[i] != mp_fill(k, pid)) { torn++; break; }
-    }
-    mp_join(t);
+        /* a batch per visibility check: the producers are the ones with
+         * the CPU here, so keep the reads dense between them */
+        for (int r = 0; r < 16; r++) {
+            seed = seed * 1103515245u + 12345u;
 
-    printf("mp stress: reads=%llu reclaimed=%llu torn=%llu\n",
-           (unsigned long long)ok, (unsigned long long)reclaimed,
-           (unsigned long long)torn);
+            /* the records about to be overwritten, by absolute sequence */
+            uint64_t at = ringbuf_oldest(g_mprb) + ((seed >> 20) & 3u);
+            if (ringbuf_read_seq(g_mprb, at, &rec, data)) {
+                edge++;
+                torn += (uint64_t)mp_check(&rec, data, &reclaimed);
+            }
+
+            /* half the display-index reads land in the lapped tail too */
+            uint32_t idx = (seed & 0x10000u) ? (seed >> 17) % c
+                                             : (seed >> 17) % (c < 4 ? c : 4);
+            if (!ringbuf_read(g_mprb, idx, &rec, data)) continue;
+            ok++;
+            torn += (uint64_t)mp_check(&rec, data, &reclaimed);
+        }
+    }
+    mp_join(t, MP_HOT);
+
+    printf("mp stress: prods=%d reads=%llu edge=%llu reclaimed=%llu torn=%llu\n",
+           MP_HOT, (unsigned long long)ok, (unsigned long long)edge,
+           (unsigned long long)reclaimed, (unsigned long long)torn);
     CHECK(torn == 0);
     CHECK(ok > 1000);
     CHECK(ringbuf_total(g_mprb) == total);   /* no reservation stuck */
