@@ -135,6 +135,14 @@ Wine) — locally via Docker with `./scripts/test-windows.sh`, and in CI on
 every push. Raw-socket capture and console quirks still warrant a real
 Windows machine; everything else is covered.
 
+Beyond unit tests, `loadtest/` holds a container rig that drives snuffles at
+2.5 M pps and turns the result into a pass/fail **regression gate**
+(`loadtest/gate.sh` against the committed `loadtest/gate-baseline.json`) — see
+[loadtest/README.md](loadtest/README.md#regression-gate). It needs a dedicated
+16-CPU Linux host with privileged containers, so it is a manual
+`workflow_dispatch` job (`.github/workflows/loadtest.yml`), not part of the
+per-push CI.
+
 ---
 
 ## Usage

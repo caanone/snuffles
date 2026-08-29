@@ -1,0 +1,70 @@
+{
+  "name": "B6-tui-1m",
+  "run_id": "gate-verify",
+  "status": "ok",
+  "build": "pcap",
+  "mode": "tui",
+  "iface": "br0",
+  "duration": 20,
+  "perf": false,
+  "traffic": {
+    "kind": "pktgen",
+    "pkt_size": 64,
+    "dst": "sink",
+    "pps": 125000,
+    "flows": 1,
+    "gens": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "cpus": [
+      4,
+      5,
+      6,
+      7,
+      12,
+      13,
+      14,
+      15
+    ]
+  },
+  "knobs": {
+    "mtu": 1500,
+    "offloads": "on",
+    "rps": "off",
+    "snaplen": null,
+    "ring": null,
+    "bpf": "",
+    "snf_extra_args": ""
+  },
+  "git_sha": "1e87a793aa353fc853ab11ac152f311c783657da",
+  "snuffles_version": "Snuffles v1.3.1",
+  "host_uname": "Linux 6.12.101+deb13-amd64 x86_64 GNU/Linux",
+  "cpuset": {
+    "sut": "2,3,10,11",
+    "gen1": "4,12",
+    "gen2": "5,13",
+    "gen3": "6,14",
+    "gen4": "7,15",
+    "sink": "0,8"
+  },
+  "run_start": 1787980720.762901841,
+  "run_end": 1787980752.701941058,
+  "snuffles_start": 1787980723.202275018,
+  "stats_t0_epoch": 1787980723.320604,
+  "traffic_start": 1787980727.829819731,
+  "traffic_end": 1787980747.884705435,
+  "traffic_start_issued": 1787980727.326814529,
+  "traffic_stop_done": 1787980748.013703403,
+  "window_note": "traffic_start = every generator running; traffic_end = stop issued to the first generator (steady-state window for rates/CPU%); traffic_start_issued/traffic_stop_done bound the full envelope",
+  "perf_schedule": {
+    "offset_s": 1,
+    "stat_s": 8,
+    "record_s": 9
+  },
+  "exit_code": 0,
+  "exit_latency_ms": 141,
+  "killed": false
+}

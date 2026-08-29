@@ -3,6 +3,20 @@
 ## [Unreleased]
 
 ### Added
+- **Load-test regression gate.** `loadtest/gate.sh` runs a fixed set of
+  five rig scenarios (A2, A3d, A6, B3, B6 at 20 s) plus the `ndr.sh`
+  no-drop-rate search on A-class 64 B traffic, compares `captured_pps`,
+  `kdrop_pct_win` and `ndr_pps` against the committed
+  `loadtest/gate-baseline.json`, prints a pass/fail table and exits
+  non-zero on a regression. Tolerances (default: 15% below baseline for
+  a rate, 2 points above for kernel drops) live in the baseline file and
+  can be tuned per scenario; `--update-baseline` rewrites only the
+  measured numbers and keeps existing tolerances. Flags: `--run-id`,
+  `--duration`, `--skip-ndr`, `--only`, `--baseline`,
+  `--update-baseline`. `.github/workflows/loadtest.yml` runs it manually
+  (`workflow_dispatch`) on a self-hosted runner — never on push/PR,
+  which GitHub-hosted runners cannot serve. `run-scenario.sh` gained
+  `RS_SNF_EXTRA_ARGS` for appending snuffles arguments to a run.
 - **Telemetry on by default in headless modes.** `--no-ui`, `--jsonl` and
   `-q` print the `summary ...` counters line to stderr at exit even
   without `--stats` (`--no-summary` turns it off), `SIGUSR1` prints one

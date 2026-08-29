@@ -18,6 +18,11 @@
 #   SNF_BIN_DIR    harness dir inside snf-sut (default /opt/snuffles)
 #   SINK_BIN_DIR   sink binaries dir (default /opt/sink)
 #   RS_NO_ANALYZE  =1 skip the analyze.py call (matrix.sh calls it once at the end)
+#   RS_SNF_EXTRA_ARGS  extra snuffles args, appended verbatim after the ones the
+#                  scenario implies (word-split, so quote as one string). For
+#                  deliberately handicapping the SUT, e.g. RS_SNF_EXTRA_ARGS='-B 1'
+#                  to shrink the kernel ring — used to prove gate.sh catches a
+#                  regression. Recorded in manifest.json as snf_extra_args.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -241,7 +246,7 @@ write_manifest() {
         --argjson killed "$KILLED" \
         --arg mtu "$MTU" --arg offloads "$OFFLOADS" --arg rps "$RPS" \
         --argjson snaplen "${SNAPLEN:-null}" --argjson ring "${RING:-null}" \
-        --arg bpf "$BPF" \
+        --arg bpf "$BPF" --arg snf_extra "${RS_SNF_EXTRA_ARGS:-}" \
         --slurpfile scenario "$SCEN" \
         '{
           name:$name, run_id:$run, status:$status, build:$build, mode:$mode,
@@ -249,7 +254,8 @@ write_manifest() {
           traffic:{kind:$kind, pkt_size:$pkt_size, dst:$dst, pps:$pps, flows:$flows,
                    gens:$gens, cpus:$cpus},
           knobs:{mtu:($mtu|tonumber), offloads:$offloads, rps:$rps,
-                 snaplen:$snaplen, ring:$ring, bpf:$bpf},
+                 snaplen:$snaplen, ring:$ring, bpf:$bpf,
+                 snf_extra_args:$snf_extra},
           git_sha:$sha, snuffles_version:$ver, host_uname:$uname,
           cpuset:{sut:"2,3,10,11", gen1:"4,12", gen2:"5,13", gen3:"6,14",
                   gen4:"7,15", sink:"0,8"},
@@ -311,6 +317,8 @@ declare -a EXTRA_ARGS=()
 [ -n "$SNAPLEN" ] && EXTRA_ARGS+=(-s "$SNAPLEN")
 [ -n "$RING" ]    && EXTRA_ARGS+=(-b "$RING")
 [ -n "$BPF" ]     && EXTRA_ARGS+=(-f "$BPF")
+# shellcheck disable=SC2206  # deliberate word-splitting: this is an argv string
+[ -n "${RS_SNF_EXTRA_ARGS:-}" ] && EXTRA_ARGS+=(${RS_SNF_EXTRA_ARGS})
 
 if ! dex sut "$SNF_DIR/run-snuffles.sh" "$MODE" "$BUILD" "$IFACE" "$COUT" "${EXTRA_ARGS[@]}"; then
     log "run-snuffles.sh start failed (see $OUTDIR/snuffles.stderr)"

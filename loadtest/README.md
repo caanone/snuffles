@@ -15,6 +15,7 @@ loadtest/matrix.sh apps    loadtest/scenarios/C*.json      # one run-id, continu
 loadtest/matrix.sh --repeat 5 spread loadtest/scenarios/A2-pktgen64-8cpu-max.json  # N runs + summary-median.md
 loadtest/run-scenario.sh loadtest/scenarios/A2-pktgen64-8cpu-max.json myrun   # a single scenario
 loadtest/ndr.sh loadtest/scenarios/A2-pktgen64-8cpu-max.json --loss 0 --run-id ndr1  # no-drop-rate search
+loadtest/gate.sh --run-id gate1              # regression gate vs gate-baseline.json
 python3 loadtest/analyze.py nightly          # (re)build summary.csv/summary.md for a run
 cat loadtest/results/nightly/summary.md      # the sorted results table
 loadtest/rig.sh down                         # remove everything, restore host sysctls
@@ -78,6 +79,82 @@ appended NDR section in `summary.md`.
 dirs); `analyze.py` then also writes `summary-median.md` with per-base
 median/min/max of `captured_pps` and `kdrop_pct_win` — the right lens for the
 run-to-run spread this shared host produces.
+
+## Regression gate
+
+`gate.sh` turns the rig into a pass/fail check: it runs a fixed five-scenario
+set plus the NDR search, compares every number against the committed baseline
+`gate-baseline.json`, prints a table and exits non-zero on any regression.
+
+```sh
+loadtest/rig.sh build && loadtest/rig.sh up      # the gate needs the rig up
+loadtest/gate.sh                                 # compare against the baseline
+loadtest/gate.sh --run-id nightly --duration 30  # longer runs
+loadtest/gate.sh --skip-ndr                      # ~4x faster, ndr row -> "skip"
+loadtest/gate.sh --only A2-pktgen64-8cpu-max     # re-run one anomalous scenario
+loadtest/gate.sh --update-baseline               # REWRITE gate-baseline.json
+loadtest/rig.sh down
+```
+
+The set is fixed on purpose — a gate whose scenario list drifts is not a gate:
+`A2-pktgen64-8cpu-max` and `A6-pktgen64-8cpu-flows1m` (the capture ceiling at
+one flow and at 1 M flows), `A3d-pktgen64-8cpu-ratep-1m` (the loss-free 1 M pps
+point), `B3-syslog-1m` and `B6-tui-1m` (the two consumer paths that used to
+collapse under load), and `ndr.sh --loss 0` on A2's 64 B traffic. Each runs at
+`--duration` (default 20 s) with `perf` forced off: `perf stat`/`record` run on
+the SUT cpuset and add variance the gate does not want. Everything else — mode,
+frame size, offered rate, flow count — is exactly the committed scenario file.
+
+**What is compared.** Per scenario the steady-window `captured_pps` and
+`kdrop_pct_win` from `summary.json`; for the `ndr:` row the `ndr_pps` and
+`confirm_kdrop_pct` from `ndr.json`. A row fails when the run status is not
+`ok`, when the rate is more than `captured_pps_drop_pct` (`ndr_pps_drop_pct`)
+percent **below** baseline, or when `kdrop_pct_win` is more than
+`kdrop_pct_win_abs` points **above** it. Faster or lower-drop than baseline is
+never a failure. A scenario in the gate set with no baseline entry fails ("not
+in baseline"); a baseline row that was not run this time is reported `skip` and
+does not fail. Output: the table on stdout, `results/<run-id>/gate.{json,txt}`,
+and a "Regression gate" section appended to `results/<run-id>/summary.md`.
+
+**Tolerances** live in the baseline file, not in the script, so a noisy
+scenario can be widened without a code change: `defaults` applies to every row
+and an optional per-scenario `tolerance` object overrides it. Defaults are 15%
+for the rate and 2 points for `kdrop_pct_win`.
+
+```jsonc
+"A2-pktgen64-8cpu-max": {
+  "captured_pps": 2572655, "kdrop_pct_win": 0.0,
+  "tolerance": { "captured_pps_drop_pct": 15, "kdrop_pct_win_abs": 2 }
+}
+```
+
+**Updating the baseline** is always explicit — nothing rewrites it implicitly.
+`--update-baseline` needs a complete run (no `--only`, no `--skip-ndr`, no
+failed scenario) and rewrites only the measured numbers: an existing
+per-scenario `tolerance` is carried over verbatim, so a limit somebody widened
+on purpose survives a routine refresh. Delete the file to reset the tolerances
+to the defaults.
+
+**How tight to set them.** Two consecutive full gate runs on an idle host
+agreed to within 0.25% on every row (see `results/gate-base` and
+`results/gate-verify`), so 15% is deliberate headroom, not measurement noise —
+the offered rate on this rig tracks host load (README "Host load": 1.4 Mpps at
+loadavg 8-15 vs 2.8 Mpps at loadavg 2-3), and a busy host must not produce a
+false failure. The cost is sensitivity: a SUT handicapped with
+`RS_SNF_EXTRA_ARGS="-B 1 --immediate"` (a 1 MB kernel ring and per-packet
+delivery — capture CPU 29% -> 85% on A2) lands at -14.5%, just inside the
+default floor. On a runner dedicated to this rig, drop
+`captured_pps_drop_pct` to ~5 for the max-rate rows; the same handicap then
+fails the gate as it should.
+
+**Running it on a shared host.** Run the set once. If a row looks anomalous,
+re-run just that scenario with `--only <name>` rather than the whole set — the
+offered rate is the thing that moves, and one scenario costs ~40 s.
+
+CI: `.github/workflows/loadtest.yml` runs exactly this, manually
+(`workflow_dispatch`) on a self-hosted runner. It cannot run on push/PR —
+GitHub-hosted runners have no privileged containers, no pktgen and no host
+sysctl access.
 
 ## Measurement validity (what the numbers mean)
 
@@ -169,5 +246,7 @@ pktgen driver must tolerate non-fatal writes to the pktgen procfs.
 `RIG_PREFIX` (container prefix, `snf-`), `RIG_IMAGE_SUT|GEN|SINK`,
 `GEN_BIN_DIR` (`/opt/gen`), `SNF_BIN_DIR` (`/opt/snuffles`),
 `SINK_BIN_DIR` (`/opt/sink`), `RS_NO_ANALYZE=1` (matrix uses it to analyze once
-at the end). These let the orchestration be exercised against stand-in
+at the end), `RS_SNF_EXTRA_ARGS` (extra snuffles args appended verbatim, e.g.
+`RS_SNF_EXTRA_ARGS="-B 1 --immediate"` to handicap the SUT and check the gate
+still catches it; recorded in `manifest.json` as `knobs.snf_extra_args`). These let the orchestration be exercised against stand-in
 containers; production runs need none of them.

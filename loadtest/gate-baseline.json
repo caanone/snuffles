@@ -1,0 +1,62 @@
+{
+  "generated": "2026-08-29T08:16:25+03:00",
+  "host": "apt-dev-1",
+  "commit": "1e87a79",
+  "duration": 20,
+  "run_id": "gate-base",
+  "defaults": {
+    "captured_pps_drop_pct": 15,
+    "ndr_pps_drop_pct": 15,
+    "kdrop_pct_win_abs": 2
+  },
+  "scenarios": {
+    "A2-pktgen64-8cpu-max": {
+      "captured_pps": 2572655,
+      "kdrop_pct_win": 0.0,
+      "tolerance": {
+        "captured_pps_drop_pct": 15,
+        "kdrop_pct_win_abs": 2
+      }
+    },
+    "A3d-pktgen64-8cpu-ratep-1m": {
+      "captured_pps": 999958,
+      "kdrop_pct_win": 0.0,
+      "tolerance": {
+        "captured_pps_drop_pct": 15,
+        "kdrop_pct_win_abs": 2
+      }
+    },
+    "A6-pktgen64-8cpu-flows1m": {
+      "captured_pps": 2524046,
+      "kdrop_pct_win": 0.0,
+      "tolerance": {
+        "captured_pps_drop_pct": 15,
+        "kdrop_pct_win_abs": 2
+      }
+    },
+    "B3-syslog-1m": {
+      "captured_pps": 1000098,
+      "kdrop_pct_win": 0.0,
+      "tolerance": {
+        "captured_pps_drop_pct": 15,
+        "kdrop_pct_win_abs": 2
+      }
+    },
+    "B6-tui-1m": {
+      "captured_pps": 999994,
+      "kdrop_pct_win": 0.0,
+      "tolerance": {
+        "captured_pps_drop_pct": 15,
+        "kdrop_pct_win_abs": 2
+      }
+    },
+    "ndr:A2-pktgen64-8cpu-max": {
+      "ndr_pps": 2575095,
+      "kdrop_pct_win": 0.0,
+      "tolerance": {
+        "ndr_pps_drop_pct": 15,
+        "kdrop_pct_win_abs": 2
+      }
+    }
+  }
+}

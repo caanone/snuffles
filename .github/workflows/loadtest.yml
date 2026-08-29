@@ -1,0 +1,79 @@
+name: Load-test regression gate
+
+# MANUAL ONLY — this workflow is deliberately NOT wired to push/pull_request.
+# The rig needs a whole 16-CPU host to itself: privileged containers, the
+# pktgen kernel module, host sysctl writes (net.core.rmem_max and friends),
+# CPU pinning across two NUMA-adjacent core groups and passwordless sudo.
+# GitHub-hosted runners provide none of that, so a push/PR trigger would only
+# produce noise. Run it by hand (Actions -> Load-test regression gate -> Run
+# workflow) on a self-hosted runner, or from the CLI:
+#
+#   gh workflow run loadtest.yml -f duration=20
+#
+# Runner requirements (label `self-hosted`):
+#   * Linux with Docker and permission to run `--privileged` containers
+#   * passwordless sudo (loadtest/tune-host.sh writes /proc/sys/net/core/*)
+#   * >= 16 CPUs matching loadtest/SPEC.md's cpuset map, otherwise adjust it
+#   * `jq` and `python3` on PATH
+#   * the runner should be otherwise idle: the offered packet rate tracks host
+#     load, and a busy host produces false regressions
+# One runner at a time: the rig uses fixed container names and host sysctls, so
+# concurrent runs would fight. The `concurrency` block below enforces that.
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Traffic seconds per gate scenario and NDR trial"
+        required: false
+        default: "20"
+      skip_ndr:
+        description: "Skip the NDR search (much faster)"
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: snuffles-loadtest-rig
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Regression gate (self-hosted rig)
+    runs-on: [self-hosted]
+    timeout-minutes: 60
+    env:
+      RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build rig images
+        run: ./loadtest/rig.sh build
+
+      - name: Bring the rig up (tunes host sysctls, builds snuffles in snf-sut)
+        run: ./loadtest/rig.sh up
+
+      - name: Run the regression gate
+        run: |
+          ./loadtest/gate.sh --run-id "$RUN_ID" \
+            --duration "${{ inputs.duration }}" \
+            ${{ inputs.skip_ndr && '--skip-ndr' || '' }}
+
+      - name: Upload gate results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loadtest-gate-${{ env.RUN_ID }}
+          if-no-files-found: warn
+          path: |
+            loadtest/results/${{ env.RUN_ID }}/summary.md
+            loadtest/results/${{ env.RUN_ID }}/summary.csv
+            loadtest/results/${{ env.RUN_ID }}/gate.json
+            loadtest/results/${{ env.RUN_ID }}/gate.txt
+            loadtest/results/${{ env.RUN_ID }}/ndr.json
+            loadtest/results/${{ env.RUN_ID }}/*/summary.json
+            loadtest/results/${{ env.RUN_ID }}/*/manifest.json
+
+      - name: Tear the rig down (restores host sysctls)
+        if: always()
+        run: ./loadtest/rig.sh down

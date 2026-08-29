@@ -1,0 +1,32 @@
+{
+  "scenario": "A2-pktgen64-8cpu-max",
+  "loss_criterion": 0,
+  "threads": 8,
+  "ceiling_offered_pps": 2577547.7,
+  "ndr_is_ceiling": true,
+  "ndr_below_min_probed": false,
+  "ndr_ratep_per_thread": 0,
+  "ndr_pps": 2575094.7,
+  "confirm_offered_pps": 2575094.7,
+  "confirm_kdrop_pct": 0.0,
+  "iterations": [
+    {
+      "label": "ceil",
+      "ratep_per_thread": 0,
+      "secs": 20,
+      "offered_pps_win": 2577547.7,
+      "captured_pps": 2577547.7,
+      "kdrop_pct_win": 0.0,
+      "sustained": true
+    },
+    {
+      "label": "confirm",
+      "ratep_per_thread": 0,
+      "secs": 20,
+      "offered_pps_win": 2575094.7,
+      "captured_pps": 2575094.7,
+      "kdrop_pct_win": 0.0,
+      "sustained": true
+    }
+  ]
+}

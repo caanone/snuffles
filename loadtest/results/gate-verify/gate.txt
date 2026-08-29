@@ -1,0 +1,9 @@
+scenario                       metric            baseline     measured   delta%   kdrop b   kdrop m verdict notes
+A2-pktgen64-8cpu-max           captured_pps       2572655      2576697     +0.2       0.0       0.0 pass    
+A3d-pktgen64-8cpu-ratep-1m     captured_pps        999958      1000054       +0       0.0       0.0 pass    
+A6-pktgen64-8cpu-flows1m       captured_pps       2524046      2522813       +0       0.0       0.0 pass    
+B3-syslog-1m                   captured_pps       1000098      1000054       +0       0.0       0.0 pass    
+B6-tui-1m                      captured_pps        999994      1000028       +0       0.0       0.0 pass    
+ndr:A2-pktgen64-8cpu-max       ndr_pps            2575095      2571195     -0.2       0.0       0.0 pass    
+
+result: PASS   (6 passed, 0 failed, 0 skipped)

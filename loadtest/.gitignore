@@ -6,6 +6,8 @@ results/*/*
 !results/*/summary.md
 !results/*/summary-median.md
 !results/*/ndr.json
+!results/*/gate.json
+!results/*/gate.txt
 !results/*/*/
 results/*/*/*
 !results/*/*/summary.json
