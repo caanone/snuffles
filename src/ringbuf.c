@@ -230,23 +230,36 @@ pkt_record_t *ringbuf_producer_next_w(ringbuf_t *rb, int pid, uint32_t wanted) {
         pos += p->arena_len - off;
         off  = 0;
     }
+    p->arena_off = off + wanted;
+    /* The cursor moves before the bytes are written (readers rely on
+     * seeing the move if they could see the bytes). Publishing it with
+     * a release store is not enough: that orders *earlier* writes before
+     * it, and the writes it has to cover all come after. The fence below
+     * covers both this store and the slot generation. */
+    atomic_store_explicit(&p->arena_pos, pos + wanted, memory_order_relaxed);
+
+    /* Everything a reader must not see before the slot says "being
+     * written" goes after this fence: the record header below, and the
+     * caller's payload and summary stores after we return. On a weakly
+     * ordered CPU (arm64) neither the relaxed generation store nor the
+     * store half of the acq_rel CAS above keeps a later plain store from
+     * becoming visible first, and a reader that saw one of those with the
+     * previous occupant's (even, unchanged) generation would validate a
+     * torn record: its generation recheck cannot fail, because the odd
+     * mark it would have to see is exactly the store that has not
+     * arrived, and seq_num still holds the previous occupant's value
+     * until the new one commits. With the fence, observing any of those
+     * stores implies observing the odd mark, so the recheck rejects the
+     * copy. The arena cursor is on the near side for the same reason:
+     * a reader that could see an overwritten payload byte must see the
+     * cursor that moved past it. */
+    atomic_thread_fence(memory_order_release);
+
     pkt_record_t *rec = &rb->records[idx];
     rec->raw_data = rb->arena + p->arena_base + off;
     rec->raw_len  = wanted;
     rec->data_pos = pos;
     rec->prod_id  = (uint32_t)pid;
-    p->arena_off  = off + wanted;
-    /* The cursor moves before the bytes are written (readers rely on
-     * seeing the move if they could see the bytes). Publishing it with
-     * a release store is not enough: that orders *earlier* writes before
-     * it, and the caller's payload copy comes after. The fence below
-     * covers both this store and the slot generation. */
-    atomic_store_explicit(&p->arena_pos, pos + wanted, memory_order_relaxed);
-    /* The stores above don't order the caller's later plain data stores
-     * after them on weakly-ordered CPUs (arm64): a lapped reader could
-     * see new data before the odd generation and validate a torn copy.
-     * Fence so the odd mark is visible before any data write. */
-    atomic_thread_fence(memory_order_release);
     return rec;
 }
 
@@ -303,7 +316,17 @@ static int mp_advance_commit(ringbuf_t *rb) {
  * callers are read-only queries: the publication point is not observable
  * state to them. */
 static void mp_sync(const ringbuf_t *rb) {
-    if (rb->mp) (void)mp_advance_commit((ringbuf_t *)rb);
+    if (!rb->mp) return;
+    ringbuf_t *m = (ringbuf_t *)rb;
+    /* Moving the publication point makes those records visible to every
+     * consumer, not just this one, so whoever moves it owes the wakeups —
+     * the same rule ringbuf_producer_commit_w follows. Without this a
+     * consumer polling ringbuf_total could advance past the last commit
+     * of a run and leave a second consumer (the output thread) blocked:
+     * its producer runs mp_advance_commit too, finds nothing left to
+     * advance, and returns owing nothing. */
+    if (mp_advance_commit(m) && atomic_load(&m->nwaiting))
+        ringbuf_wake_waiters(m);
 }
 
 void ringbuf_producer_commit_w(ringbuf_t *rb, int pid) {
