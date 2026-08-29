@@ -251,7 +251,12 @@ int main(void) {
         double dt = now_s() - t0;
         printf("%u inserts into a %u-session cap: %.0f ms (%.0f ns/insert)\n",
                total, cap, dt * 1e3, dt * 1e9 / total);
+        /* Wall-clock bound: 20 ms natively on x86-64, but the sanitized
+         * arm64 CI runner needs ~4.3 s (21 us/insert under ASan/UBSan), so
+         * only enforce it in unsanitized builds. */
+#if !defined(__SANITIZE_ADDRESS__) && !(defined(__has_feature) && __has_feature(address_sanitizer))
         CHECK(dt < 2.0);
+#endif
         CHECK(session_table_count(st) == cap);
         CHECK(st->pool_used == cap);            /* no growth past the pool */
         /* the first half was evicted in order; the second half is resident */
