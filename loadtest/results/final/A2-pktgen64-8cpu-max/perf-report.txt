@@ -1,0 +1,120 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 6K of event 'cycles:P'
+# Event count (approx.): 9340684312
+#
+# Overhead  Command      Shared Object      Symbol                                   
+# ........  ...........  .................  .........................................
+#
+    34.58%  snf-capture  snuffles           [.] dissect_packet
+            |          
+            |--12.15%--dissect_packet
+            |          |          
+            |           --11.93%--capture_callback
+            |                     0x7fe429378527
+            |          
+            |--7.88%--session_table_update
+            |          |          
+            |           --7.79%--capture_callback
+            |                     0x7fe429378527
+            |          
+            |--3.08%--ringbuf_producer_commit
+            |          |          
+            |           --3.02%--capture_callback
+            |                     0x7fe429378527
+            |          
+            |--1.66%--ringbuf_producer_next
+            |          0x7fe429378527
+            |          
+            |--1.62%--capture_callback
+            |          |          
+            |           --1.45%--0x7fe429378527
+            |          
+            |--1.43%--dissect_udp.isra.0
+            |          |          
+            |          |--0.90%--capture_callback
+            |          |          0x7fe429378527
+            |          |          
+            |           --0.53%--dissect_packet
+            |                     capture_callback
+            |                     0x7fe429378527
+            |          
+             --0.99%--dissect_ipv4.isra.0
+                       capture_callback
+                       0x7fe429378527
+
+    20.97%  snf-capture  snuffles           [.] session_table_update
+            |          
+            |--6.09%--session_table_update
+            |          |          
+            |           --6.07%--capture_callback
+            |                     0x7fe429378527
+            |          
+            |--5.53%--dissect_packet
+            |          |          
+            |           --5.48%--capture_callback
+            |                     0x7fe429378527
+            |          
+            |--2.31%--ringbuf_producer_commit
+            |          |          
+            |           --2.28%--capture_callback
+            |                     0x7fe429378527
+            |          
+            |--0.97%--dissect_udp.isra.0
+            |          
+            |--0.93%--capture_callback
+            |          |          
+            |           --0.81%--0x7fe429378527
+            |          
+            |--0.76%--dissect_ipv4.isra.0
+            |          capture_callback
+            |          0x7fe429378527
+            |          
+             --0.75%--ringbuf_producer_next
+                       0x7fe429378527
+
+     5.67%  snf-capture  snuffles           [.] capture_callback
+            |          
+            |--1.76%--dissect_packet
+            |          |          
+            |           --1.72%--capture_callback
+            |                     0x7fe429378527
+            |          
+            |--1.19%--session_table_update
+            |          capture_callback
+            |          0x7fe429378527
+            |          
+             --0.79%--ringbuf_producer_commit
+                       |          
+                        --0.77%--capture_callback
+                                  0x7fe429378527
+
+     4.88%  snf-capture  libc.so.6          [.] pthread_mutex_lock
+            |          
+            |--1.60%--session_table_update
+            |          capture_callback
+            |          0x7fe429378527
+            |          
+             --1.21%--dissect_packet
+                       capture_callback
+                       0x7fe429378527
+
+     4.20%  snf-capture  snuffles           [.] dissect_udp.isra.0
+            |          
+            |--1.45%--dissect_packet
+            |          |          
+            |           --1.43%--capture_callback
+            |                     0x7fe429378527
+            |          
+             --1.40%--session_table_update
+                       |          
+                        --1.37%--capture_callback
+                                  0x7fe429378527
+
+     3.94%  snf-capture  snuffles           [.] ringbuf_producer_commit
+            |          
+            |--1.24%--dissect_packet
+            |          |          

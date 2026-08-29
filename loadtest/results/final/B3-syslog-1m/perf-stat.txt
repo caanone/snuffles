@@ -1,0 +1,22 @@
+# started on Sat Aug 29 00:29:59 2026
+
+
+ Performance counter stats for process id '2387':
+
+          10858.56 msec task-clock                       #    1.086 CPUs utilized             
+              6449      context-switches                 #  593.910 /sec                      
+               483      cpu-migrations                   #   44.481 /sec                      
+                 0      page-faults                      #    0.000 /sec                      
+       42992667958      cycles                           #    3.959 GHz                       
+       44076162330      instructions                     #    1.03  insn per cycle            
+         133921696      cache-misses                                                          
+         662545755      branch-misses                                                         
+                10      syscalls:sys_enter_write         #    0.921 /sec                      
+                 0      syscalls:sys_enter_sendto        #    0.000 /sec                      
+                40      syscalls:sys_enter_getsockopt    #    3.684 /sec                      
+                 0      syscalls:sys_enter_recvfrom      #    0.000 /sec                      
+                 0      syscalls:sys_enter_select        #    0.000 /sec                      
+              5792      syscalls:sys_enter_poll          #  533.404 /sec                      
+
+      10.001344081 seconds time elapsed
+
