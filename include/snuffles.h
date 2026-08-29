@@ -267,6 +267,7 @@ typedef struct {
     pkt_summary_t   summary;
     uint8_t        *raw_data;
     uint32_t        raw_len;
+    uint64_t        data_pos;   /* ring buffer: arena position of raw_data */
     uint64_t        seq_num;
 } pkt_record_t;
 
@@ -290,16 +291,23 @@ typedef struct {
     char        syslog_target[256];
     char        syslog_iface[64];
     int         buffer_mb;      /* -B: kernel capture buffer in MB (TPACKET ring; raw: SO_RCVBUF fallback) */
+    int         arena_mb;       /* --arena-mb: payload arena in MB (0: ring x min(snaplen, 2 KB)) */
     int         immediate;      /* --immediate: per-packet delivery (no TPACKET_V3 blocks) */
     int         no_summary;     /* --no-summary: no exit counters in headless modes */
     int         cpu;            /* --cpu: pin the capture thread to this CPU (-1: unset) */
     int         rt;             /* --rt: SCHED_FIFO for the capture thread */
 } capture_cfg_t;
 
+/* Default snaplen: whole frames for the TUI hex view; headless modes and
+ * -w drop to one MTU-sized Ethernet frame (1500 + 14 + 4 VLAN) unless
+ * -s / the config file say otherwise. */
+#define NS_DEFAULT_SNAPLEN  65535
+#define NS_HEADLESS_SNAPLEN 1518
+
 static inline void capture_cfg_defaults(capture_cfg_t *cfg) {
     memset(cfg, 0, sizeof(*cfg));
     cfg->promisc   = 1;
-    cfg->snaplen   = 65535;
+    cfg->snaplen   = NS_DEFAULT_SNAPLEN;
     cfg->ring_size = 10000;
     cfg->count     = 0;
     cfg->buffer_mb = 64;

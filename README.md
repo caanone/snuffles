@@ -38,7 +38,7 @@ dependencies beyond (optional) libpcap.
 - Session/stream tracking `[S]` — bidirectional 5-tuple aggregation with TCP state machine
 - Protocol statistics `[V]` — live per-protocol breakdown with rates and drop counts
 - Syslog forwarding `--syslog` — real-time UDP CSV with full header details, feedback loop prevention
-- Silent mode `-q` — no packet output, minimal user-space memory (~16KB ring; the libpcap build adds a kernel capture buffer, `-B`), pure syslog forwarder
+- Silent mode `-q` — no packet output, minimal user-space memory (~40KB ring; the libpcap build adds a kernel capture buffer, `-B`), pure syslog forwarder
 - ANSI terminal UI with color-coded protocols, scrollable list, detail panel, hex dump, help overlay
 - Streaming write `-w` — tcpdump-style write-while-capturing (`-w -` pipes into Wireshark)
 - JSON Lines output `--jsonl` — one JSON object per packet on stdout, made for `jq`
@@ -147,8 +147,11 @@ Options:
   -r <file.pcap>      Read from pcap file (libpcap build only)
   -f <bpf_filter>     BPF capture filter (e.g. "tcp port 80")
   -c <count>          Stop after N packets
-  -s <snaplen>        Snapshot length (default: 65535)
+  -s <snaplen>        Snapshot length (default: 65535 in the TUI;
+                      1518 for --no-ui/--jsonl/-q/-w)
   -b <ring_size>      Ring buffer size (default: 10000)
+  --arena-mb <MB>     Packet payload arena shared by the ring, 1-65536
+                      (default: ring_size x min(snaplen, 2048) bytes)
   -B <MB>             Kernel capture buffer in MB, 1-2047 (default: 64)
   -o <file>           Export on exit (.pcap or .json)
   -w <file>           Stream packets to a pcap file while capturing
@@ -225,9 +228,10 @@ file is silently ignored. CLI flags always override config values.
 ```ini
 # ~/.snufflesrc — '#' comments, blank lines, key = value
 interface    = eth0
-snaplen      = 1500            # 64-65535
+snaplen      = 1500            # 64-65535 (explicit: no headless default)
 ring_size    = 50000           # 16-1000000
 buffer_mb    = 64              # 1-2047, kernel capture buffer
+arena_mb     = 96              # 1-65536, payload arena (default derived)
 promisc      = 1               # 0 or 1
 syslog       = 10.0.0.100:514
 syslog_iface = 192.168.1.5
@@ -253,9 +257,9 @@ lists the first few preset names.
 
 | Mode | Flags | Memory | Output |
 |------|-------|--------|--------|
-| **TUI** | (default) | ~640MB ring + sessions | Interactive terminal UI |
-| **Headless** | `--no-ui` | ~640MB ring + sessions | Packets to stdout |
-| **Headless + export** | `--no-ui -o file` | ~640MB ring + sessions | Stdout + file on exit |
+| **TUI** | (default) | ~24MB ring + sessions | Interactive terminal UI |
+| **Headless** | `--no-ui` | ~19MB ring + sessions | Packets to stdout |
+| **Headless + export** | `--no-ui -o file` | ~19MB ring + sessions | Stdout + file on exit |
 | **Headless + syslog** | `--no-ui --syslog h:p` | ~16KB ring, no sessions | Stdout + UDP syslog |
 | **Silent syslog** | `-q --syslog h:p` | ~16KB ring, no sessions | UDP syslog only |
 
@@ -475,9 +479,23 @@ reader waits for the consumer instead of lapping the ring, so
 
 | Mode | Memory |
 |------|--------|
-| `-q --syslog` | ~16KB ring (64 slots x 256 bytes, no sessions) + 18KB syslog batch |
+| `-q --syslog` | ~40KB ring (64 records + a 16KB payload arena, no sessions) + 18KB syslog batch |
 | `--no-ui --syslog` | same + stdout buffering |
 | TUI + syslog | Full ring buffer + sessions |
+
+The ring buffer keeps one ~350-byte record per packet plus the packet
+bytes in a shared payload arena, not a snaplen-sized slot per record: by
+default `ring_size x min(snaplen, 2048)` bytes (20 MB for the default
+10 000-packet ring, whatever the snaplen; `--arena-mb` / `arena_mb`
+overrides it). Packets take only the bytes they need, so with MTU-sized
+frames the arena outlives the ring; with larger frames (GRO/GSO
+super-frames, jumbo, `-s 65535` in the TUI) the arena wraps before the
+ring does and the oldest records keep their summary but lose their bytes
+— the TUI hex view says so, `-o` writes them with a zero captured length
+(Wireshark: "packet size limited during capture"). Headless modes and
+`-w` default the snaplen to 1518 (one Ethernet frame with a VLAN tag)
+unless `-s` or the config file set it; the TUI keeps 65535 for its hex
+view.
 
 These figures cover snuffles' own buffers. Both builds also map the
 kernel capture buffer into the process (64 MB by default, so RSS shows
@@ -608,8 +626,9 @@ Drops from root to original user (sudo) or `nobody` after opening capture device
 
 | Resource | Limit |
 |----------|-------|
-| snaplen | 64 - 65,535 bytes |
+| snaplen | 64 - 65,535 bytes (default 65,535 TUI, 1,518 headless / `-w`) |
 | ring_size | 16 - 1,000,000 packets |
+| arena_mb | 1 - 65,536 MB payload arena (default ring_size x min(snaplen, 2048) bytes; a packet longer than the arena is cut to it) |
 | buffer_mb | 1 - 2,047 MB kernel capture buffer (default 64; a TPACKET_V3 block ring in both builds, the raw build uses the socket receive queue when no ring is available) |
 | Session table | 100,000 (LRU eviction) |
 | UI render buffer | 4 MB |
