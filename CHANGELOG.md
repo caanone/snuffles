@@ -51,6 +51,27 @@
   560 bytes (the text columns are kept for compatibility); tests that
   build summaries by hand keep working (a summary with text in place and
   `text_pending` clear is used as is).
+- **Packet bytes live in a shared payload arena; headless snaplen 1518.**
+  The ring used to reserve a snaplen-sized slot per record (10 000 x
+  65 535 B = 655 MB, resident within a second under transparent huge
+  pages) and copy every frame into a cold 64 KB slot. Records now
+  bump-allocate exactly their captured bytes from one circular arena of
+  `ring_size x min(snaplen, 2048)` bytes (20 MB by default;
+  `--arena-mb` / config `arena_mb` override). When large frames wrap the
+  arena before the ring wraps, the oldest records keep their summary and
+  come back with a captured length of 0 — readers validate the arena
+  cursor after copying, the same way they validate the slot seqlock, so
+  an overwritten payload is never presented as valid (the TUI hex view
+  says "payload no longer buffered", `-o` writes a zero-length capture).
+  `--no-ui`, `--jsonl`, `-q` and `-w` default the snaplen to 1518 unless
+  `-s` or the config file set it (a config-file snaplen now counts as
+  explicit for the lean syslog mode too); a headless capture on a jumbo
+  interface warns once when a frame exceeds it. Ring API:
+  `ringbuf_create()` takes the arena size, `ringbuf_producer_next()` the
+  wanted length and returns the granted `raw_len`/`raw_data`. Measured on
+  `lo` (libpcap build, `-q`): RSS 712 MB -> 88 MB (64 MB of it the kernel
+  ring); capture-thread CPU per packet 0.78 -> 0.68 us at 64 B and
+  1.11 -> 0.85 us at 1472 B UDP payloads.
 - **Session table rebuilt for flow churn.** Keys are now a packed binary
   5-tuple (canonical order, so both directions of a flow hit one entry)
   compared with `memcmp` and hashed with a per-process seeded xxHash-style
