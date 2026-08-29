@@ -1,0 +1,59 @@
+{
+  "name": "A1-pktgen64-1cpu",
+  "run_id": "critic",
+  "status": "ok",
+  "build": "pcap",
+  "mode": "quiet",
+  "iface": "br0",
+  "duration": 12,
+  "perf": false,
+  "traffic": {
+    "kind": "pktgen",
+    "pkt_size": 64,
+    "dst": "sink",
+    "pps": 0,
+    "flows": 1,
+    "gens": [
+      1
+    ],
+    "cpus": [
+      4
+    ]
+  },
+  "knobs": {
+    "mtu": 1500,
+    "offloads": "on",
+    "rps": "off",
+    "snaplen": null,
+    "ring": null,
+    "bpf": ""
+  },
+  "git_sha": "bffe4ac9a84a7314c65b7f95f1d89ed4140a86fa",
+  "snuffles_version": "Snuffles v1.3.1",
+  "host_uname": "Linux 6.12.101+deb13-amd64 x86_64 GNU/Linux",
+  "cpuset": {
+    "sut": "2,3,10,11",
+    "gen1": "4,12",
+    "gen2": "5,13",
+    "gen3": "6,14",
+    "gen4": "7,15",
+    "sink": "0,8"
+  },
+  "run_start": 1787924766.254538298,
+  "run_end": 1787924789.602870778,
+  "snuffles_start": 1787924768.561578764,
+  "stats_t0_epoch": 1787924768.683024,
+  "traffic_start": 1787924773.057314148,
+  "traffic_end": 1787924785.095184797,
+  "traffic_start_issued": 1787924772.689385415,
+  "traffic_stop_done": 1787924785.129055232,
+  "window_note": "traffic_start = every generator running; traffic_end = stop issued to the first generator (steady-state window for rates/CPU%); traffic_start_issued/traffic_stop_done bound the full envelope",
+  "perf_schedule": {
+    "offset_s": 1,
+    "stat_s": 4,
+    "record_s": 5
+  },
+  "exit_code": 0,
+  "exit_latency_ms": 524,
+  "killed": false
+}

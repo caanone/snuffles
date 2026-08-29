@@ -1,17 +1,23 @@
 #include "capture.h"
 #include "dissect.h"
-#include "export_pcap.h"
-#include "syslog_out.h"
 #include <pcap.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
 #include <stdatomic.h>
+#include <limits.h>
+#include <time.h>
+#ifdef __linux__
+  #include <sys/prctl.h>
+#endif
 
 #ifndef _WIN32
   #include <unistd.h>
   #include <sys/types.h>
+  #include <sys/socket.h>
+  #include <sys/ioctl.h>
+  #include <net/if.h>
   #include <pwd.h>
 #endif
 
@@ -25,12 +31,14 @@ struct capture_ctx {
     atomic_int          stop_req;
     int                 datalink;
     int                 offline;
+    int                 iface_mtu;      /* live: MTU of the interface, 0 unknown */
+    int                 superframe_warned;  /* capture thread only */
     uint64_t            pkt_count;      /* capture thread only */
     atomic_uint_fast64_t drops;         /* published by capture thread */
+    atomic_uint_fast64_t ifdrops;       /* pcap ps_ifdrop */
     char                errbuf[PCAP_ERRBUF_SIZE];
     char                iface_name[64];
     char                bpf_active[512]; /* UI thread only (after create) */
-    syslog_out_t       *syslog;
 
     /* BPF changes are queued here by the UI thread and applied by the
      * capture thread between dispatch calls: the pcap_t handle must only
@@ -39,11 +47,39 @@ struct capture_ctx {
     char                bpf_pending[512];
     atomic_int          bpf_req;
 
-    pcap_writer_t      *stream;     /* -w: capture thread only */
-
     atomic_int          had_error;  /* set by the capture thread on fatal error */
     char                err_msg[256]; /* written before had_error is set */
 };
+
+/* ── Helpers ─────────────────────────────────────────────────── */
+
+/* 100 us pause while the offline producer waits for the consumer. */
+static void offline_nap(void) {
+#ifdef _WIN32
+    Sleep(1);
+#else
+    struct timespec ts = { 0, 100000 };
+    nanosleep(&ts, NULL);
+#endif
+}
+
+/* MTU of a live interface, 0 if unknown (pseudo-devices, non-POSIX). */
+static int iface_mtu(const char *name) {
+#if defined(_WIN32) || !defined(SIOCGIFMTU)
+    (void)name;
+    return 0;
+#else
+    struct ifreq ifr;
+    if (strlen(name) >= sizeof(ifr.ifr_name)) return 0;
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return 0;
+    memset(&ifr, 0, sizeof(ifr));
+    snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "%s", name);
+    int mtu = (ioctl(fd, SIOCGIFMTU, &ifr) == 0) ? ifr.ifr_mtu : 0;
+    close(fd);
+    return mtu;
+#endif
+}
 
 /* ── Capture callback ────────────────────────────────────────── */
 
@@ -56,14 +92,43 @@ static void capture_callback(u_char *user, const struct pcap_pkthdr *hdr,
         return;
     }
 
-    pkt_record_t *rec = ringbuf_producer_next(ctx->rb);
+    /* Offline replay back-pressure: a file read has no reason to lose
+     * records, so when a streaming consumer is attached to the ring, wait
+     * for it instead of lapping it. Live capture never waits here (the
+     * kernel buffer is the only place a live burst can be absorbed). */
+    if (ctx->offline) {
+        while (!ringbuf_producer_may_write(ctx->rb)) {
+            if (atomic_load(&ctx->stop_req)) {
+                pcap_breakloop(ctx->handle);
+                return;
+            }
+            offline_nap();
+        }
+    }
 
-    /* copy raw packet data */
-    uint32_t copylen = hdr->caplen;
-    if (copylen > (uint32_t)ctx->cfg.snaplen)
-        copylen = (uint32_t)ctx->cfg.snaplen;
-    memcpy(rec->raw_data, data, copylen);
-    rec->raw_len = copylen;
+    /* GRO/GSO super-frames: a frame longer than a standard Ethernet MTU
+     * frame on a non-jumbo interface was coalesced by the kernel before
+     * the tap saw it. Harmless for dissection, but each one costs a large
+     * memcpy and the -s/ring math assumes wire-sized frames. Warn once,
+     * headless modes only (stderr would scribble over the TUI). */
+    if (hdr->len > 1518 && !ctx->superframe_warned) {
+        ctx->superframe_warned = 1;
+        if (ctx->cfg.no_ui && ctx->iface_mtu > 0 && ctx->iface_mtu <= 1500)
+            fprintf(stderr, "snuffles: %u-byte frame on %s (MTU %d): the kernel "
+                    "is coalescing packets (GRO/GSO super-frames); "
+                    "for wire-sized frames try: ethtool -K %s gro off gso off "
+                    "tso off\n", hdr->len, ctx->iface_name, ctx->iface_mtu,
+                    ctx->iface_name);
+        else if (ctx->cfg.no_ui && hdr->len > (bpf_u_int32)ctx->cfg.snaplen)
+            fprintf(stderr, "snuffles: %u-byte frame on %s exceeds the snaplen "
+                    "(%d) and is truncated; use -s to keep whole jumbo "
+                    "frames\n", hdr->len, ctx->iface_name, ctx->cfg.snaplen);
+    }
+
+    /* claim a slot and arena space, copy the raw bytes (granted length is
+     * min(caplen, snaplen)) */
+    pkt_record_t *rec = ringbuf_producer_next(ctx->rb, hdr->caplen);
+    memcpy(rec->raw_data, data, rec->raw_len);
 
     /* dissect */
     dissect_packet(data, hdr->caplen, ctx->datalink, &rec->summary);
@@ -85,21 +150,14 @@ static void capture_callback(u_char *user, const struct pcap_pkthdr *hdr,
         if (sid) rec->summary.session_id = sid;
     }
 
-    /* syslog output (skip our own syslog traffic to prevent feedback loop) */
-    if (ctx->syslog && !syslog_out_is_self(ctx->syslog, &rec->summary))
-        syslog_out_send(ctx->syslog, &rec->summary);
-
-    /* streaming -w write (before commit: the slot is still ours) */
-    if (ctx->stream && pcap_writer_write(ctx->stream, rec) != 0) {
-        fprintf(stderr, "stream write failed; disabling -w output\n");
-        pcap_writer_close(ctx->stream);
-        ctx->stream = NULL;
-    }
-
+    /* --syslog and -w are served by the output thread from the ring */
     ringbuf_producer_commit(ctx->rb);
 
     ctx->pkt_count++;
     if (ctx->cfg.count > 0 && ctx->pkt_count >= (uint64_t)ctx->cfg.count) {
+        /* -c reached: stop the thread loop as well, otherwise it re-enters
+         * pcap_dispatch and keeps delivering one packet per call. */
+        atomic_store(&ctx->stop_req, 1);
         pcap_breakloop(ctx->handle);
     }
 }
@@ -123,20 +181,53 @@ static void apply_pending_bpf(capture_ctx_t *ctx) {
     pcap_freecode(&fp);
 }
 
+/* Packets handed to pcap_dispatch per call. stop_req is checked in the
+ * callback and -c breaks the loop exactly, so a large batch only saves the
+ * per-call overhead (poll/return path plus the stats sample below). */
+#define CAPTURE_BATCH      1024
+/* Minimum spacing between pcap_stats() samples while packets flow. */
+#define STATS_INTERVAL_MS  250
+
+static uint64_t mono_ms(void) {
+#ifdef _WIN32
+    return (uint64_t)GetTickCount64();
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+#endif
+}
+
 static void *capture_thread_fn(void *arg) {
     capture_ctx_t *ctx = (capture_ctx_t *)arg;
     atomic_store(&ctx->running, 1);
+#ifdef __linux__
+    prctl(PR_SET_NAME, "snf-capture", 0, 0, 0);
+#endif
+
+    uint64_t last_stats_ms = 0;
 
     while (!atomic_load(&ctx->stop_req)) {
         if (atomic_exchange(&ctx->bpf_req, 0))
             apply_pending_bpf(ctx);
 
-        int ret = pcap_dispatch(ctx->handle, 64, capture_callback, (u_char *)ctx);
+        int ret = pcap_dispatch(ctx->handle, CAPTURE_BATCH, capture_callback,
+                                (u_char *)ctx);
 
+        /* pcap_stats() is a getsockopt() round trip: sample it at most every
+         * STATS_INTERVAL_MS while packets flow, and whenever dispatch came
+         * back empty (idle, break-out, or exit) so the counters last
+         * published are current. */
         if (!ctx->offline) {
-            struct pcap_stat ps;
-            if (pcap_stats(ctx->handle, &ps) == 0)
-                atomic_store(&ctx->drops, (uint64_t)ps.ps_drop);
+            uint64_t now = mono_ms();
+            if (ret <= 0 || now - last_stats_ms >= STATS_INTERVAL_MS) {
+                struct pcap_stat ps;
+                if (pcap_stats(ctx->handle, &ps) == 0) {
+                    atomic_store(&ctx->drops, (uint64_t)ps.ps_drop);
+                    atomic_store(&ctx->ifdrops, (uint64_t)ps.ps_ifdrop);
+                }
+                last_stats_ms = now;
+            }
         }
 
         if (ret == PCAP_ERROR_BREAK || ret == 0) {
@@ -235,10 +326,30 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
 
         pcap_set_snaplen(ctx->handle, cfg->snaplen);
         pcap_set_promisc(ctx->handle, cfg->promisc);
-        pcap_set_timeout(ctx->handle, 100);
-#ifdef PCAP_SET_IMMEDIATE_MODE
-        pcap_set_immediate_mode(ctx->handle, 1);
-#endif
+
+        /* Kernel capture buffer (TPACKET ring on Linux, BPF store buffer
+         * on BSD/macOS, Npcap kernel buffer on Windows). libpcap's default
+         * is 2 MB: ~16k small packets packed into TPACKET_V3 blocks, or a
+         * mere 31 frames on a per-frame TPACKET_V2 ring at snaplen 65535,
+         * of scheduling jitter before the kernel drops. 64 MB rides out
+         * ~500k small packets. libpcap shrinks the request itself if the
+         * kernel refuses it. */
+        if (cfg->buffer_mb > 0) {   /* <= 0 (unset cfg): libpcap default */
+            long long bytes = (long long)cfg->buffer_mb * 1024 * 1024;
+            if (bytes > INT_MAX) bytes = INT_MAX;
+            pcap_set_buffer_size(ctx->handle, (int)bytes);
+        }
+
+        if (cfg->immediate) {
+            /* one wakeup per packet; on Linux this forces TPACKET_V2 */
+            pcap_set_immediate_mode(ctx->handle, 1);
+            pcap_set_timeout(ctx->handle, 100);
+        } else {
+            /* Batched delivery: on Linux libpcap picks TPACKET_V3 and
+             * retires a block every 10 ms (or when full). The TUI redraws
+             * every 50 ms, so this adds no visible latency. */
+            pcap_set_timeout(ctx->handle, 10);
+        }
 
         int err = pcap_activate(ctx->handle);
         if (err < 0) {
@@ -259,6 +370,7 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
         }
 
         snprintf(ctx->iface_name, sizeof(ctx->iface_name), "%s", iface);
+        ctx->iface_mtu = iface_mtu(iface);
     }
 
     ctx->datalink = pcap_datalink(ctx->handle);
@@ -290,23 +402,6 @@ capture_ctx_t *capture_create(const capture_cfg_t *cfg, ringbuf_t *rb,
                         "continuing as root\n");
 #endif
 
-    /* open syslog output if configured */
-    if (cfg->syslog_target[0]) {
-        ctx->syslog = syslog_out_create(cfg->syslog_target, cfg->syslog_iface);
-        if (!ctx->syslog)
-            fprintf(stderr, "Warning: syslog output disabled\n");
-    }
-
-    /* streaming -w writer (opened after the privilege drop so the file is
-       owned by the invoking user, not root) */
-    if (cfg->stream_file[0]) {
-        ctx->stream = pcap_writer_open(cfg->stream_file, (uint32_t)cfg->snaplen,
-                                       (uint32_t)ctx->datalink);
-        if (!ctx->stream)
-            fprintf(stderr, "Warning: cannot open '%s' for -w streaming\n",
-                    cfg->stream_file);
-    }
-
     return ctx;
 }
 
@@ -331,16 +426,6 @@ void capture_stop(capture_ctx_t *ctx) {
 
 void capture_destroy(capture_ctx_t *ctx) {
     if (!ctx) return;
-    if (ctx->stream) {
-        uint64_t n = pcap_writer_count(ctx->stream);
-        if (pcap_writer_close(ctx->stream) != 0)
-            fprintf(stderr, "Warning: error finalizing -w stream file\n");
-        else
-            fprintf(stderr, "Streamed %llu packets to %s\n",
-                    (unsigned long long)n, ctx->cfg.stream_file);
-        ctx->stream = NULL;
-    }
-    syslog_out_destroy(ctx->syslog);
     if (ctx->handle)
         pcap_close(ctx->handle);
     ns_mutex_destroy(&ctx->bpf_mtx);
@@ -361,8 +446,9 @@ void capture_get_stats(capture_ctx_t *ctx, capture_stats_raw_t *out) {
 
     /* No pcap calls here: this runs on the UI thread. The capture thread
      * publishes drop counts into ctx->drops. */
-    out->pkts_recv = ringbuf_total(ctx->rb);
-    out->pkts_drop = atomic_load(&ctx->drops);
+    out->pkts_recv   = ringbuf_total(ctx->rb);
+    out->pkts_drop   = atomic_load(&ctx->drops);
+    out->pkts_ifdrop = atomic_load(&ctx->ifdrops);
 }
 
 int capture_get_datalink(const capture_ctx_t *ctx) {

@@ -5,8 +5,11 @@ snuffles \- lightweight terminal network packet analyzer
 .B snuffles
 [\fB\-i\fR \fIiface\fR] [\fB\-r\fR \fIfile.pcap\fR] [\fB\-f\fR \fIfilter\fR]
 [\fB\-c\fR \fIcount\fR] [\fB\-s\fR \fIsnaplen\fR] [\fB\-b\fR \fIring\fR]
+[\fB\-\-arena\-mb\fR \fIMB\fR]
+[\fB\-B\fR \fIMB\fR] [\fB\-\-immediate\fR]
 [\fB\-o\fR \fIfile\fR] [\fB\-w\fR \fIfile\fR] [\fB\-\-no\-ui\fR] [\fB\-\-jsonl\fR]
-[\fB\-q\fR] [\fB\-\-syslog\fR \fIhost:port\fR] [\fB\-\-list\-ifaces\fR]
+[\fB\-q\fR] [\fB\-\-syslog\fR \fIhost:port\fR] [\fB\-\-stats\fR[=\fIfile\fR]]
+[\fB\-\-no\-summary\fR] [\fB\-\-cpu\fR \fIN\fR] [\fB\-\-rt\fR] [\fB\-\-list\-ifaces\fR]
 .SH DESCRIPTION
 .B snuffles
 captures and dissects network traffic with an interactive terminal UI:
@@ -24,7 +27,10 @@ capture socket is open.
 Capture interface (default: auto\-detect).
 .TP
 .BI \-r " file.pcap"
-Read packets from a pcap file (libpcap build only).
+Read packets from a pcap file (libpcap build only). Into a headless
+consumer (\fB\-\-no\-ui\fR, \fB\-\-jsonl\fR) the reader waits for the
+consumer instead of overwriting records it has not emitted yet, so every
+packet of the file is output whatever the ring size.
 .TP
 .BI \-f " filter"
 BPF capture filter. libpcap build: full pcap syntax. Raw\-socket build
@@ -35,10 +41,64 @@ BPF capture filter. libpcap build: full pcap syntax. Raw\-socket build
 Stop after \fIcount\fR packets.
 .TP
 .BI \-s " snaplen"
-Snapshot length in bytes (64\-65535, default 65535).
+Snapshot length in bytes (64\-65535). Default 65535 in the TUI; 1518 (one
+Ethernet frame with a VLAN tag) in the headless modes
+.RB ( \-\-no\-ui ,
+.BR \-\-jsonl ,
+.BR \-q )
+and with
+.BR \-w ,
+unless set here or in the config file — nothing there shows more than
+the headers, and a kernel that coalesces packets (GRO/GSO) would
+otherwise hand over 64 KB super\-frames. Raw\-socket build
+(Linux): with the TPACKET_V3 ring it is applied in the kernel through the
+filter program's return value, so at most \fIsnaplen\fR bytes of each
+frame are copied into the ring, with or without
+.BR \-f ;
+the
+.BR recvmmsg (2)
+path truncates in user space so the wire length stays known.
 .TP
 .BI \-b " ring"
-Ring buffer size in packets (16\-1000000, default 10000).
+Ring buffer size in packets (16\-1000000, default 10000). Each record
+costs about 350 bytes; the packet bytes live in the payload arena
+.RB ( \-\-arena\-mb ).
+.TP
+.BI \-\-arena\-mb " MB"
+Size of the payload arena shared by all ring records (1\-65536; default
+\fIring\fR x min(\fIsnaplen\fR, 2048) bytes, i.e. 20 MB for the default
+ring). Packets take only the bytes they need, bump\-allocated in a
+circle: when the arena wraps before the ring does (frames larger than
+2 KB on average), the oldest records keep their summary but lose their
+bytes \(em the TUI hex view says so and
+.B \-o
+writes them with a captured length of 0. A packet longer than the arena
+is cut to the arena size.
+.TP
+.BI \-B " MB"
+Kernel capture buffer size in megabytes (1\-2047, default 64). This is the
+buffer the kernel fills while the capture thread is not scheduled, so it
+decides how much burst or scheduling jitter can be absorbed before the
+kernel drops packets; the kernel may cap or shrink the request.
+libpcap build: the TPACKET ring mapped into the process.
+Raw\-socket build (Linux): a TPACKET_V3 ring of 256\ KiB blocks mapped into
+the process; the kernel hands over a block when it is full or 10\ ms after
+its first frame, with kernel timestamps. If it cannot provide the ring
+(ENOMEM, a pre\-3.2 kernel) a note is printed and the packet socket's
+receive queue is used instead, set with SO_RCVBUFFORCE before privileges
+are dropped (falls back to SO_RCVBUF, capped by
+.BR net.core.rmem_max ,
+with a warning; the kernel itself caps a socket buffer at 1024\ MiB), frames
+read in batches of 64 with
+.BR recvmmsg (2).
+.TP
+.B \-\-immediate
+Deliver every packet as soon as it arrives instead of in 10\ ms batches.
+Lower per\-packet latency at a higher per\-packet CPU cost; on Linux this
+switches libpcap from TPACKET_V3 blocks to a per\-frame ring, and the
+raw\-socket build from its TPACKET_V3 ring to
+.BR recvmmsg (2)
+reads.
 .TP
 .BI \-o " file"
 Export the ring buffer on exit; format chosen by extension
@@ -49,6 +109,9 @@ Stream every captured packet to a pcap file while capturing.
 .B \-w \-
 writes to stdout (combine with \fB\-q\fR), e.g. for
 .BR "snuffles \-q \-w \- | wireshark \-k \-i \-" .
+Written by the output thread from the ring buffer through a 1\ MB buffer
+flushed whenever it goes idle; a disk that cannot keep up costs records
+(\fIout_missed\fR in \fB\-\-stats\fR), never capture.
 .TP
 .B \-\-no\-ui
 Headless mode: print one line per packet to stdout.
@@ -57,13 +120,60 @@ Headless mode: print one line per packet to stdout.
 Headless mode emitting one JSON object per packet (JSON Lines).
 .TP
 .BR \-q ", " \-\-quiet
-No terminal output at all; use with \fB\-\-syslog\fR or \fB\-w\fR.
+No packet output (only the exit summary on stderr, see
+\fB\-\-no\-summary\fR); use with \fB\-\-syslog\fR or \fB\-w\fR.
 .TP
 .BI \-\-syslog " host:port"
-Forward per\-packet CSV records over UDP syslog.
+Forward per\-packet CSV records over UDP syslog. An output thread reads
+the records from the ring buffer (the capture thread is never slowed by
+the collector), batches them (up to 32 per non\-blocking
+.BR sendmmsg (2)
+on Linux) and flushes whenever it catches up; the socket gets a 16\ MB
+send buffer. Datagrams the kernel cannot queue are dropped, never waited
+for, and counted as
+.I syslog_fail
+by
+.BR \-\-stats ;
+records the ring overwrote before the thread reached them are counted as
+.IR out_missed .
+Without \fB\-b\fR the headless/quiet syslog modes use a 4096\-slot ring.
 .TP
 .BI \-\-syslog\-iface " ip|dev"
 Source address or device for syslog datagrams.
+.TP
+.BR \-\-stats [=\fIfile\fR]
+Print a counters line (captured, kernel and interface drops, ring
+occupancy, records emitted and missed by the consumer, syslog and stream
+counts, records missed by the output thread, sessions, wake\-ups, RSS)
+every second and a
+.B summary
+line at exit, to stderr or to \fIfile\fR (the TUI requires \fIfile\fR).
+.TP
+.B \-\-no\-summary
+Headless modes print the
+.B summary
+line at exit even without \fB\-\-stats\fR, followed by a hint when the
+kernel dropped packets; this flag turns both off.
+.B SIGUSR1
+prints one
+.B stats
+line at any time (headless modes; with \fB\-\-stats=\fIfile\fR also in
+the TUI). A frame longer than 1518 bytes on a non\-jumbo interface warns
+once about GRO/GSO super\-frames (headless modes).
+.TP
+.BI \-\-cpu " N"
+Pin the capture thread to CPU \fIN\fR (Linux). The other threads (the
+headless consumer or the TUI, the output and stats threads) are kept on the
+remaining CPUs of the process's affinity mask. Config key
+.BR cpu .
+.TP
+.B \-\-rt
+Run the capture thread under SCHED_FIFO at priority 1 so a busy consumer
+or display never deschedules it during a burst. Applied before privileges
+are dropped, so it needs root or CAP_SYS_NICE; otherwise a warning is
+printed and capture continues at normal priority. Combine with
+\fB\-\-cpu\fR on machines with spare cores. Config key
+.BR rt .
 .TP
 .B \-\-list\-ifaces
 List capture interfaces and exit.
@@ -95,11 +205,18 @@ pauses,
 quits,
 .B H
 shows help.
+.PP
+The screen is redrawn at most 30 times a second (at once on a key press,
+every 250\ ms when nothing changes), whatever the packet rate. The sessions
+view works from a copy of the session table refreshed every 250\ ms, or
+immediately on a view switch, sort change or page jump.
 .SH EXAMPLES
 .nf
 sudo snuffles \-i eth0
 sudo snuffles \-i eth0 \-f "tcp port 443" \-w capture.pcap
 sudo snuffles \-i eth0 \-\-jsonl | jq \-r .dst_ip
+sudo snuffles \-i eth0 \-\-jsonl \-\-cpu 3 \-\-rt > packets.jsonl
+kill \-USR1 $(pidof snuffles)
 snuffles \-r traffic.pcap
 .fi
 .SH FILES
@@ -114,9 +231,13 @@ pairs with the keys
 .BR interface ,
 .BR snaplen " (64\-65535),"
 .BR ring_size " (16\-1000000),"
+.BR buffer_mb " (1\-2047),"
+.BR arena_mb " (1\-65536),"
 .BR promisc " (0/1),"
-.BR syslog ", and"
-.BR syslog_iface .
+.BR syslog ,
+.BR syslog_iface ,
+.BR cpu " (0\-8191), and"
+.BR rt " (0/1)."
 Saved display\-filter presets are declared as
 .B preset
 .I name

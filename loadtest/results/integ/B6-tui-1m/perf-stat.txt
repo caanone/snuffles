@@ -1,0 +1,22 @@
+# started on Fri Aug 28 13:13:33 2026
+
+
+ Performance counter stats for process id '2714':
+
+           7875.94 msec task-clock                       #    1.968 CPUs utilized             
+               689      context-switches                 #   87.482 /sec                      
+                37      cpu-migrations                   #    4.698 /sec                      
+                 0      page-faults                      #    0.000 /sec                      
+       31285124744      cycles                           #    3.972 GHz                       
+       48297111967      instructions                     #    1.54  insn per cycle            
+          72668190      cache-misses                                                          
+         164901221      branch-misses                                                         
+           1528500      syscalls:sys_enter_write         #  194.072 K/sec                     
+                 0      syscalls:sys_enter_sendto        #    0.000 /sec                      
+             23071      syscalls:sys_enter_getsockopt    #    2.929 K/sec                     
+                 0      syscalls:sys_enter_recvfrom      #    0.000 /sec                      
+                 0      syscalls:sys_enter_select        #    0.000 /sec                      
+                 0      syscalls:sys_enter_poll          #    0.000 /sec                      
+
+       4.001587407 seconds time elapsed
+

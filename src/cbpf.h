@@ -25,8 +25,20 @@ typedef struct {
 } cbpf_insn_t;   /* layout-compatible with struct sock_filter */
 
 /* Compiles expr into out (capacity max). Returns the instruction count,
- * or -1 with a message in errbuf. */
+ * or -1 with a message in errbuf. Accepting returns yield 0xFFFFFFFF
+ * (whole frame); see cbpf_set_snaplen(). */
 int cbpf_compile(const char *expr, cbpf_insn_t *out, int max,
                  char *errbuf, size_t errlen);
+
+/* Rewrites the accepting returns of a compiled program to snaplen, so the
+ * kernel copies at most that many bytes of each matching frame into the
+ * capture buffer (the in-kernel truncation libpcap's filters do; rejects
+ * stay 0). Returns the number of returns rewritten. */
+int cbpf_set_snaplen(cbpf_insn_t *insns, int n, uint32_t snaplen);
+
+/* One-instruction program accepting every frame, truncated to snaplen —
+ * what an absent -f attaches so snaplen still applies in the kernel.
+ * Returns the instruction count (1). */
+int cbpf_accept_all(cbpf_insn_t *out, uint32_t snaplen);
 
 #endif /* CBPF_H */

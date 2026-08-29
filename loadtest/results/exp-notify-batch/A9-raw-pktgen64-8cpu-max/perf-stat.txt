@@ -1,0 +1,22 @@
+# started on Fri Aug 28 15:03:14 2026
+
+
+ Performance counter stats for process id '56548':
+
+           9995.35 msec task-clock                       #    0.999 CPUs utilized             
+               345      context-switches                 #   34.516 /sec                      
+                15      cpu-migrations                   #    1.501 /sec                      
+                 0      page-faults                      #    0.000 /sec                      
+       39719783323      cycles                           #    3.974 GHz                       
+       63588400303      instructions                     #    1.60  insn per cycle            
+          87283025      cache-misses                                                          
+         342832502      branch-misses                                                         
+                10      syscalls:sys_enter_write         #    1.000 /sec                      
+                 0      syscalls:sys_enter_sendto        #    0.000 /sec                      
+              1248      syscalls:sys_enter_getsockopt    #  124.858 /sec                      
+           5112300      syscalls:sys_enter_recvfrom      #  511.468 K/sec                     
+                 0      syscalls:sys_enter_select        #    0.000 /sec                      
+                 0      syscalls:sys_enter_poll          #    0.000 /sec                      
+
+      10.001368117 seconds time elapsed
+

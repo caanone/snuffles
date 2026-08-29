@@ -1,0 +1,530 @@
+<title>Snuffles at 2.8 Mpps</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f5f6f4;
+    --surface: #fcfcfb;
+    --surface-2: #eef0ec;
+    --ink: #121412;
+    --ink-2: #4d524d;
+    --muted: #868b85;
+    --hair: #dfe2dc;
+    --axis: #c1c5bf;
+    --accent: #2a78d6;        /* series 1 / emphasis */
+    --accent-2: #eb6834;      /* series 2 */
+    --accent-soft: rgba(42,120,214,0.10);
+    --deemph: #b9bdb7;        /* de-emphasis mark */
+    --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+    --good-text: #006300;
+    --code-bg: #eef0ec;
+    --shadow: 0 1px 0 rgba(18,20,18,0.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #101211; --surface: #181a19; --surface-2: #202322;
+      --ink: #f2f3f0; --ink-2: #c1c5bf; --muted: #8b908a;
+      --hair: #2b2e2c; --axis: #3a3e3b;
+      --accent: #3987e5; --accent-2: #d95926; --accent-soft: rgba(57,135,229,0.14);
+      --deemph: #4c514e; --good-text: #0ca30c; --code-bg: #202322;
+      --shadow: none;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #101211; --surface: #181a19; --surface-2: #202322;
+    --ink: #f2f3f0; --ink-2: #c1c5bf; --muted: #8b908a;
+    --hair: #2b2e2c; --axis: #3a3e3b;
+    --accent: #3987e5; --accent-2: #d95926; --accent-soft: rgba(57,135,229,0.14);
+    --deemph: #4c514e; --good-text: #0ca30c; --code-bg: #202322;
+    --shadow: none;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif; font-size: 16px; line-height: 1.55; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 24px 96px; }
+  .prose { max-width: 68ch; }
+  h1, h2, h3 { text-wrap: balance; line-height: 1.15; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+  h1 { font-size: 2.6rem; }
+  h2 { font-size: 1.55rem; margin-top: 64px; padding-top: 28px; border-top: 1px solid var(--hair); }
+  h3 { font-size: 1.1rem; margin-top: 32px; }
+  p { margin: 14px 0 0; }
+  .eyebrow { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+  .lede { font-size: 1.12rem; color: var(--ink-2); }
+  code, .mono { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: 0.9em; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  ul { padding-left: 1.2em; margin: 10px 0 0; } li { margin: 6px 0; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; margin-top: 32px; }
+  .kpi { background: var(--surface); border: 1px solid var(--hair); border-radius: 6px; padding: 16px 18px; box-shadow: var(--shadow); }
+  .kpi .label { font-size: 0.85rem; color: var(--ink-2); }
+  .kpi .value { font-size: 1.9rem; font-weight: 600; margin-top: 4px; line-height: 1.1; }
+  .kpi .value small { font-size: 0.95rem; font-weight: 500; color: var(--muted); margin-left: 4px; }
+  .kpi .delta { font-family: "IBM Plex Mono", monospace; font-size: 0.8rem; margin-top: 6px; color: var(--ink-2); }
+  .kpi .delta.up { color: var(--good-text); }
+  figure { margin: 24px 0 0; background: var(--surface); border: 1px solid var(--hair); border-radius: 6px; padding: 18px 18px 14px; box-shadow: var(--shadow); }
+  figure .ft { font-weight: 600; font-size: 1rem; }
+  figure .fs { color: var(--ink-2); font-size: 0.9rem; margin-top: 2px; }
+  figure .plot { position: relative; margin-top: 12px; overflow-x: auto; }
+  figure svg { display: block; width: 100%; height: auto; font-family: "IBM Plex Sans", system-ui, sans-serif; }
+  figure svg text { fill: var(--ink-2); font-size: 12px; }
+  figure svg .tick { font-family: "IBM Plex Mono", monospace; font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+  figure svg .grid { stroke: var(--hair); stroke-width: 1; }
+  figure svg .axis { stroke: var(--axis); stroke-width: 1; }
+  figure svg .lbl { font-family: "IBM Plex Mono", monospace; font-size: 11px; fill: var(--ink); }
+  figure svg .cat { fill: var(--ink); font-size: 12.5px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; font-size: 0.85rem; color: var(--ink-2); }
+  .legend span::before { content: ""; display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 7px; border-radius: 2px; background: var(--k); }
+  .legend .sw::before { height: 10px; width: 10px; border-radius: 2px; }
+  .tip { position: absolute; pointer-events: none; background: var(--ink); color: var(--bg); padding: 6px 9px; border-radius: 4px; font-size: 0.8rem; line-height: 1.35; opacity: 0; transform: translate(-50%, -110%); white-space: nowrap; transition: opacity 0.08s; }
+  .tip b { font-size: 0.95rem; }
+  figcaption { color: var(--muted); font-size: 0.82rem; margin-top: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 16px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--hair); vertical-align: top; }
+  th { font-weight: 600; color: var(--ink-2); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  td.n, th.n { text-align: right; font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; font-size: 0.85rem; white-space: nowrap; }
+  .tbl { overflow-x: auto; }
+  .pill { display: inline-block; font-family: "IBM Plex Mono", monospace; font-size: 0.72rem; padding: 1px 7px; border-radius: 10px; border: 1px solid var(--hair); color: var(--ink-2); white-space: nowrap; }
+  .pill.p0 { border-color: var(--accent); color: var(--accent); }
+  .pill.bug { border-color: var(--critical); color: var(--critical); }
+  .pill.eff { background: var(--surface-2); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; margin-top: 18px; }
+  .card { background: var(--surface); border: 1px solid var(--hair); border-radius: 6px; padding: 14px 16px; }
+  .card h4 { margin: 0; font-size: 0.98rem; font-weight: 600; }
+  .card p { margin-top: 6px; font-size: 0.9rem; color: var(--ink-2); }
+  .card .ev { font-family: "IBM Plex Mono", monospace; font-size: 0.75rem; color: var(--muted); margin-top: 8px; }
+  .topo { margin-top: 20px; }
+  .topo svg text { font-family: "IBM Plex Mono", monospace; font-size: 11.5px; fill: var(--ink); }
+  .topo svg .box { fill: var(--surface); stroke: var(--axis); }
+  .topo svg .sut { stroke: var(--accent); stroke-width: 1.5; }
+  .topo svg .lk { stroke: var(--axis); stroke-width: 1.2; }
+  .topo svg .lk.m { stroke-dasharray: 4 3; }
+  .topo svg .dim { fill: var(--muted); }
+  .note { border-left: 3px solid var(--accent); padding: 8px 14px; background: var(--accent-soft); border-radius: 0 4px 4px 0; margin-top: 16px; font-size: 0.95rem; }
+  .cite { font-size: 0.8rem; color: var(--muted); }
+  ol.plan { padding-left: 0; list-style: none; counter-reset: p; margin-top: 12px; }
+  ol.plan li { border-top: 1px solid var(--hair); padding: 14px 0; display: grid; grid-template-columns: 2.2rem 1fr; gap: 10px; }
+  ol.plan li::before { counter-increment: p; content: counter(p); font-family: "IBM Plex Mono", monospace; color: var(--muted); font-size: 0.95rem; padding-top: 2px; }
+  ol.plan .t { font-weight: 600; }
+  ol.plan .d { color: var(--ink-2); font-size: 0.92rem; margin-top: 4px; }
+  ol.plan .m { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .small { font-size: 0.85rem; color: var(--ink-2); }
+  @media (prefers-reduced-motion: reduce) { .tip { transition: none; } }
+  @media (max-width: 640px) { h1 { font-size: 2rem; } .wrap { padding: 28px 16px 64px; } }
+</style>
+
+<div class="wrap">
+  <div class="eyebrow">Load test &amp; hardening plan · 28 Aug 2026 · branch <span class="mono">loadtest</span> · v1.3.1 baseline</div>
+  <h1 style="margin-top:10px">Snuffles at 2.8 Mpps</h1>
+  <p class="lede prose">We built a six-container rig on this host, drove snuffles with kernel <code>pktgen</code>, userland floods, SYN floods, HTTP, iperf3 and a 20 k-packet mixed-protocol corpus, profiled every path, and then measured six targeted changes. The capture thread of v1.3.1 saturates one core at about <b>600 kpps</b>; with the changes it holds <b>1 M pps with zero loss</b> and tops out near <b>1.16 Mpps</b>. Four correctness bugs surfaced on the way. Below: what breaks, why, what each fix bought, how established tools do it, and a ranked plan.</p>
+
+  <div class="note prose"><b>Update, 29 Aug:</b> plan items 1–10 and 13 are now implemented on <code>exp/all</code> and re-measured — see <a href="#after">After the plan</a>. The rig can no longer saturate the capture thread: 2.56 Mpps offered (its maximum) is captured with <b>0% loss at 29% of one core</b>, with 1 M flows too; RSS is 87 MB instead of 630 MB. The numbers in the KPI row and the sections below are the original 28 Aug results (v1.3.1 vs the first six experiments) and remain the evidence for the plan.</div>
+  <div class="kpis">
+    <div class="kpi"><div class="label">Capture ceiling, 64 B packets, one core</div><div class="value">1.16<small>Mpps</small></div><div class="delta up">▲ from 595 kpps (+95%) · now &gt; 2.56 Mpps</div></div>
+    <div class="kpi"><div class="label">Packets dropped at 1 M pps offered (quiet)</div><div class="value">0<small>%</small></div><div class="delta up">▼ from 39.4%</div></div>
+    <div class="kpi"><div class="label">TUI at 1 M pps, kernel drops</div><div class="value">6.9<small>%</small></div><div class="delta up">▼ from 59.8% · now 0%</div></div>
+    <div class="kpi"><div class="label">Syslog forwarder</div><div class="value">255<small>kpps</small></div><div class="delta up">▲ from 154 kpps (+66%), 100% delivered · now 330 k off-thread</div></div>
+    <div class="kpi"><div class="label">Bugs found &amp; fixed on the way</div><div class="value">4</div><div class="delta">raw <code>-i</code>, live <code>-c</code>, lapped output, Windows build</div></div>
+    <div class="kpi"><div class="label">Measured runs</div><div class="value">48<small>+ 47</small></div><div class="delta">baseline matrix + experiment &amp; validation runs</div></div>
+  </div>
+
+  <h2>The rig</h2>
+  <p class="prose">Everything runs in Docker on this machine, pinned so the system under test never shares a core with the traffic sources. The sniffer captures on a Linux bridge inside its own network namespace; four generator containers feed it through veth ports, a sink answers HTTP/iperf3 and counts syslog datagrams over a separate management link so forwarded records are never part of the captured traffic. Host limits were raised (socket buffers, softirq backlog and budget) and are restored by <code>rig.sh down</code>.</p>
+  <div class="topo">
+    <svg viewBox="0 0 880 250" role="img" aria-label="Topology: four generator containers on CPUs 4-7 and 12-15 connect via veth ports p1-p4 to bridge br0 inside the snf-sut container on CPUs 2,3,10,11; the sink container on CPUs 0,8 connects via p5 and a separate mgmt link.">
+      <g class="box"><rect x="20" y="30" width="150" height="44" rx="4"/><rect x="20" y="84" width="150" height="44" rx="4"/><rect x="20" y="138" width="150" height="44" rx="4"/><rect x="20" y="192" width="150" height="44" rx="4"/></g>
+      <text x="32" y="48">snf-gen-1</text><text class="dim" x="32" y="64">pktgen · udpflood · wrk</text>
+      <text x="32" y="102">snf-gen-2</text><text class="dim" x="32" y="118">synflood · iperf3</text>
+      <text x="32" y="156">snf-gen-3</text><text class="dim" x="32" y="172">tcpreplay corpus</text>
+      <text x="32" y="210">snf-gen-4</text><text class="dim" x="32" y="226">cpus 4-7, 12-15</text>
+      <line class="lk" x1="170" y1="52" x2="330" y2="96"/><line class="lk" x1="170" y1="106" x2="330" y2="112"/><line class="lk" x1="170" y1="160" x2="330" y2="128"/><line class="lk" x1="170" y1="214" x2="330" y2="144"/>
+      <text class="dim" x="240" y="66">p1</text><text class="dim" x="240" y="104">p2</text><text class="dim" x="240" y="152">p3</text><text class="dim" x="240" y="190">p4</text>
+      <rect class="box sut" x="330" y="40" width="250" height="160" rx="6"/>
+      <text x="344" y="62" style="font-weight:600">snf-sut · cpus 2,3,10,11</text>
+      <rect class="box" x="344" y="80" width="104" height="72" rx="4"/><text x="356" y="100">br0</text><text class="dim" x="356" y="116">10.77.0.1/16</text><text class="dim" x="356" y="132">promisc tap</text>
+      <rect class="box" x="462" y="80" width="104" height="72" rx="4"/><text x="474" y="100">snuffles</text><text class="dim" x="474" y="116">snf-capture</text><text class="dim" x="474" y="132">+ perf, telemetry</text>
+      <line class="lk" x1="448" y1="116" x2="462" y2="116"/>
+      <text class="dim" x="344" y="182">tc ingress drop udp/9 (after the tap)</text>
+      <rect class="box" x="700" y="72" width="160" height="96" rx="4"/>
+      <text x="712" y="94" style="font-weight:600">snf-sink · cpus 0,8</text><text class="dim" x="712" y="112">nginx :80 · iperf3 ×4</text><text class="dim" x="712" y="128">udpsink :514 (syslog)</text><text class="dim" x="712" y="144">10.77.0.5 / 10.78.0.5</text>
+      <line class="lk" x1="580" y1="104" x2="700" y2="104"/><text class="dim" x="626" y="98">p5</text>
+      <line class="lk m" x1="580" y1="150" x2="700" y2="150"/><text class="dim" x="604" y="166">mgmt0 (syslog, not captured)</text>
+    </svg>
+  </div>
+  <p class="small prose">Every run records the generator's own counters, the bridge's per-port counters, snuffles' <code>--stats</code> line (a flag added for this work: captured, kernel drops, consumer misses, syslog sent/failed, sessions, RSS) and per-thread CPU from <code>/proc</code>; seven scenarios also carry <code>perf stat</code> and a call-graph profile. Across all 48 baseline scenarios, every frame that entered the bridge was accounted for at the packet socket (<code>seen% = 100</code>), so the kernel-drop counter is the only loss point and the numbers below are app behaviour, not rig loss.</p>
+
+  <h2>Where v1.3.1 breaks</h2>
+  <p class="prose">The capture thread is a single core doing everything per packet: copy, dissect into text, update the session table, then commit to the ring — and that commit did a mutex lock, a condition-variable signal nobody waited on, and a <code>write()</code> to a pipe, <em>for every packet</em>. Ramping the offered rate shows the knee.</p>
+
+  <figure>
+    <div class="ft">Captured rate vs offered rate, 64-byte packets, quiet mode</div>
+    <div class="fs">Baseline saturates near 600 kpps; the combined experiments hold 1 M pps loss-free and reach 1.16 Mpps. Kernel drop percentage in the tooltip.</div>
+    <div class="plot" id="c-stair"></div>
+    <div class="legend"><span style="--k:var(--accent)">v1.3.1 baseline</span><span style="--k:var(--accent-2)">with experiments (exp/all)</span><span style="--k:var(--deemph)">offered = captured (no loss)</span></div>
+    <figcaption>Scenarios A1, A3a–e, A2 (baseline) and A1, A3d, A2 (exp/all). 20–30 s steady-state windows. pktgen on 8 kernel threads; “offered” is what the bridge saw.</figcaption>
+  </figure>
+
+  <figure>
+    <div class="ft">What moves the ceiling and what doesn't — baseline, maximum offered rate</div>
+    <div class="fs">Captured packets per second, quiet mode, one variable changed per row.</div>
+    <div class="plot" id="c-variants"></div>
+    <figcaption>Packet size, snaplen, ring size, BPF and the bridge barely matter: the cost is per packet, not per byte. Flow churn (1 M sources) and the raw-socket build halve it. RPS onto the sniffer's cores starves it: the offered rate collapsed to 420 kpps and 77% of frames were dropped in the softirq backlog before the socket.</figcaption>
+  </figure>
+
+  <div class="cards">
+    <div class="card"><h4>One syscall per packet, in the hot path</h4><p>perf stat on the max-rate run: 566 k <code>write()</code>/s and 8.8 k <code>getsockopt()</code>/s on the capture thread — a wake-up write for every packet plus <code>pcap_stats()</code> every 64 packets. Syscall entry/exit was the top symbol (11.6%).</p><div class="ev">baseline/A2 perf-stat.txt · perf-report.txt</div></div>
+    <div class="card"><h4>The text-heavy record</h4><p>Each packet is dissected into strings (<code>inet_ntop</code>, <code>snprintf</code> for the info line). After the syscall is gone, <code>dissect_packet</code> and libc string formatting are the largest remaining user-space cost (~15% of capture-thread samples).</p><div class="ev">exp-all/A2 perf-report.txt</div></div>
+    <div class="card"><h4>Flow churn: string-keyed sessions</h4><p>With 1 M source addresses the session table (FNV over IP strings, <code>strcmp</code> on lookup, malloc per session, 100 k LRU cap) takes 13% of samples and IPC falls from 1.8 to 0.9 — the ceiling drops to 260 kpps.</p><div class="ev">baseline/A6 · A2 vs A6</div></div>
+    <div class="card"><h4>630 MB for a 10 000-slot ring</h4><p>Every slot reserves 65 535 bytes, so the ring's RSS is 630 MB in every full mode regardless of traffic (9.6 MB with <code>-s 128</code>). iperf3's 64 KB GSO super-frames are copied whole: IPC 0.5, memcpy-bound at 104 kpps.</p><div class="ev">baseline/A2, A7, C4</div></div>
+    <div class="card"><h4>Syslog: a blocking sendto per packet</h4><p>154 kpps. The profile is the kernel UDP send path — route lookup per datagram (<code>fib_table_lookup</code>, <code>ip_route_output_key_hash</code>), socket lock, <code>udp_sendmsg</code>. Everything captured was delivered; everything above the ceiling was dropped before capture.</p><div class="ev">baseline/B3 perf-report.txt · sink.json</div></div>
+    <div class="card"><h4>The TUI is bounded by the terminal</h4><p>Main thread at 98% CPU with 17% of samples in <code>n_tty_write</code> — writing frames to the pty. The sessions view with 1 M flows brings the whole program to 100 kpps because the UI snapshots the table every frame.</p><div class="ev">baseline/B6, B7 perf-report.txt</div></div>
+  </div>
+
+  <h2>Output paths under a 1 M pps flood</h2>
+  <p class="prose">The same 1 M pps flood against every output mode. Grey is v1.3.1, blue is the combined experiment branch; the syslog rows also show the extra step from connecting the UDP socket.</p>
+  <figure>
+    <div class="ft">Captured rate per output mode at 1 M pps offered</div>
+    <div class="fs">Baseline → exp/all. Kernel drop percentages in the tooltip.</div>
+    <div class="plot" id="c-modes"></div>
+    <div class="legend"><span class="sw" style="--k:var(--deemph)">v1.3.1 baseline</span><span class="sw" style="--k:var(--accent)">exp/all</span><span class="sw" style="--k:var(--accent-2)">exp/all + connected syslog socket</span></div>
+    <figcaption>Scenarios B1–B9 and A3d. stream-null was not re-run on exp/all. “tui-sessions 1 M flows” keeps the sessions view open while 1 M distinct sources flow.</figcaption>
+  </figure>
+
+  <h2>Realistic traffic</h2>
+  <p class="prose">Where kernel drops are near zero with the capture thread below 100%, the generator — not snuffles — set the rate. wrk over four generators produced ~206 kpps of HTTP; iperf3 with offloads on delivers 64 KB GSO frames that the sniffer must copy whole.</p>
+  <div class="tbl"><table id="t-real"><thead><tr><th>Traffic</th><th class="n">offered pps</th><th class="n">captured pps</th><th class="n">kernel drop</th><th class="n">capture cpu</th><th class="n">main cpu</th><th class="n">exp/all captured</th><th class="n">exp/all drop</th></tr></thead><tbody></tbody></table></div>
+  <p class="small prose">The 5-minute headless soak was flat: 437 kpps in the first minute, 446 kpps in the last, RSS 630.6 MB throughout, exit clean. The SYN flood is bidirectional (nginx answers), fills the 100 k-session table and stays under 2% loss in quiet mode; opening the sessions view during it costs 28% of packets. HTTP with a new TCP connection per request (re-run after a rig fix — the first run had silently kept keep-alive on) is the harshest realistic case: ~5 frames per request at 508 kpps, the session table pinned at its 100 k cap, 19% loss in quiet mode and 54% with the sessions view open.</p>
+
+  <h2>What we changed, and what each change bought</h2>
+  <p class="prose">Six experiments were implemented as isolated branches, adversarially reviewed, then run alone and combined. On-demand consumer wake-ups are the dominant win; the kernel buffer helps most at rates the app can almost keep up with; output buffering only pays off once the per-packet wake-up is gone (alone, a faster consumer makes the producer's pipe writes succeed more often and costs capture); recvmmsg alone changes nothing because the per-packet work, not the syscall, was the limit.</p>
+  <figure>
+    <div class="ft">Each experiment alone vs baseline vs all combined — captured pps</div>
+    <div class="fs">Same scenarios, same rig. Baseline repeat runs show ±10% run-to-run noise on this shared host.</div>
+    <div class="plot" id="c-attr"></div>
+    <div class="legend"><span class="sw" style="--k:var(--deemph)">baseline</span><span class="sw" style="--k:var(--accent)">this experiment alone</span><span class="sw" style="--k:var(--accent-2)">all experiments combined</span></div>
+    <figcaption>Runs exp-pcap-buffer, exp-notify-batch, exp-consumer-output, exp-raw-recvmmsg, exp-syslog-nonblock, exp-syslog-connect (stacked on exp/all), baseline-repeat.</figcaption>
+  </figure>
+
+  <h3>The experiment branches</h3>
+  <ul class="prose">
+    <li><b>notify-batch</b> — the ring commit no longer locks a mutex, signals a condvar nothing waits on, or writes to the pipe per packet; the consumer announces when it is about to block and gets exactly one wake-up. Syscalls per packet on the capture thread: 1.0 → 0.</li>
+    <li><b>pcap-buffer</b> — <code>-B/--buffer-mb</code> (default 64 MB kernel ring instead of libpcap's 2 MB), TPACKET_V3 with 10 ms blocks, <code>pcap_stats()</code> throttled to 4/s, 1024-packet dispatch. Also fixed: <code>-c</code> never stopped a live libpcap capture.</li>
+    <li><b>consumer-output</b> — 1 MB stdout buffer, one flush per drain batch instead of per line, JSONL built in a stack buffer and written once (byte-identical output, unit-tested).</li>
+    <li><b>raw-recvmmsg</b> — the no-libpcap backend reads 64 frames per <code>recvmmsg()</code>, sets a 64 MB socket buffer with <code>SO_RCVBUFFORCE</code>, takes kernel timestamps.</li>
+    <li><b>syslog-nonblock</b> — non-blocking, 32-message <code>sendmmsg()</code> batches, 16 MB send buffer; the capture thread never blocks on the collector.</li>
+    <li><b>syslog-connect</b> — <code>connect()</code> the UDP socket so each send skips the route lookup the profile showed.</li>
+  </ul>
+  <h3>Bugs found while instrumenting</h3>
+  <ul class="prose">
+    <li><span class="pill bug">bug</span> The raw-socket build's <code>-i</code> used <code>SO_BINDTODEVICE</code>, which AF_PACKET ignores for delivery: <code>-i lo</code> captured every interface (776 foreign vs 40 loopback packets in 3 s). Now binds with <code>sockaddr_ll</code>.</li>
+    <li><span class="pill bug">bug</span> The libpcap build ignored <code>-c</code> on live capture — <code>-c 20</code> ran until killed (578 packets).</li>
+    <li><span class="pill bug">bug</span> The headless printer read records by display index against a floor that moves while it drains: whenever the ring lapped it, output contained duplicates and silently omitted packets while reporting nothing missed. Replaying 200 k unique packets through the default ring printed 143 767 unique lines and 56 233 duplicates; after the fix, 200 000 unique, 0 duplicates.</li>
+    <li><span class="pill bug">bug</span> (introduced by the new <code>--stats</code> flag, caught by review) <code>gettimeofday</code> without its header broke the Windows cross-build; fixed with a portable clock.</li>
+  </ul>
+
+  <h2 id="findings">Findings from the multi-lens analysis</h2>
+  <div id="findings-body">
+  <p class="prose">Five analysts each took one lens over the raw result files (stats lines, per-thread CPU, bridge counters, perf), and a second set of agents tried to refute every finding by recomputing it. What follows survived; “corrected” means the verifier adjusted a number, which is what is shown.</p>
+
+  <h3>Capture path</h3>
+  <ul class="prose">
+    <li><b>The ceiling is a fixed per-packet cost, ~1.6–1.7 µs on one core.</b> Eight different 64-byte scenarios land at 595–622 kpps whatever the interface (bridge or direct veth), delivery path (forwarded or local) or in-kernel BPF (matching everything). The <code>perf stat</code> syscall tracepoints themselves depress the rate 6–12% during their window, so the unperturbed figure is ~615–620 kpps for libpcap and ~430 kpps for the raw-socket build.</li>
+    <li><b>Bytes are cheap, packets are not.</b> Each extra KB costs ~0.06 µs: 1514 B → −10%, 9014 B → −25%. Cache misses per packet rise 4.4× at 1514 B — the memcpy into a cold 64 KB ring slot, not instructions. Snaplen 128 runs 4% faster at 1/65th the RSS; a 1 M-slot application ring is 8% <em>slower</em> and cannot reduce kernel drops, because the application ring never back-pressures anything — only the capture thread's speed and the kernel buffer control <code>kdrop</code>.</li>
+    <li><b>Where the time went (v1.3.1, A2):</b> 1.01 syscalls per packet, all snuffles' own — the notify <code>write()</code> plus a <code>getsockopt</code> every 64 packets; roughly a third of the thread is kernel time. <code>pcap_stats()</code> after every 64-packet dispatch makes libpcap open and read a sysfs statistics file ~8 800 times a second, ~5% of the thread by itself.</li>
+    <li><b>Drop knee:</b> loss-free through 250 kpps; first bursty drops (1.7%) at 500 kpps with the thread at 85%; plateau from 1 M pps up. The bursts at 500 kpps are ~100 ms stalls with no preemption signature, which libpcap's default 2 MB buffer (~2.5 ms of traffic at that rate) cannot absorb — the 64 MB buffer in the experiments is what turns them into latency instead of loss.</li>
+    <li><b>Flow churn is memory-bound:</b> 1 M sources (A6) cost +122% cycles per packet for +17% instructions; cache misses go from 10 to 153 per packet, IPC 1.76 → 0.93. The table has 4 096 buckets for a 100 000-entry cap (24 entries per chain), compares dotted-quad string keys with <code>strcmp</code>, does two <code>snprintf</code> per packet to normalise the key, and unlinks the LRU victim with a second chain walk. A SYN flood costs the same 3.8 µs per packet, so it is the miss/evict/insert path, not the packet type.</li>
+    <li><b>RPS onto the sniffer's cores is harmful here:</b> pktgen actually attempted 9.96 Mpps; 81% died at the first backlog enqueue and 77% of the survivors died again at the bridge pass-up, all on the two physical cores snuffles shares. Softirq processing belongs on other cores than the capture thread.</li>
+    <li><b>Nothing drifts:</b> 5 minutes at 2.8 Mpps offered (845 M frames): captured rate, drop %, RSS, sessions and thread CPU flat from minute 1 to minute 5 while host load doubled. In-kernel BPF that rejects everything leaves the process at 0% CPU and 8.5 MB.</li>
+  </ul>
+
+  <h3>Output paths</h3>
+  <ul class="prose">
+    <li><b>The mode sets the cap, not the offered load:</b> the ranking is identical at 1 M and 2.8 M pps — quiet › <code>-w /dev/null</code> › jsonl › pipe › TUI ≈ headless › <code>-w</code> disk (1514 B) › syslog › TUI sessions view with 100 k sessions.</li>
+    <li><b>What was captured was delivered</b> in headless, syslog and <code>-w</code> modes (100%); the pipe consumer delivered 98.3% and jsonl 92.7–98.7% — jsonl's main thread runs at 99% and the 10 000-record ring wraps every ~19 ms at 533 kpps, so any stall laps it. The TUI's own loss is not measurable (it renders what it can).</li>
+    <li><b>Why jsonl beats plain headless</b> (533 k vs 398 k): not a cheaper consumer — its formatting is <em>more</em> expensive (1.63 vs 1.35 µs per record) — but the headless printer's per-line <code>fflush</code> puts 0.8–1.1 µs of kernel time per record on the consumer and makes the producer's pipe writes succeed instead of failing fast, slowing the capture thread by 25%.</li>
+    <li><b>Syslog: 4.9 µs per blocking <code>sendto</code>,</b> 71% kernel time, IPC 0.98, 7× the cache misses of quiet mode: route lookup, skb build, and — on a veth — the peer's receive path and the sink's wake-up all run inline on the capture thread. Roughly a quarter of that is a veth artifact a real NIC would not charge.</li>
+    <li><b><code>-w</code> to <code>/dev/null</code> costs 6%; to disk at 1514 B it halves the rate</b> — ≈1.4 µs per packet of page-cache copy at ~470 MB/s with the default 4 KB stdio buffer; the 9.4 GB file never left the page cache in 20 s, so the disk itself was not the limit.</li>
+    <li><b>The TUI renders ~14 000 frames per second under load</b> — the loop re-renders after every wake-up, and one <code>write()</code> of a 200×50 screen per frame puts <code>n_tty_write</code> at a third of the UI thread. The sessions view snapshots the whole table (24 MB, then a 100 k-entry qsort) under the session mutex on every frame, which blocks the capture thread about half the time: capture CPU falls to ~48%, rate halves, and a 1.2%-loss SYN flood becomes 28% loss.</li>
+    <li><b>Ring wake-ups are paid even with no consumer:</b> one <code>write()</code> per packet in quiet mode (pipe full → EAGAIN, still a full syscall round trip through the SRSO-mitigated entry/exit); with a sleeping consumer it becomes a real wake-up and costs the capture thread another 17–33% at 200 kpps of HTTP.</li>
+  </ul>
+
+  <h3>Sessions and memory</h3>
+  <ul class="prose">
+    <li><b>RSS is the ring pool, made resident by transparent huge pages.</b> With THP <code>[always]</code>, first touch of the 10 000 × 65 535 B pool faults 2 MB pages: 8.5 MB → 647 MB within 0.3 s of the first packet, regardless of packet size, rate or mode. The session table adds 254 B per session (25 MB at the cap) and is flat under churn.</li>
+    <li><b>The 16 MB reassembly budget is a one-shot pool.</b> 1 024 direction buffers of 16 KB go to the first ~512 sessions that carry TCP payload and are only returned on eviction or clear — there is no release on FIN/RST or idle. In a long-running capture, “Follow stream” finds empty buffers for every connection after the first few hundred.</li>
+    <li><b>The TUI sessions view keeps a second 23 MB copy</b> of the table (RSS 695 MB vs 672 MB) and re-snapshots it per frame.</li>
+    <li><b>Fragments create port-0 pseudo-sessions</b> (non-first fragments still go through the session table), though the fragment path itself costs no more per frame than plain UDP of the same size.</li>
+  </ul>
+
+  <h3>Rig validity</h3>
+  <ul class="prose">
+    <li>Frame accounting (bridge in = captured + kernel drops) closes exactly in 45 of 48 scenarios; the three exceptions are explained (A15 BPF reject, A10 RPS backlog drops, C6 a SYN-ACK retransmission burst arriving during shutdown). No softirq backlog drops or time squeezes anywhere except A10.</li>
+    <li>Two rig defects were found by the analysis and fixed: the HTTP <code>Connection: close</code> scenarios had silently run with keep-alive (a <code>jq // true</code> default swallowing <code>false</code>) — re-run below; and <code>udpflood -r</code> only draws from 128 source ports, so it is not a flow-churn test.</li>
+    <li>The replay corpus uses one generator's MAC as source, so a quarter of the “replay” frames the sniffer saw were that generator's kernel answering (RST/ICMP); the SYN flood is amplified 2.3× by the sink's SYN-ACK retransmissions. Both make those scenarios harsher, not gentler.</li>
+    <li>Per-thread context-switch counters in the sampler glitch to zero on single samples (CPU%, RSS and interface counters are sound); <code>host_loadavg</code> mostly measures the rig itself — no scenario's offered rate was depressed by outside load in the baseline run.</li>
+  </ul>
+  </div>
+
+  <h2 id="others">How others do it</h2>
+  <div id="others-body">
+  <p class="prose">Five research agents read primary sources (man pages, kernel documentation, project source and docs, papers, engineering blogs) on how libpcap/tcpdump, Wireshark's dumpcap, Suricata, Zeek, Snort 3, DPDK and others reach high packet rates and how they benchmark; a synthesis was then citation-checked page by page (74 URLs fetched, 6 rejected as not supporting the claim and dropped below). Every theme maps directly onto something we measured.</p>
+
+  <h3>1 · A kernel-shared mmap ring with block-level batching and an explicitly sized buffer</h3>
+  <p class="prose">libpcap ≥ 1.5, tcpdump, dumpcap, Suricata and Zeek all read from a <code>PACKET_RX_RING</code> mapped into user space. With TPACKET_V3 the kernel packs variable-size frames into blocks and wakes the reader once per block (the retire timeout is the pcap timeout) — no syscall or wake-up per packet; the kernel documentation claims ~15–20% less CPU and ~2× density over V2. Immediate mode disables that batching and falls back to V2 (tcpdump's FAQ: higher CPU, more loss). The ring size is a first-class knob: libpcap's default is only 2 MiB, tcpdump <code>-B</code> and dumpcap <code>-B</code> expose it, Wireshark's performance page recommends ~20 MB, Suricata configures 100 000 × 1 MiB blocks, Zeek 128 MiB per worker. <code>pcap_stats()</code> is read once a second or at exit, never per read. <span class="cite">Sources: <a href="https://www.kernel.org/doc/html/latest/networking/packet_mmap.html">packet_mmap</a>, <a href="https://www.tcpdump.org/manpages/pcap.3pcap.html">pcap(3)</a>, <a href="https://www.tcpdump.org/faq.html">tcpdump FAQ</a>, <a href="https://www.wireshark.org/docs/man-pages/dumpcap.html">dumpcap(1)</a>, <a href="https://wiki.wireshark.org/Performance">Wireshark Performance</a>, <a href="https://docs.suricata.io/en/latest/performance/high-performance-config.html">Suricata high-performance config</a>.</span></p>
+  <p class="small prose">→ snuffles: v1.3.1 already used V3 (the immediate-mode <code>#ifdef</code> was dead code) but with the 2 MiB default and a <code>pcap_stats()</code> per 64 packets that opened sysfs files 8 800 times a second. Experiment <i>pcap-buffer</i> applies exactly this practice.</p>
+
+  <h3>2 · Scale-out is flow-hashed fan-out to shared-nothing workers pinned to cores</h3>
+  <p class="prose">Suricata's <i>workers</i> runmode, Zeek clusters and Snort 3 packet threads never hand packets between threads. Each worker owns one AF_PACKET socket in a <code>PACKET_FANOUT</code> group (<code>FANOUT_HASH</code> — a symmetric flow hash keeps both directions of a flow on one worker, in order), runs the whole pipeline and owns its own flow table (Snort: a <code>THREAD_LOCAL</code> flow cache). Threads = RSS queues = cores on the NIC's NUMA node, IRQs pinned, a core or two left for housekeeping. Documented scaling: Snort 3 ~941 kpps per thread → 9.4 Mpps on 10; Suricata ~2 Gbit/s per worker; Cloudflare reached 1.1–1.4 Mpps only after per-thread sockets and NUMA pinning. <span class="cite">Sources: <a href="https://docs.suricata.io/en/latest/performance/runmodes.html">Suricata runmodes</a>, <a href="https://man7.org/linux/man-pages/man7/packet.7.html">packet(7)</a>, <a href="https://raw.githubusercontent.com/zeek/zeek-docs/master/cluster-setup.rst">Zeek cluster setup</a>, <a href="https://raw.githubusercontent.com/snort3/libdaq/master/modules/afpacket/README.afpacket.md">libdaq afpacket</a>, <a href="https://blog.cloudflare.com/how-to-receive-a-million-packets/">Cloudflare, a million packets</a>.</span></p>
+  <p class="small prose">→ snuffles: one capture thread is the structural ceiling (~1.16 Mpps after the experiments). Fan-out with per-worker session tables and rings is the path past the rig's own 2.8 Mpps.</p>
+
+  <h3>3 · Flow tables key on binary tuples with fast seeded hashes, preallocate entries and cap memory</h3>
+  <p class="prose">Suricata's flow key is a packed 24-byte tuple (48 for IPv6), canonicalised by putting the larger address/port in the higher slot, hashed with seeded Jenkins lookup3; buckets are cache-line aligned with a per-bucket lock and flows are expired by a separate manager thread, off the packet path. Flows are preallocated (<code>flow.prealloc</code>) and bounded by a memcap with an emergency mode, because “creating a new flow is a relatively expensive action”. xxHash's small-key benchmark shows FNV among the slowest hashes with poor avalanche. Nobody hashes formatted IP strings. <span class="cite">Sources: <a href="https://raw.githubusercontent.com/OISF/suricata/master/src/flow-hash.c">Suricata flow-hash.c</a>, <a href="https://docs.suricata.io/en/latest/configuration/suricata-yaml.html">suricata.yaml</a>, <a href="https://github.com/Cyan4973/xxHash">xxHash</a>, <a href="https://doc.dpdk.org/guides/prog_guide/mempool_lib.html">DPDK mempool</a>.</span></p>
+  <p class="small prose">→ snuffles: string keys, FNV over strings, <code>strcmp</code> per probe, 4 096 buckets for 100 000 entries, <code>calloc</code>/<code>free</code> per session and an O(chain) eviction — the measured 2.3× slowdown at 1 M flows.</p>
+
+  <h3>4 · Single-writer lock-free rings: batch on the consumer side, no per-item signalling, right-sized slots</h3>
+  <p class="prose">The LMAX Disruptor's central results: with one producer no lock or CAS is needed, and the consumer reads the cursor once and drains everything up to it — 52 ns per hop versus 32 757 ns for a condition-variable queue. Rigtorp's SPSC ring went from 5.5 M to 112 M ops/s by caching the remote index and separating head/tail onto 64-byte lines. DPDK's burst APIs amortise the fixed per-call cost over 32 packets; its mempool pre-allocates fixed objects and forbids malloc on the data path; the mbuf keeps a fixed data area and chains buffers for jumbo frames rather than sizing every slot for the maximum. Suricata's packet slot is sized for MTU+14 with an out-of-line extension for rare big packets — about 2.3 KB, not 64 KB. <span class="cite">Sources: <a href="https://lmax-exchange.github.io/disruptor/disruptor.html">Disruptor paper</a>, <a href="https://rigtorp.se/ringbuffer/">Rigtorp ring buffer</a>, <a href="https://doc.dpdk.org/guides/prog_guide/mbuf_lib.html">DPDK mbuf</a>, <a href="https://doc.dpdk.org/guides/prog_guide/writing_efficient_code.html">DPDK efficient code</a>, <a href="https://raw.githubusercontent.com/OISF/suricata/master/src/decode.h">Suricata decode.h</a>.</span></p>
+  <p class="small prose">→ snuffles: the per-packet mutex+condvar+pipe write was the largest single cost (experiment <i>notify-batch</i>); the 65 535-byte slot is why RSS is 630 MB and why GSO frames are memcpy-bound.</p>
+
+  <h3>5 · Outputs never run on the packet thread</h3>
+  <p class="prose">Zeek buffers log records on the main thread and ships them to a writer thread as one bulk message, flushed on a heartbeat. Suricata writes per-thread EVE files with full stdio buffering and a flush interval; its socket outputs use non-blocking <code>send()</code> and on <code>EAGAIN</code> drop the event and increment a <code>dropped</code> counter rather than stall the packet thread. Thompson's “smart batching”: send immediately when idle, otherwise ship everything that accumulated during the previous send as one I/O. tcpdump's <code>-w</code> is stdio-buffered unless you ask for <code>-U</code>. <span class="cite">Sources: <a href="https://raw.githubusercontent.com/zeek/zeek/master/src/logging/WriterFrontend.h">Zeek WriterFrontend</a>, <a href="https://docs.suricata.io/en/latest/output/eve/eve-json-output.html">Suricata EVE</a>, <a href="https://raw.githubusercontent.com/OISF/suricata/master/src/util-logopenfile.c">util-logopenfile.c</a>, <a href="https://mechanical-sympathy.blogspot.com/2011/10/smart-batching.html">Smart batching</a>, <a href="https://www.tcpdump.org/manpages/tcpdump.1.html">tcpdump(1)</a>.</span></p>
+  <p class="small prose">→ snuffles: the syslog forwarder blocks the capture thread per datagram (154 kpps); <i>syslog-nonblock</i> + <i>syslog-connect</i> apply the non-blocking/batched half of this practice; a dedicated sender thread is the other half.</p>
+
+  <h3>6 · Do the minimum per packet: capture-only processes, lazy dissection, filters in the kernel</h3>
+  <p class="prose">Wireshark never captures in the GUI: dumpcap only moves bytes from libpcap to disk (a dumpcap→tshark pipe measured 33% loss where dumpcap alone lost nothing). Wireshark dissectors receive a NULL tree when only summary information is needed and must skip string formatting; trees are re-dissected on demand. tshark runs single-pass with <code>-n</code> to avoid name resolution; tcpdump <code>-q</code>/<code>-n</code> print less. Capture filters discard in the kernel before the copy; snaplen MTU+18. <span class="cite">Sources: <a href="https://wiki.wireshark.org/CaptureSetup/CapturePrivileges">Wireshark capture privileges</a>, <a href="https://gitlab.com/wireshark/wireshark/-/raw/master/doc/README.dissector">README.dissector</a>, <a href="https://www.wireshark.org/docs/man-pages/tshark.html">tshark(1)</a>, <a href="https://wiki.wireshark.org/Performance">Wireshark Performance</a>.</span></p>
+  <p class="small prose">→ snuffles: every packet is formatted into text on the capture thread (~15% of it after the syscalls are gone); the in-kernel BPF path is confirmed free (A15).</p>
+
+  <h3>7 · Drops are first-class telemetry at every stage, with an explicit target</h3>
+  <p class="prose"><code>pcap_stats</code> separates received / dropped by the kernel ring / dropped by the interface; tcpdump prints all three at exit; dumpcap adds its own internal and flushed counters. Suricata exports <code>capture.kernel_packets</code> and <code>capture.kernel_drops</code> per thread every 8 s and states the tuning target — under 1% drops, ideally 0. SEPTun insists on watching every hop (NIC FIFO, softirq backlog, <code>PACKET_STATISTICS</code>) because the application counter only sees the last one; Zeek additionally estimates loss from the traffic itself (ACKs for data it never saw). <span class="cite">Sources: <a href="https://www.tcpdump.org/manpages/pcap_stats.3pcap.html">pcap_stats(3)</a>, <a href="https://gitlab.com/wireshark/wireshark/-/raw/master/dumpcap.c">dumpcap.c</a>, <a href="https://docs.suricata.io/en/latest/performance/statistics.html">Suricata statistics</a>, <a href="https://raw.githubusercontent.com/pevma/SEPTun/master/SEPTun.rst">SEPTun</a>, <a href="https://raw.githubusercontent.com/zeek/zeek/master/scripts/policy/misc/capture-loss.zeek">Zeek capture-loss</a>.</span></p>
+  <p class="small prose">→ snuffles: headless modes reported nothing before this work; <code>--stats</code> is the first step and the rig's bridge-side accounting is the SEPTun “every hop” check.</p>
+
+  <h3>8 · Above ~1 Mpps per core the kernel path is the ceiling; the next step is AF_XDP / netmap / DPDK</h3>
+  <p class="prose">Cloudflare measured ~1.4 Mpps per core for the cheapest in-kernel drop (“vanilla Linux can do only about 1 M pps”); netmap showed a raw socket costs ~950 ns per packet against 60–65 cycles with pre-allocated shared rings. AF_XDP (Linux ≥ 4.18) hands NIC frames to user-space rings; on i40e the kernel's own rxdrop benchmark goes 2.9 → 9.6 → 21 Mpps on two cores from SKB to driver-copy to zero-copy. Suricata 7 ships AF_XDP and DPDK runmodes (one socket per RSS queue per worker). <span class="cite">Sources: <a href="https://blog.cloudflare.com/kernel-bypass/">Cloudflare kernel bypass</a>, <a href="https://docenti.ing.unipi.it/l.rizzo/papers/20120503-netmap-atc12.pdf">netmap (ATC '12)</a>, <a href="https://www.kernel.org/doc/html/latest/networking/af_xdp.html">AF_XDP</a>, <a href="https://docs.suricata.io/en/latest/capture-hardware/af-xdp.html">Suricata AF_XDP</a>, <a href="https://lwn.net/Articles/756549/">LWN on AF_XDP</a>.</span></p>
+  <p class="small prose">→ snuffles: only relevant once fan-out exists and only on a physical NIC — veth has no zero-copy path.</p>
+
+  <h3>How the benchmarking compares</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>Industry practice</th><th>Our rig</th></tr></thead>
+    <tbody>
+      <tr><td>Throughput = highest zero-loss (or ≤ 0.1%) offered rate found by search, per frame size (<a href="https://www.rfc-editor.org/rfc/rfc2544.txt">RFC 2544</a>, <a href="https://trex-tgn.cisco.com/trex/doc/trex_ndr_bench_doc.html">TRex NDR</a>, <a href="https://doc.dpdk.org/dts/test_plans/nic_single_core_perf_test_plan.html">DPDK DTS</a>)</td><td>Saturation rate under 2.8 Mpps overload plus a coarse ladder (100 k…2 M). Baseline NDR is only bracketed between 250 k and 500 k; no search, no regression gate yet.</td></tr>
+      <tr><td>Frame-size sweep 64…1518 B + jumbo, 64 B as the headline (<a href="https://www.net.in.tum.de/fileadmin/bibtex/publications/papers/MoonGen_IMC2015.pdf">MoonGen</a>, <a href="https://www.ntop.org/packet-capture-performance-at-10-gbit-pf_ring-vs-tnapi/">ntop</a>)</td><td>64, 1514, 9014 B — the extremes; intermediate sizes and IMIX missing.</td></tr>
+      <tr><td>≥ 60 s trials, repeated, median reported (RFC 2544 §24)</td><td>30 s single runs, one repeat set (±10%), one 5-minute soak. Medians of 3–5 repeats would quantify the shared-host noise.</td></tr>
+      <tr><td>Account for loss at every stage and state a target (<a href="https://raw.githubusercontent.com/pevma/SEPTun/master/SEPTun.rst">SEPTun</a>, <a href="https://docs.suricata.io/en/latest/performance/analysis.html">Suricata analysis</a>)</td><td>Strong: generator → bridge ports → br0 → captured + kernel drops closes to the frame; per-thread CPU, syscalls per packet, IPC, profiles. Missing: explicit application-sink counters in the chain and a pass/fail threshold.</td></tr>
+      <tr><td>Kernel pktgen with clone_skb/burst, or a hardware generator (<a href="https://www.kernel.org/doc/html/latest/networking/pktgen.html">pktgen</a>, <a href="https://www.net.in.tum.de/fileadmin/bibtex/publications/papers/MoonGen_IMC2015.pdf">MoonGen</a>)</td><td>pktgen per CPU with <code>ratep</code> and random sources — right tool for a software DUT, but veth forbids clone_skb and charges the whole receive path to the sender, capping the offer at ~2.8 Mpps.</td></tr>
+      <tr><td>Isolated CPUs and environment (<a href="https://www.rfc-editor.org/rfc/rfc6815">RFC 6815</a>, <a href="https://fast.dpdk.org/doc/perf/DPDK_23_03_Intel_NIC_performance_report.pdf">DPDK reports</a>)</td><td>Isolated topology and cpusets, but a shared host, SMT siblings in use, no <code>isolcpus</code>. Numbers are same-day relative comparisons between builds, which is how they are used here.</td></tr>
+      <tr><td>Real receive path: NIC rings, IRQs, RSS, NUMA (<a href="https://www.kernel.org/doc/html/latest/networking/scaling.html">scaling.rst</a>)</td><td>veth has none of these; the rig measures cycles per packet in the application, not NIC behaviour.</td></tr>
+      <tr><td>Report CPU efficiency: cycles/packet, syscalls/packet, IPC, profiles</td><td>Parity, except cycles/packet (CPU frequency not pinned) and open/read syscalls of the sysfs stats path were not counted.</td></tr>
+      <tr><td>Latency at the NDR rate (<a href="https://trex-tgn.cisco.com/trex/doc/trex_stateless.html">TRex</a>, MoonGen)</td><td>Not measured; for an analyzer the equivalent is capture-to-output latency, which the batching changes trade against throughput and should be tracked (p50/p99).</td></tr>
+      <tr><td>Realistic stateful mixes, bidirectional flows, IMIX (<a href="https://suricon.net/wp-content/uploads/2019/01/SuriCon2018_Johnson.pdf">SuriCon 2018</a>)</td><td>Broader than most capture benchmarks (HTTP, iperf, replay, SYN flood, fragments), but flow churn is unidirectional UDP; no elephant-flow/IMIX profile.</td></tr>
+    </tbody>
+  </table></div>
+  </div>
+
+  <h2>The plan</h2>
+  <div id="plan-body">
+  <p class="prose">Ranked by measured or expected gain per unit of effort, with dependencies in order. Items 1–5 exist and are measured (branch <code>exp/all</code>); everything after is sized from the profiles and the practices above. Effort: S ≤ a day, M a few days, L about a week, XL a multi-week structural change.</p>
+  <ol class="plan">
+    <li><div><div class="t">Ship the six measured experiments and the four bug fixes</div><div class="d">On-demand consumer wake-ups (no mutex/condvar/pipe write per packet); 64 MB kernel ring via <code>-B/--buffer-mb</code>, TPACKET_V3 10 ms blocks, <code>pcap_stats</code> at 4/s, 1 024-packet dispatch; buffered stdout and single-write JSONL; <code>recvmmsg</code> + <code>SO_RCVBUFFORCE</code> for the raw build; non-blocking batched <code>sendmmsg</code> syslog on a connected socket. Measured: capture ceiling 595 k → 1.16 M pps, 1 M pps loss-free, TUI at 1 M pps 60% → 7% drops, syslog 154 k → 255 k. Keep <code>--immediate</code> as an opt-in for low-latency interactive use.</div><div class="m"><span class="pill p0">now · measured</span><span class="pill eff">S (merge)</span><span class="pill">practices 1, 4, 5</span></div></div></li>
+    <li><div><div class="t">Binary session keys, a properly sized hash table, O(1) eviction, entry pool</div><div class="d">Replace dotted-quad string keys with a packed canonical tuple (larger address/port in the higher slot), a seeded fast hash (xxHash/lookup3 class), buckets ≥ 2× the session cap (power of two, cache-line aligned), doubly linked chains or a back-pointer so LRU eviction stops re-walking a chain, and a preallocated entry free-list instead of <code>calloc</code>/<code>free</code> per flow. Expected: the 1 M-flow case (260 kpps, +122% cycles, 153 cache misses per packet) returns to within ~10–15% of the single-flow ceiling; HTTP connection churn (410 kpps at 100% CPU) and SYN floods follow. Also removes hash-flooding exposure.</div><div class="m"><span class="pill eff">M</span><span class="pill">practice 3 · Suricata flow-hash, DPDK mempool</span></div></div></li>
+    <li><div><div class="t">TUI: cap the frame rate and take session snapshots out of the lock</div><div class="d">Render at most ~30 frames/s (today ~14 000/s under load, a third of the UI thread in <code>n_tty_write</code>); snapshot the session table at most every 250 ms, copy only the visible window plus a bounded top-N under the lock, keep one persistent snapshot buffer. Fixes the sessions-view collapse (100 kpps with 1 M flows; 28% loss on a SYN flood that quiet mode captures at 1.2%) and the second 23 MB copy.</div><div class="m"><span class="pill eff">S–M</span><span class="pill">practice 6 · no work per packet on the display path</span></div></div></li>
+    <li><div><div class="t">Lazy dissection: binary summary on the hot path, text on demand</div><div class="d">Store addresses, ports, protocol ids and offsets in the record; format <code>src_ip</code>/<code>info</code>/MAC strings only when a consumer displays or exports the record (Wireshark's NULL-tree rule). After item 1, <code>dissect_packet</code> plus libc formatting is the largest user-space cost (~15% of the capture thread); the record shrinks from ~330 B to ~100 B, so the ring touches fewer cache lines. This is the item that moves the single-core ceiling past 1.16 Mpps; syslog CSV formatting moves off the capture thread with item 6.</div><div class="m"><span class="pill eff">L</span><span class="pill">practice 6 · Wireshark tree==NULL, tshark -n, tcpdump -q</span></div></div></li>
+    <li><div><div class="t">Variable-size payload arena; mode-aware snaplen; stop copying GSO super-frames whole</div><div class="d">Replace the 10 000 × 65 535 B pool (630 MB resident within 0.3 s under THP) with a packed byte ring or MTU-sized slots plus an out-of-line extension for the rare large frame (Suricata: ~2.3 KB per slot; DPDK mbuf chaining). Default snaplen for quiet/headless/jsonl/-w to MTU+18 unless <code>-s</code> is given; warn when GRO/GSO super-frames (> MTU) are seen. Expected: RSS from ~630 MB to well under 100 MB, iperf-class traffic no longer memcpy-bound (104 kpps at IPC 0.5 → the ~500 kpps of 1514 B frames), and <code>-b 1000000</code> becomes usable.</div><div class="m"><span class="pill eff">L</span><span class="pill">practices 1, 4 · TPACKET_V3 packing, DPDK mbuf, Suricata ext_pkt</span></div></div></li>
+    <li><div><div class="t">Dedicated output threads with bounded queues; sinks that drop and count</div><div class="d">Move syslog, <code>-w</code> and JSONL emission to their own thread(s) fed from the ring, with smart batching (send at once when idle, otherwise everything that accumulated) and explicit per-sink <code>dropped</code> counters instead of stalling capture. Capture stays at the quiet ceiling regardless of the sink; export throughput becomes a per-thread number (≥ 255 kpps per syslog thread from the inline experiment, more with integer formatting). <code>-w</code> to disk gets a large buffer and <code>fdatasync</code>-free writes.</div><div class="m"><span class="pill eff">L</span><span class="pill">practice 5 · Zeek writer threads, Suricata EVE, smart batching</span></div></div></li>
+    <li><div><div class="t">Reassembly buffer lifecycle</div><div class="d">Free the 16 KB per-direction stream buffers on FIN/RST and after an idle timeout, keep an LRU over buffer holders, or allocate lazily in 1–4 KB chunks. Today the 16 MB budget is handed to the first ~512 payload-bearing sessions and never returned until eviction, so “Follow stream” is empty for every later connection of a long capture.</div><div class="m"><span class="pill bug">correctness</span><span class="pill eff">S</span><span class="pill">practice 3 · memcap with expiry off the packet path</span></div></div></li>
+    <li><div><div class="t">Telemetry parity: drop counters at every stage, on by default</div><div class="d">Make the exit summary (captured / kernel drops / interface drops / consumer misses / per-sink drops / sessions) default in headless modes like tcpdump's, add <code>SIGUSR1</code> for an on-demand line, show kernel-drop % in the TUI title bar with the &lt; 1% target, and warn on conditions the rig hit (RPS onto the capture CPU, super-frames, capped socket buffer). Feed the same counters into the rig's accounting chain so a run fails when loss appears in a sink.</div><div class="m"><span class="pill eff">S</span><span class="pill">practice 7 · pcap_stats, dumpcap, Suricata kernel_drops</span></div></div></li>
+    <li><div><div class="t">Capture-thread placement: affinity and optional real-time priority</div><div class="d"><code>--cpu N</code> to pin the capture thread and keep consumer/output threads off that core; optional <code>SCHED_FIFO</code> so a TUI redraw or a busy consumer never deschedules capture during a burst. Cloudflare reports +3–7% and, more importantly, consistent numbers; on this rig both busy threads shared two physical cores' SMT siblings.</div><div class="m"><span class="pill eff">S</span><span class="pill">practice 2 · Suricata cpu-affinity, SEPTun</span></div></div></li>
+    <li><div><div class="t">Raw backend on a TPACKET_V3 ring; drain before attaching the filter</div><div class="d">Replace per-packet <code>recvmmsg</code> with a mmap'd block ring (10 ms retire, 64 MB), which brings the no-libpcap build to parity with libpcap and enables fan-out and <code>PACKET_QDISC_BYPASS</code> without libpcap. Attach a reject-all filter, drain, then attach the real one — today frames queued between <code>socket()</code> and <code>SO_ATTACH_FILTER</code> are delivered unfiltered (found in review). Also: non-first IP fragments should not create port-0 pseudo-sessions.</div><div class="m"><span class="pill eff">M</span><span class="pill">practice 1 · packet_mmap V3, libpcap, Suricata af-packet</span></div></div></li>
+    <li><div><div class="t">Load-test rig: NDR search, repeats with medians, latency, efficiency columns</div><div class="d">Add an RFC 2544-style binary search for the highest loss-free (and ≤ 0.1%) offered rate per frame size with 60 s confirmation runs, 3–5 repeats reported as medians, a capture-to-output latency distribution at the NDR, cycles per packet, intermediate frame sizes / IMIX and <code>tcpreplay --unique-ip</code> for bidirectional flow churn. Make the NDR a CI regression gate for the branch.</div><div class="m"><span class="pill eff">M</span><span class="pill">RFC 2544 / 6815, TRex NDR, MoonGen, SEPTun</span></div></div></li>
+    <li><div><div class="t">Multi-worker capture with <code>PACKET_FANOUT</code></div><div class="d">N capture workers, each with its own socket in a <code>FANOUT_HASH</code> group, its own ring and its own session table; the TUI and exporters merge by timestamp. Requires items 2, 4 and 10. Expected near-linear scaling (Snort 3: 941 kpps per thread → 9.4 Mpps on 10); three workers on this host would exceed the rig's 2.8 Mpps offer, and the 1 M-flow case scales because each worker sees 1/N of the flows.</div><div class="m"><span class="pill eff">XL</span><span class="pill">practice 2 · Suricata workers, Zeek fanout, Snort 3 threads</span></div></div></li>
+    <li><div><div class="t">Offline replay back-pressure and small robustness items</div><div class="d"><code>-r file</code> should block the producer when the consumer falls behind (an offline read has no reason to lose records — the current code drops ~13% of a 200 k-packet file through the default ring); keep the <code>--stats</code> thread's 100 ms stop polling; fix the raw build's misleading “raise rmem_max” hint when the kernel's 1 GiB socket-buffer ceiling is the cap.</div><div class="m"><span class="pill eff">S</span></div></div></li>
+    <li><div><div class="t">AF_XDP backend (later, physical NICs only)</div><div class="d">Once fan-out exists: one AF_XDP socket per RSS queue per worker with hugepage UMEM, zero-copy where the driver supports it. Kernel benchmarks show the capture-side cost dropping far below AF_PACKET (2.9 → 21 Mpps on two cores), leaving dissection and sessions as the ceiling. Cannot be validated on veth.</div><div class="m"><span class="pill eff">XL</span><span class="pill">practice 8 · Suricata AF_XDP, Cloudflare</span></div></div></li>
+  </ol>
+  <p class="note prose">The through-line: every practice the established tools converge on — batch, never signal per packet; size the kernel buffer; keep outputs and display off the capture thread; key flows on bytes, not strings; copy no more than you must; count drops at every hop — corresponds to a cost we measured in v1.3.1, and the first five items are already implemented and measured on <code>exp/all</code>.</p>
+  </div>
+
+  <h2 id="after">After the plan — waves 1 and 2 re-measured (29 Aug)</h2>
+  <p class="prose">Implemented on <code>exp/all</code> since the report was written: binary session keys with a sized table, O(1) eviction and an entry pool (1 M distinct inserts 1 490 → ~130 ns each); TUI capped at ~30 fps with 250 ms session snapshots; headless exit summary by default, <code>SIGUSR1</code>, <code>--cpu/--rt</code>, offline <code>-r</code> back-pressure; the raw build on a TPACKET_V3 ring with drain-before-filter; lazy dissection (no string formatting on the capture thread: 0.7 → 0.13 µs per packet); a 20 MB payload arena instead of the 655 MB pool; and a dedicated output thread for syslog and <code>-w</code>. Nine scenarios were re-run on the same rig against the same generators (30 s each).</p>
+  <div class="tbl"><table>
+    <thead><tr><th>Scenario</th><th class="n">offered</th><th class="n">v1.3.1</th><th class="n">first six experiments</th><th class="n">now</th><th class="n">kernel drop now</th><th class="n">capture cpu</th><th class="n">rss MB</th><th>sinks</th></tr></thead>
+    <tbody>
+      <tr><td>64 B pktgen, 8 threads, maximum</td><td class="n">2.56 M</td><td class="n">595 k</td><td class="n">1.16 M</td><td class="n">2.56 M</td><td class="n">0.0%</td><td class="n">29%</td><td class="n">87</td><td>—</td></tr>
+      <tr><td>64 B, 1 M pps offered, quiet</td><td class="n">1.00 M</td><td class="n">606 k</td><td class="n">1.00 M</td><td class="n">1.00 M</td><td class="n">0.0%</td><td class="n">11%</td><td class="n">87</td><td>—</td></tr>
+      <tr><td>64 B, 1 M source flows, maximum</td><td class="n">2.51 M</td><td class="n">260 k</td><td class="n">—</td><td class="n">2.51 M</td><td class="n">0.0%</td><td class="n">56%</td><td class="n">119</td><td>100 k sessions at cap</td></tr>
+      <tr><td>raw-socket build, maximum</td><td class="n">2.53 M</td><td class="n">410 k</td><td class="n">581 k</td><td class="n">2.53 M</td><td class="n">0.0%</td><td class="n">28%</td><td class="n">86</td><td>—</td></tr>
+      <tr><td>headless text at 1 M pps</td><td class="n">1.00 M</td><td class="n">398 k</td><td class="n">894 k</td><td class="n">1.00 M</td><td class="n">0.0%</td><td class="n">12%</td><td class="n">87</td><td>printer emitted 83%, 17% lapped (counted as <code>missed</code>)</td></tr>
+      <tr><td>syslog forwarder at 1 M pps</td><td class="n">1.00 M</td><td class="n">154 k</td><td class="n">210 k (255 k connected)</td><td class="n">1.00 M</td><td class="n">0.0%</td><td class="n">8%</td><td class="n">14</td><td>output thread sent 330 kpps, 100% delivered; 67% lapped (<code>out_missed</code>)</td></tr>
+      <tr><td>TUI at 1 M pps</td><td class="n">1.00 M</td><td class="n">402 k</td><td class="n">921 k</td><td class="n">1.00 M</td><td class="n">0.0%</td><td class="n">12%</td><td class="n">92</td><td>—</td></tr>
+      <tr><td>TUI sessions view, 1 M flows, 1 M pps</td><td class="n">1.00 M</td><td class="n">100 k</td><td class="n">136 k</td><td class="n">1.00 M</td><td class="n">0.0%</td><td class="n">24%</td><td class="n">156</td><td>100 k sessions at cap</td></tr>
+      <tr><td>iperf3 TCP, GSO super-frames</td><td class="n">105 k</td><td class="n">104 k</td><td class="n">70 k</td><td class="n">105 k</td><td class="n">0.0%</td><td class="n">25%</td><td class="n">87</td><td>—</td></tr>
+    </tbody>
+  </table></div>
+  <p class="small prose">Reading the sinks column honestly: capture no longer loses anything the kernel delivers, so the remaining limits moved to the consumers and are now counted where they happen — the single-thread text printer manages ~840 kpps and the syslog output thread ~330 kpps per thread, and both report what they could not keep up with (<code>missed</code>, <code>out_missed</code>) instead of stalling capture. Those are the next items if export throughput matters: integer-formatted syslog, several output threads, or a faster line format. Remaining plan items not done: <code>PACKET_FANOUT</code> workers (no longer needed to beat this rig), AF_XDP (needs a physical NIC), the rig's NDR search is implemented but not yet used for a regression gate. Results: <code>loadtest/results/final/</code>.</p>
+
+  <h2>Method &amp; caveats</h2>
+  <ul class="prose small">
+    <li>Host is shared (CI runners, KVM guests). Offered rates vary with host load; compare scenarios by drop % at a fixed offered rate rather than by absolute pps. Baseline repeats moved ±10%.</li>
+    <li>veth is packet-bound: pktgen cannot use <code>clone_skb</code> on veth, so each kernel thread offers ~350 kpps and the whole receive path (bridge, tap, copy into the socket ring) is charged to the sender's CPU. The 2.8 Mpps ceiling is the rig's, not a NIC's; against the app's 0.6–1.2 Mpps it is still 2–5× overload.</li>
+    <li>Kernel drops for the libpcap build are read from libpcap's <code>ps_drop</code> (TPACKET ring), which <code>ss</code> does not show; the raw build's socket drops matched the app's counter exactly, and bridge-port accounting confirmed no loss before the socket in any scenario.</li>
+    <li>30 s windows (20 s for rate sweeps, 300 s soak), trimmed 0.5 s at each end; generators start and stop concurrently.</li>
+    <li>Every number here is in <code>loadtest/results/&lt;run&gt;/summary.md</code> on the branch; the rig is reproducible with <code>loadtest/rig.sh build &amp;&amp; rig.sh up &amp;&amp; matrix.sh &lt;run&gt; scenarios/*.json</code>.</li>
+  </ul>
+
+  <h2>Appendix — all baseline scenarios</h2>
+  <div class="tbl"><table id="t-all"><thead><tr><th>Scenario</th><th>mode</th><th>traffic</th><th class="n">offered</th><th class="n">captured</th><th class="n">kdrop %</th><th class="n">rss MB</th><th class="n">cap %</th><th class="n">main %</th></tr></thead><tbody></tbody></table></div>
+</div>
+
+<script>
+const D = {"stair":[{"offered":99998.9,"captured":99998.9,"kdrop":0.0},{"offered":250031.2,"captured":250031.2,"kdrop":0.0},{"offered":500005.3,"captured":491591.0,"kdrop":1.7},{"offered":1000009.3,"captured":606018.5,"kdrop":39.4},{"offered":1999902.3,"captured":616318.3,"kdrop":69.2},{"offered":2802828.8,"captured":594775.1,"kdrop":78.8}],
+"stair_exp":[{"offered":427109.6,"captured":427109.6,"kdrop":0.0},{"offered":1000257.5,"captured":1000257.5,"kdrop":0.0},{"offered":2717563.6,"captured":1158424.3,"kdrop":57.4}],
+"modes":[{"mode":"quiet (no output)","base_cap":606018.5,"base_kdrop":39.4,"exp_cap":1000257.5,"exp_kdrop":0.0},{"mode":"headless (text to /dev/null)","base_cap":398289.8,"base_kdrop":60.2,"exp_cap":893717.1,"exp_kdrop":9.8},{"mode":"jsonl","base_cap":533446.7,"base_kdrop":46.7,"exp_cap":916108.1,"exp_kdrop":7.2},{"mode":"stream -w /dev/null","base_cap":570942.0,"base_kdrop":42.9,"exp_cap":null,"exp_kdrop":null},{"mode":"headless | wc -l","base_cap":469641.9,"base_kdrop":53.0,"exp_cap":736833.5,"exp_kdrop":25.6},{"mode":"TUI (pty 200×50)","base_cap":401606.6,"base_kdrop":59.8,"exp_cap":920784.1,"exp_kdrop":6.9},{"mode":"syslog forwarder","base_cap":153864.1,"base_kdrop":84.6,"exp_cap":209590.9,"exp_kdrop":79.0,"connect_cap":254835.2,"connect_kdrop":74.4},{"mode":"syslog, raw-socket build","base_cap":148446.3,"base_kdrop":85.2,"exp_cap":193213.5,"exp_kdrop":80.7,"connect_cap":208084.5,"connect_kdrop":79.2},{"mode":"TUI sessions view, 1 M flows","base_cap":99992.2,"base_kdrop":90.0,"exp_cap":136278.8,"exp_kdrop":86.3}],
+"variants":[{"label":"64 B packets","captured":594775.1,"offered":2802828.8,"kdrop":78.8},{"label":"1514 B packets","captured":535501.9,"offered":2814963.8,"kdrop":81.0},{"label":"9014 B, MTU 9000","captured":443111.4,"offered":1823162.5,"kdrop":75.7},{"label":"64 B, snaplen 128","captured":619892.3,"offered":2802338.6,"kdrop":77.9},{"label":"64 B, ring 1 M × 256 B","captured":549088.9,"offered":2805514.9,"kdrop":80.4},{"label":"64 B, BPF matching all","captured":598093.1,"offered":2708940.9,"kdrop":77.9},{"label":"64 B, direct veth, no bridge","captured":598302.8,"offered":3304771.1,"kdrop":81.9},{"label":"64 B, addressed to the sniffer host","captured":591992.1,"offered":4711654.5,"kdrop":87.4},{"label":"64 B, raw-socket build","captured":409838.4,"offered":2833718.2,"kdrop":85.5},{"label":"64 B, 1 M source flows","captured":259702.7,"offered":2752802.0,"kdrop":90.6},{"label":"64 B, RPS onto sniffer cpus","captured":353147.1,"offered":419920.2,"kdrop":15.9}],
+"attr":[{"exp":"pcap-buffer","rows":[["A2 max",664030,594775,1158424],["A3d 1 M pps",713874,606019,1000258],["B1 headless",554103,398290,893717],["B6 TUI",473169,401607,920784]]},{"exp":"notify-batch","rows":[["A2 max",923817,594775,1158424],["A9 raw max",532830,409838,581428],["B1 headless",786259,398290,893717],["B6 TUI",681036,401607,920784]]},{"exp":"consumer-output","rows":[["B1 headless",416925,398290,893717],["B2 jsonl",408945,533447,916108],["B8 pipe",370443,469642,736834]]},{"exp":"raw-recvmmsg","rows":[["A9 raw max",416353,409838,581428],["B9 raw syslog",148697,148446,193214]]},{"exp":"syslog-nonblock","rows":[["B3 syslog",187725,153864,209591],["B9 raw syslog",164129,148446,193214]]},{"exp":"syslog-connect (on exp/all)","rows":[["B3 syslog",254835,153864,209591],["B3x syslog max",247076,152538,219511],["B9 raw syslog",208085,148446,193214]]},{"exp":"baseline repeat (noise)","rows":[["A2 max",538782,594775,1158424],["B1 headless",443610,398290,893717],["B3 syslog",153322,153864,209591],["B6 TUI",409855,401607,920784]]}],
+"realistic":[{"label":"HTTP keepalive (wrk, 4 gens)","offered":206004,"captured":206004,"kdrop":0.0,"cap_cpu":47.9,"main_cpu":0.0,"exp_cap":202634,"exp_kdrop":0.0},{"label":"HTTP Connection: close (new TCP connection per request)","offered":507805,"captured":409702,"kdrop":19.3,"cap_cpu":100.0,"main_cpu":0.0},{"label":"HTTP Connection: close → TUI sessions view","offered":494014,"captured":228448,"kdrop":53.8,"cap_cpu":69.4,"main_cpu":97.5},{"label":"HTTP, offloads off","offered":197906,"captured":197906,"kdrop":0.0,"cap_cpu":43.5,"main_cpu":0.0},{"label":"iperf3 TCP, GSO 64 KB frames","offered":117472,"captured":103962,"kdrop":11.5,"cap_cpu":98.2,"main_cpu":0.0,"exp_cap":70141,"exp_kdrop":2.9,"note":"generator slower on the exp/all run (host load 19)"},{"label":"iperf3 TCP, offloads off","offered":819314,"captured":487128,"kdrop":40.5,"cap_cpu":98.3,"main_cpu":0.0},{"label":"mixed corpus replay (17 protocols)","offered":984648,"captured":494982,"kdrop":49.7,"cap_cpu":98.3,"main_cpu":0.0,"exp_cap":916708,"exp_kdrop":4.4},{"label":"replay → jsonl","offered":968699,"captured":424364,"kdrop":56.2,"cap_cpu":99.9,"main_cpu":99.0},{"label":"replay → TUI","offered":968574,"captured":363423,"kdrop":62.5,"cap_cpu":98.2,"main_cpu":97.1},{"label":"SYN flood, bidirectional","offered":196703,"captured":194338,"kdrop":1.2,"cap_cpu":74.1,"main_cpu":0.0,"exp_cap":195151,"exp_kdrop":0.0},{"label":"SYN flood → TUI sessions view","offered":194888,"captured":139472,"kdrop":28.4,"cap_cpu":64.9,"main_cpu":96.7},{"label":"udpflood (sendmmsg, 8 threads)","offered":1975612,"captured":586778,"kdrop":70.3,"cap_cpu":99.9,"main_cpu":0.0},{"label":"udpflood, random source ports","offered":1983527,"captured":571587,"kdrop":71.2,"cap_cpu":99.8,"main_cpu":0.0},{"label":"IP fragments, 3 per datagram","offered":2093305,"captured":523035,"kdrop":75.0,"cap_cpu":99.7,"main_cpu":0.0,"exp_cap":1000236,"exp_kdrop":51.1},{"label":"5-minute soak, headless","offered":2816772,"captured":436260,"kdrop":84.5,"cap_cpu":99.6,"main_cpu":87.8}]};
+
+const ALL = `A1-pktgen64-1cpu|quiet|pktgen|430k|430k|0.00|630|71|0
+A2-pktgen64-8cpu-max|quiet|pktgen|2.80M|595k|78.78|632|100|0
+A3a-ratep-100k|quiet|pktgen|100k|100k|0.00|630|18|0
+A3b-ratep-250k|quiet|pktgen|250k|250k|0.00|632|46|0
+A3c-ratep-500k|quiet|pktgen|500k|492k|1.68|632|85|0
+A3d-ratep-1m|quiet|pktgen|1.00M|606k|39.40|632|100|0
+A3e-ratep-2m|quiet|pktgen|2.00M|616k|69.18|630|100|0
+A4-pktgen1514|quiet|pktgen|2.81M|536k|80.98|630|100|0
+A5-pktgen9014-mtu9000|quiet|pktgen|1.82M|443k|75.70|631|100|0
+A6-flows1m|quiet|pktgen|2.75M|260k|90.57|657|100|0
+A7-snap128|quiet|pktgen|2.80M|620k|77.88|10|100|0
+A8-ring1m-snap256|quiet|pktgen|2.81M|549k|80.43|615|100|0
+A9-raw-max|quiet|pktgen|2.83M|410k|85.54|630|100|0
+A10-rps|quiet|pktgen|420k|353k|15.90|630|99|0
+A11-dstsut|quiet|pktgen|4.71M|592k|87.44|632|100|0
+A12-p1-nobridge|quiet|pktgen|3.30M|598k|81.90|632|100|0
+A13-raw-1cpu|quiet|pktgen|425k|424k|0.28|628|99|0
+A14-bpf-hit|quiet|pktgen|2.71M|598k|77.92|632|100|0
+A15-bpf-miss|quiet|pktgen|2.92M|0|0.00|9|0|0
+B1-headless-1m|headless|pktgen|1.00M|398k|60.17|630|100|89
+B1x-headless-max|headless|pktgen|2.81M|435k|84.55|630|99|88
+B2-jsonl-1m|jsonl|pktgen|1.00M|533k|46.65|631|100|99
+B2x-jsonl-max|jsonl|pktgen|2.81M|514k|81.70|632|100|99
+B3-syslog-1m|syslog|pktgen|1.00M|154k|84.61|5|100|0
+B3x-syslog-max|syslog|pktgen|2.85M|153k|94.64|5|100|0
+B4-streamnull-1m|stream-null|pktgen|1.00M|571k|42.91|630|100|0
+B5-streamdisk-1514|stream-disk|pktgen|1.00M|303k|69.65|633|100|0
+B6-tui-1m|tui|pktgen|1.00M|402k|59.84|631|100|98
+B6x-tui-max|tui|pktgen|2.82M|400k|85.82|632|100|95
+B7-tuisessions-flows1m|tui-sessions|pktgen|1.00M|100k|90.00|679|58|96
+B8-headlesspipe-1m|headless-pipe|pktgen|1.00M|470k|53.04|631|100|97
+B9-raw-syslog-1m|syslog (raw)|pktgen|1.00M|148k|85.17|2|100|0
+C1-http-keepalive|quiet|http|206k|206k|0.00|647|48|0
+C1h-http-headless|headless|http|205k|205k|0.00|649|56|49
+C2-http-offloads-off|quiet|http|198k|198k|0.00|647|44|0
+C3-http-close (re-run, real close)|quiet|http|508k|410k|19.32|—|100|0
+C3t-http-close-tui-sessions (re-run)|tui-sessions|http|494k|228k|53.76|—|69|98
+C4-iperf-tcp|quiet|iperf|117k|104k|11.50|634|98|0
+C4o-iperf-offloads-off|quiet|iperf|819k|487k|40.54|631|98|0
+C5-replay-quiet|quiet|replay|985k|495k|49.73|637|98|0
+C5j-replay-jsonl|jsonl|replay|969k|424k|56.19|637|100|99
+C5t-replay-tui|tui|replay|969k|363k|62.48|637|98|97
+C6-synflood-quiet|quiet|synflood|197k|194k|1.20|657|74|0
+C6t-synflood-tui-sessions|tui-sessions|synflood|195k|139k|28.43|679|65|97
+C7-udpflood|quiet|udpflood|1.98M|587k|70.30|630|100|0
+C7r-udpflood-randsrc|quiet|udpflood|1.98M|572k|71.18|632|100|0
+C8-frag|quiet|frag|2.09M|523k|75.01|633|100|0
+D1-soak-headless-5min|headless|pktgen|2.82M|436k|84.51|630|100|88`;
+
+const fmtK = v => v == null ? '—' : v >= 1e6 ? (v/1e6).toFixed(2) + ' M' : Math.round(v/1000) + ' k';
+const fmtPct = v => v == null ? '—' : v.toFixed(1) + '%';
+const NS = 'http://www.w3.org/2000/svg';
+function el(n, a, parent) { const e = document.createElementNS(NS, n); for (const k in a) e.setAttribute(k, a[k]); if (parent) parent.appendChild(e); return e; }
+function txt(x, y, s, cls, a, parent) { const t = el('text', Object.assign({x, y}, a || {}), parent); if (cls) t.setAttribute('class', cls); t.textContent = s; return t; }
+function tipFor(plot) { const t = document.createElement('div'); t.className = 'tip'; plot.appendChild(t); return t; }
+function showTip(tip, plot, ev, html) { const r = plot.getBoundingClientRect(); tip.innerHTML = html; tip.style.left = (ev.clientX - r.left) + 'px'; tip.style.top = (ev.clientY - r.top - 8) + 'px'; tip.style.opacity = 1; }
+function hideTip(tip) { tip.style.opacity = 0; }
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+// ---- stair line chart -----------------------------------------------------
+(function () {
+  const plot = document.getElementById('c-stair'); const tip = tipFor(plot);
+  const W = 860, H = 340, L = 64, R = 24, T = 18, B = 44;
+  const svg = el('svg', {viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Captured vs offered rate'}, plot);
+  const maxX = 3.0e6, maxY = 1.3e6;
+  const x = v => L + (v / maxX) * (W - L - R), y = v => T + (1 - v / maxY) * (H - T - B);
+  for (let v = 0; v <= maxY; v += 250000) { el('line', {x1: L, x2: W - R, y1: y(v), y2: y(v), class: 'grid'}, svg); txt(L - 8, y(v) + 4, fmtK(v), 'tick', {'text-anchor': 'end'}, svg); }
+  for (let v = 0; v <= maxX; v += 500000) txt(x(v), H - B + 18, fmtK(v), 'tick', {'text-anchor': 'middle'}, svg);
+  el('line', {x1: L, x2: W - R, y1: y(0), y2: y(0), class: 'axis'}, svg);
+  txt(W - R, H - 6, 'offered packets / s', null, {'text-anchor': 'end'}, svg);
+  txt(L - 8, T - 4, 'captured / s', null, {'text-anchor': 'end'}, svg);
+  el('path', {d: `M${x(0)},${y(0)} L${x(maxY)},${y(maxY)}`, stroke: 'var(--deemph)', 'stroke-width': 1.5, fill: 'none', 'stroke-dasharray': '4 4'}, svg);
+  const series = [{k: 'var(--accent)', d: D.stair, name: 'v1.3.1'}, {k: 'var(--accent-2)', d: D.stair_exp, name: 'exp/all'}];
+  series.forEach(s => {
+    const pts = s.d.map(p => [x(p.offered), y(p.captured)]);
+    el('path', {d: pts.map((p, i) => (i ? 'L' : 'M') + p[0] + ',' + p[1]).join(' '), stroke: s.k, 'stroke-width': 2, fill: 'none', 'stroke-linejoin': 'round', 'stroke-linecap': 'round'}, svg);
+    s.d.forEach((p, i) => {
+      el('circle', {cx: pts[i][0], cy: pts[i][1], r: 4.5, fill: s.k, stroke: 'var(--surface)', 'stroke-width': 2}, svg);
+      const hit = el('circle', {cx: pts[i][0], cy: pts[i][1], r: 14, fill: 'transparent', tabindex: 0}, svg);
+      const html = `<b>${fmtK(p.captured)} pps captured</b><br>${esc(s.name)} · ${fmtK(p.offered)} offered · ${fmtPct(p.kdrop)} kernel drop`;
+      hit.addEventListener('pointermove', ev => showTip(tip, plot, ev, html)); hit.addEventListener('pointerleave', () => hideTip(tip));
+      hit.addEventListener('focus', () => { tip.innerHTML = html; tip.style.left = pts[i][0] / W * 100 + '%'; tip.style.top = pts[i][1] / H * 100 + '%'; tip.style.opacity = 1; }); hit.addEventListener('blur', () => hideTip(tip));
+    });
+    const last = s.d[s.d.length - 1];
+    txt(x(last.offered) - 8, y(last.captured) - 12, `${esc(s.name)} · ${fmtK(last.captured)}`, 'lbl', {'text-anchor': 'end'}, svg);
+  });
+  txt(x(1.0e6) + 6, y(1.0e6) + 4, '1 M offered, 0% loss', 'lbl', {}, svg);
+})();
+
+// ---- horizontal bar helpers -----------------------------------------------
+function hbars(id, rows, opts) {
+  // rows: [{label, bars:[{v, k, name, sub}]}]
+  const plot = document.getElementById(id); const tip = tipFor(plot);
+  const rowH = opts.rowH || 30, gap = 4, L = opts.L || 230, R = 80, T = 10, B = 30, W = 860;
+  const H = T + rows.length * rowH + B;
+  const svg = el('svg', {viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': opts.label}, plot);
+  const maxX = opts.max; const x = v => L + (v / maxX) * (W - L - R);
+  for (let v = 0; v <= maxX; v += opts.step) { el('line', {x1: x(v), x2: x(v), y1: T, y2: H - B, class: 'grid'}, svg); txt(x(v), H - B + 16, fmtK(v), 'tick', {'text-anchor': 'middle'}, svg); }
+  el('line', {x1: x(0), x2: x(0), y1: T, y2: H - B, class: 'axis'}, svg);
+  rows.forEach((r, i) => {
+    const y0 = T + i * rowH; const n = r.bars.length; const bh = Math.min(22, (rowH - 8 - (n - 1) * gap) / n);
+    const lab = txt(L - 12, y0 + rowH / 2 + 4, r.label, 'cat', {'text-anchor': 'end'}, svg);
+    if (r.bold) lab.setAttribute('font-weight', '600');
+    r.bars.forEach((b, j) => {
+      if (b.v == null) return;
+      const by = y0 + (rowH - (n * bh + (n - 1) * gap)) / 2 + j * (bh + gap);
+      const w = Math.max(0, x(b.v) - x(0));
+      const rect = el('rect', {x: x(0), y: by, width: w, height: bh, fill: b.k, rx: 0}, svg);
+      // rounded data end via clip is overkill; use a small path cap
+      rect.setAttribute('rx', 0); rect.setAttribute('ry', 0);
+      const cap = el('rect', {x: x(0) + Math.max(0, w - 6), y: by, width: 6, height: bh, fill: b.k, rx: 4, ry: 4}, svg);
+      const hit = el('rect', {x: x(0), y: by - 2, width: Math.max(w, 24) + 6, height: bh + 4, fill: 'transparent', tabindex: 0}, svg);
+      const html = `<b>${fmtK(b.v)} pps</b><br>${esc(b.name)}${b.sub ? ' · ' + esc(b.sub) : ''}`;
+      const on = ev => { rect.style.opacity = 0.75; showTip(tip, plot, ev, html); }; const off = () => { rect.style.opacity = 1; hideTip(tip); };
+      hit.addEventListener('pointermove', on); hit.addEventListener('pointerleave', off);
+      hit.addEventListener('focus', () => { rect.style.opacity = 0.75; tip.innerHTML = html; tip.style.left = (x(b.v) / W * 100) + '%'; tip.style.top = (by / H * 100) + '%'; tip.style.opacity = 1; }); hit.addEventListener('blur', off);
+      if (b.lbl) txt(x(b.v) + 6, by + bh / 2 + 4, fmtK(b.v), 'lbl', {}, svg);
+    });
+  });
+}
+
+hbars('c-variants', D.variants.map((v, i) => ({label: v.label, bars: [{v: v.captured, k: 'var(--accent)', name: v.label, sub: `${fmtK(v.offered)} offered · ${fmtPct(v.kdrop)} kernel drop`, lbl: true}]})), {max: 700000, step: 100000, rowH: 28, L: 250, label: 'Captured pps per configuration variant'});
+
+hbars('c-modes', D.modes.map(m => ({label: m.mode, bars: [
+  {v: m.base_cap, k: 'var(--deemph)', name: 'v1.3.1 baseline', sub: fmtPct(m.base_kdrop) + ' kernel drop'},
+  {v: m.exp_cap, k: 'var(--accent)', name: 'exp/all', sub: fmtPct(m.exp_kdrop) + ' kernel drop', lbl: m.connect_cap == null},
+  ...(m.connect_cap != null ? [{v: m.connect_cap, k: 'var(--accent-2)', name: 'exp/all + connected socket', sub: fmtPct(m.connect_kdrop) + ' kernel drop', lbl: true}] : [])
+]})), {max: 1100000, step: 200000, rowH: 46, L: 250, label: 'Captured pps per output mode, baseline vs exp/all'});
+
+(function () {
+  const rows = [];
+  D.attr.forEach(e => { rows.push({label: e.exp, bold: true, bars: []}); e.rows.forEach(r => rows.push({label: r[0], bars: [
+    {v: r[2], k: 'var(--deemph)', name: 'baseline'}, {v: r[1], k: 'var(--accent)', name: e.exp + ' alone', lbl: true}, {v: r[3], k: 'var(--accent-2)', name: 'all combined'}]})); });
+  hbars('c-attr', rows, {max: 1200000, step: 200000, rowH: 44, L: 230, label: 'Attribution of each experiment'});
+})();
+
+// ---- tables ----------------------------------------------------------------
+(function () {
+  const tb = document.querySelector('#t-real tbody');
+  D.realistic.forEach(r => { const tr = document.createElement('tr');
+    const cells = [r.label + (r.note ? ' *' : ''), fmtK(r.offered), fmtK(r.captured), fmtPct(r.kdrop), r.cap_cpu.toFixed(0) + '%', r.main_cpu.toFixed(0) + '%', fmtK(r.exp_cap), r.exp_kdrop == null ? '—' : fmtPct(r.exp_kdrop)];
+    cells.forEach((c, i) => { const td = document.createElement('td'); if (i) td.className = 'n'; td.textContent = c; tr.appendChild(td); }); tb.appendChild(tr); });
+  const tb2 = document.querySelector('#t-all tbody');
+  ALL.split('\n').forEach(line => { const f = line.split('|'); const tr = document.createElement('tr');
+    f.forEach((c, i) => { const td = document.createElement('td'); if (i >= 3) td.className = 'n'; td.textContent = c; tr.appendChild(td); }); tb2.appendChild(tr); });
+})();
+</script>

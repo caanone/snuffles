@@ -52,10 +52,11 @@ COMMON_SRCS = src/main.c       \
               src/export_json.c \
               src/stats.c       \
               src/session.c     \
-              src/syslog_out.c
+              src/syslog_out.c  \
+              src/output.c
 
 SRCS_PCAP = $(COMMON_SRCS) src/capture.c
-SRCS_RAW  = $(COMMON_SRCS) src/capture_raw.c src/cbpf.c
+SRCS_RAW  = $(COMMON_SRCS) src/capture_raw.c src/cbpf.c src/rawring.c
 
 RELEASE_FLAGS = -O2
 DEBUG_FLAGS   = -g -O0 -fsanitize=address,undefined -fno-omit-frame-pointer
@@ -67,7 +68,7 @@ OBJS_DEBUG = $(SRCS_PCAP:src/%.c=$(OBJDIR)/debug/%.o)
 
 # ── Unit tests (also runnable via CTest; this target keeps them
 #    available on the make-only path, e.g. macOS release builds) ──
-TESTS      = filter ringbuf session dissect cbpf config
+TESTS      = filter ringbuf session dissect cbpf rawring config export_json syslog_out output ui
 TEST_BINS  = $(TESTS:%=$(OBJDIR)/tests/test_%)
 # make test SAN=1 -> run the suite under ASan/UBSan
 ifdef SAN
@@ -122,6 +123,34 @@ $(OBJDIR)/pcap $(OBJDIR)/raw $(OBJDIR)/debug:
 
 # ── Tests ────────────────────────────────────────────────────
 $(OBJDIR)/tests/test_%: tests/test_%.c src/%.c | $(OBJDIR)/tests
+	$(CC) $(BASE_CFLAGS) $(TEST_FLAGS) -Isrc $(CFLAGS) -o $@ $^ \
+	      $(TEST_LDFLAGS) $(LDFLAGS) $(TEST_LDLIBS)
+
+# the display filter formats text columns on demand (summary_format)
+$(OBJDIR)/tests/test_filter: tests/test_filter.c src/filter.c src/dissect.c \
+                             | $(OBJDIR)/tests
+	$(CC) $(BASE_CFLAGS) $(TEST_FLAGS) -Isrc $(CFLAGS) -o $@ $^ \
+	      $(TEST_LDFLAGS) $(LDFLAGS) $(TEST_LDLIBS)
+
+# export_json.c also walks the ring through the display filter
+$(OBJDIR)/tests/test_export_json: tests/test_export_json.c src/export_json.c \
+                                  src/filter.c src/dissect.c src/ringbuf.c \
+                                  | $(OBJDIR)/tests
+	$(CC) $(BASE_CFLAGS) $(TEST_FLAGS) -Isrc $(CFLAGS) -o $@ $^ \
+	      $(TEST_LDFLAGS) $(LDFLAGS) $(TEST_LDLIBS)
+
+# the output thread drives both sinks off the ring
+$(OBJDIR)/tests/test_output: tests/test_output.c src/output.c src/ringbuf.c \
+                             src/syslog_out.c src/export_pcap.c src/filter.c \
+                             src/dissect.c \
+                             | $(OBJDIR)/tests
+	$(CC) $(BASE_CFLAGS) $(TEST_FLAGS) -Isrc $(CFLAGS) -o $@ $^ \
+	      $(TEST_LDFLAGS) $(LDFLAGS) $(TEST_LDLIBS)
+
+# test_ui.c includes src/ui.c (white-box access to the pacing counters)
+# and stubs the capture/export entry points; it links what the UI uses.
+$(OBJDIR)/tests/test_ui: tests/test_ui.c src/filter.c src/dissect.c src/stats.c \
+                         src/session.c src/ringbuf.c | $(OBJDIR)/tests
 	$(CC) $(BASE_CFLAGS) $(TEST_FLAGS) -Isrc $(CFLAGS) -o $@ $^ \
 	      $(TEST_LDFLAGS) $(LDFLAGS) $(TEST_LDLIBS)
 

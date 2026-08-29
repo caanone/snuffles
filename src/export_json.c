@@ -1,4 +1,5 @@
 #include "export_json.h"
+#include "dissect.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,40 +57,108 @@ static void json_kv_hex(FILE *f, const char *key, const uint8_t *data,
     fputc('"', f);
 }
 
-/* ── Public API ──────────────────────────────────────────────── */
+/* ── JSON Lines (headless --jsonl) ───────────────────────────── */
 
-static void jl_str(FILE *f, const char *key, const char *val, int comma) {
-    if (comma) fputc(',', f);
-    json_write_escaped(f, key);
-    fputc(':', f);
-    json_write_escaped(f, val);
+/* Each line is assembled in a stack buffer and handed to stdio with one
+ * fwrite. The previous per-character fputc/fputs path took a stream lock
+ * and a call per byte, which made the headless consumer the bottleneck
+ * under load. Escaping is byte-for-byte what json_write_escaped() does
+ * (tests/test_export_json.c pins that). Appends are bounds-checked, and
+ * JL_LINE_MAX is sized so a summary whose every character needs the
+ * six-byte \u00xx form still fits, so truncation is unreachable for
+ * NUL-terminated summaries. */
+
+#define JL_LINE_MAX 2048
+
+_Static_assert(JL_LINE_MAX >= 6 * (sizeof(((pkt_summary_t *)0)->src_ip) +
+                                   sizeof(((pkt_summary_t *)0)->dst_ip) +
+                                   sizeof(((pkt_summary_t *)0)->protocol) +
+                                   sizeof(((pkt_summary_t *)0)->info))
+                              + 32 /* ts_str */ + 256 /* keys, ints */,
+               "JL_LINE_MAX cannot hold a fully escaped summary");
+
+typedef struct {
+    char   *buf;
+    size_t  cap;
+    size_t  len;
+} jl_buf_t;
+
+static void jl_putc(jl_buf_t *b, char c) {
+    if (b->len < b->cap) b->buf[b->len++] = c;
 }
 
-static void jl_int(FILE *f, const char *key, long long val, int comma) {
-    if (comma) fputc(',', f);
-    json_write_escaped(f, key);
-    fprintf(f, ":%lld", val);
+static void jl_putn(jl_buf_t *b, const char *s, size_t n) {
+    if (n > b->cap - b->len) n = b->cap - b->len;
+    memcpy(b->buf + b->len, s, n);
+    b->len += n;
+}
+
+static void jl_escaped(jl_buf_t *b, const char *s) {
+    static const char hex[] = "0123456789abcdef";
+    jl_putc(b, '"');
+    for (; *s; s++) {
+        unsigned char c = (unsigned char)*s;
+        switch (c) {
+            case '"':  jl_putn(b, "\\\"", 2); break;
+            case '\\': jl_putn(b, "\\\\", 2); break;
+            case '\b': jl_putn(b, "\\b",  2); break;
+            case '\f': jl_putn(b, "\\f",  2); break;
+            case '\n': jl_putn(b, "\\n",  2); break;
+            case '\r': jl_putn(b, "\\r",  2); break;
+            case '\t': jl_putn(b, "\\t",  2); break;
+            default:
+                if (c < 0x20) {
+                    char u[6] = { '\\', 'u', '0', '0', hex[c >> 4], hex[c & 15] };
+                    jl_putn(b, u, sizeof(u));
+                } else {
+                    jl_putc(b, (char)c);
+                }
+                break;
+        }
+    }
+    jl_putc(b, '"');
+}
+
+static void jl_str(jl_buf_t *b, const char *key, const char *val, int comma) {
+    if (comma) jl_putc(b, ',');
+    jl_escaped(b, key);
+    jl_putc(b, ':');
+    jl_escaped(b, val);
+}
+
+static void jl_int(jl_buf_t *b, const char *key, long long val, int comma) {
+    char num[24];
+    int n = snprintf(num, sizeof(num), "%lld", val);
+    if (comma) jl_putc(b, ',');
+    jl_escaped(b, key);
+    jl_putc(b, ':');
+    if (n > 0) jl_putn(b, num, (size_t)n);
 }
 
 void json_line_write(FILE *f, const pkt_summary_t *s) {
+    char line[JL_LINE_MAX];
+    jl_buf_t b = { line, sizeof(line), 0 };
     char ts_str[32];
     snprintf(ts_str, sizeof(ts_str), "%ld.%06ld",
              (long)s->ts.tv_sec, (long)s->ts.tv_usec);
-    fputc('{', f);
-    jl_str(f, "ts",       ts_str,      0);
-    jl_str(f, "src_ip",   s->src_ip,   1);
-    jl_int(f, "src_port", s->src_port, 1);
-    jl_str(f, "dst_ip",   s->dst_ip,   1);
-    jl_int(f, "dst_port", s->dst_port, 1);
-    jl_str(f, "protocol", s->protocol, 1);
-    jl_int(f, "length",   s->length,   1);
+    jl_putc(&b, '{');
+    jl_str(&b, "ts",       ts_str,      0);
+    jl_str(&b, "src_ip",   s->src_ip,   1);
+    jl_int(&b, "src_port", s->src_port, 1);
+    jl_str(&b, "dst_ip",   s->dst_ip,   1);
+    jl_int(&b, "dst_port", s->dst_port, 1);
+    jl_str(&b, "protocol", s->protocol, 1);
+    jl_int(&b, "length",   s->length,   1);
     if (s->vlan_id)
-        jl_int(f, "vlan", s->vlan_id, 1);
+        jl_int(&b, "vlan", s->vlan_id, 1);
     if (s->session_id)
-        jl_int(f, "session", s->session_id, 1);
-    jl_str(f, "info",     s->info,     1);
-    fputs("}\n", f);
+        jl_int(&b, "session", s->session_id, 1);
+    jl_str(&b, "info",     s->info,     1);
+    jl_putn(&b, "}\n", 2);
+    fwrite(line, 1, b.len, f);
 }
+
+/* ── Public API ──────────────────────────────────────────────── */
 
 int export_json(const char *path, ringbuf_t *rb,
                 const display_filter_t *filt,
@@ -155,6 +224,7 @@ int export_json(const char *path, ringbuf_t *rb,
         if (filt && filt->valid && filt->root >= 0) {
             if (!filter_eval(filt, &rec.summary)) continue;
         }
+        summary_format(&rec.summary);   /* text columns, our copy */
 
         if (!first_pkt) fputs(",\n", f);
         first_pkt = 0;

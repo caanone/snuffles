@@ -116,5 +116,26 @@ int main(void) {
     CHECK(match("", tcp443, L) == -1);
     CHECK(match("tcp and arp", tcp443, L) == -1);   /* conflicting protocols */
 
+    /* snaplen: accepting returns become snaplen (the kernel copies that
+     * many bytes), rejecting ones stay 0 */
+    {
+        cbpf_insn_t insns[CBPF_MAX_INSNS];
+        char err[128];
+        int n = cbpf_compile("tcp port 443", insns, CBPF_MAX_INSNS,
+                             err, sizeof(err));
+        CHECK(n > 0);
+        CHECK(bpf_run(insns, n, tcp443, L) == 0xFFFFFFFFu);
+        CHECK(cbpf_set_snaplen(insns, n, 128) == 1);
+        CHECK(bpf_run(insns, n, tcp443, L) == 128);
+        CHECK(bpf_run(insns, n, udp53, L) == 0);
+        CHECK(cbpf_set_snaplen(insns, n, 96) == 0);    /* already rewritten */
+        CHECK(bpf_run(insns, n, tcp443, L) == 128);
+
+        cbpf_insn_t acc[1];
+        CHECK(cbpf_accept_all(acc, 96) == 1);
+        CHECK(bpf_run(acc, 1, tcp443, L) == 96);
+        CHECK(bpf_run(acc, 1, arp, L) == 96);
+    }
+
     TEST_MAIN_END();
 }

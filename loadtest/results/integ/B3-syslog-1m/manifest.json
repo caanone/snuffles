@@ -1,0 +1,60 @@
+{
+  "name": "B3-syslog-1m",
+  "run_id": "integ",
+  "status": "ok",
+  "build": "pcap",
+  "mode": "syslog",
+  "iface": "br0",
+  "duration": 12,
+  "perf": true,
+  "traffic": {
+    "kind": "pktgen",
+    "pkt_size": 64,
+    "dst": "sink",
+    "pps": 125000,
+    "flows": 1,
+    "gens": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "cpus": [
+      4,
+      5,
+      6,
+      7,
+      12,
+      13,
+      14,
+      15
+    ]
+  },
+  "knobs": {
+    "mtu": 1500,
+    "offloads": "on",
+    "rps": "off",
+    "snaplen": null,
+    "ring": null,
+    "bpf": ""
+  },
+  "git_sha": "bffe4ac9a84a7314c65b7f95f1d89ed4140a86fa",
+  "snuffles_version": "Snuffles v1.3.1",
+  "host_uname": "Linux 6.12.101+deb13-amd64 x86_64 GNU/Linux",
+  "cpuset": {
+    "sut": "2,3,10,11",
+    "gen1": "4,12",
+    "gen2": "5,13",
+    "gen3": "6,14",
+    "gen4": "7,15",
+    "sink": "0,8"
+  },
+  "run_start": 1787922762.802713804,
+  "run_end": 1787922796.748677287,
+  "snuffles_start": 1787922765.116194670,
+  "traffic_start": 1787922769.238301301,
+  "traffic_end": 1787922791.775209189,
+  "exit_code": 0,
+  "exit_latency_ms": 388,
+  "killed": false
+}

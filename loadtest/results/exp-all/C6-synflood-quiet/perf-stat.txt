@@ -1,0 +1,22 @@
+# started on Fri Aug 28 14:58:04 2026
+
+
+ Performance counter stats for process id '52143':
+
+           5856.96 msec task-clock                       #    0.586 CPUs utilized             
+              1250      context-switches                 #  213.421 /sec                      
+                55      cpu-migrations                   #    9.391 /sec                      
+                 0      page-faults                      #    0.000 /sec                      
+       23244691699      cycles                           #    3.969 GHz                       
+       27184239675      instructions                     #    1.17  insn per cycle            
+         158333092      cache-misses                                                          
+          31974859      branch-misses                                                         
+                10      syscalls:sys_enter_write         #    1.707 /sec                      
+                 0      syscalls:sys_enter_sendto        #    0.000 /sec                      
+                39      syscalls:sys_enter_getsockopt    #    6.659 /sec                      
+                 0      syscalls:sys_enter_recvfrom      #    0.000 /sec                      
+                 0      syscalls:sys_enter_select        #    0.000 /sec                      
+               973      syscalls:sys_enter_poll          #  166.127 /sec                      
+
+      10.001325997 seconds time elapsed
+

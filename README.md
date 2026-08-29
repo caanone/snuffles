@@ -38,7 +38,7 @@ dependencies beyond (optional) libpcap.
 - Session/stream tracking `[S]` — bidirectional 5-tuple aggregation with TCP state machine
 - Protocol statistics `[V]` — live per-protocol breakdown with rates and drop counts
 - Syslog forwarding `--syslog` — real-time UDP CSV with full header details, feedback loop prevention
-- Silent mode `-q` — zero terminal output, minimal memory (~16KB), pure syslog forwarder
+- Silent mode `-q` — no packet output, minimal user-space memory (~3.4MB ring: 4096 records + a 1MB payload arena; the libpcap build adds a kernel capture buffer, `-B`), pure syslog forwarder
 - ANSI terminal UI with color-coded protocols, scrollable list, detail panel, hex dump, help overlay
 - Streaming write `-w` — tcpdump-style write-while-capturing (`-w -` pipes into Wireshark)
 - JSON Lines output `--jsonl` — one JSON object per packet on stdout, made for `jq`
@@ -94,7 +94,7 @@ Windows MinGW one-liner:
 gcc -std=c11 -Wall -O2 -DNO_PCAP -D_WIN32_WINNT=0x0601 -Iinclude ^
     src/main.c src/capture_raw.c src/cbpf.c src/dissect.c src/filter.c ^
     src/ringbuf.c src/ui.c src/export_pcap.c src/export_json.c src/stats.c ^
-    src/session.c src/syslog_out.c -o snuffles.exe -lws2_32 -liphlpapi
+    src/session.c src/syslog_out.c src/output.c -o snuffles.exe -lws2_32 -liphlpapi
 ```
 
 ### Cross-Compilation
@@ -116,7 +116,7 @@ make clean           # Remove artifacts
 ### Tests
 
 Unit tests (filter, ring buffer, sessions, dissectors, BPF compiler,
-config) run either from the Makefile or via CTest:
+config, JSON Lines writer) run either from the Makefile or via CTest:
 
 ```bash
 make test                 # all suites
@@ -147,16 +147,25 @@ Options:
   -r <file.pcap>      Read from pcap file (libpcap build only)
   -f <bpf_filter>     BPF capture filter (e.g. "tcp port 80")
   -c <count>          Stop after N packets
-  -s <snaplen>        Snapshot length (default: 65535)
+  -s <snaplen>        Snapshot length (default: 65535 in the TUI;
+                      1518 for --no-ui/--jsonl/-q/-w)
   -b <ring_size>      Ring buffer size (default: 10000)
+  --arena-mb <MB>     Packet payload arena shared by the ring, 1-65536
+                      (default: ring_size x min(snaplen, 2048) bytes)
+  -B <MB>             Kernel capture buffer in MB, 1-2047 (default: 64)
   -o <file>           Export on exit (.pcap or .json)
   -w <file>           Stream packets to a pcap file while capturing
                       ('-w -' writes to stdout; combine with -q)
   --no-ui             Headless mode (print to stdout)
   --jsonl             Headless mode, one JSON object per packet
-  -q, --quiet         Silent mode (no output, use with --syslog)
+  -q, --quiet         Silent mode (no packet output, use with --syslog)
   --syslog <host:port> Forward packets via UDP syslog
   --syslog-iface <ip|dev>  Source interface/IP for syslog
+  --stats[=FILE]      Capture/drop counters every second and at exit
+  --no-summary        Headless modes: no counters line at exit
+  --cpu <N>           Pin the capture thread to CPU N (Linux)
+  --rt                SCHED_FIFO priority 1 for the capture thread (root)
+  --immediate         Per-packet delivery instead of 10 ms batches 
   --list-ifaces       List interfaces and exit
   -v                  Version info
   -h, --help          Help
@@ -198,6 +207,12 @@ sudo ./snuffles -i eth0 -q -w - | wireshark -k -i -
 # JSON Lines into jq
 sudo ./snuffles -i en0 --jsonl | jq -r '.dst_ip'
 
+# Capture thread alone on CPU 3 at real-time priority, consumer elsewhere
+sudo ./snuffles -i eth0 --jsonl --cpu 3 --rt > packets.jsonl
+
+# Ask a running headless capture for its counters
+kill -USR1 $(pidof snuffles)
+
 # List interfaces
 ./snuffles --list-ifaces
 ```
@@ -213,11 +228,15 @@ file is silently ignored. CLI flags always override config values.
 ```ini
 # ~/.snufflesrc — '#' comments, blank lines, key = value
 interface    = eth0
-snaplen      = 1500            # 64-65535
+snaplen      = 1500            # 64-65535 (explicit: no headless default)
 ring_size    = 50000           # 16-1000000
+buffer_mb    = 64              # 1-2047, kernel capture buffer
+arena_mb     = 96              # 1-65536, payload arena (default derived)
 promisc      = 1               # 0 or 1
 syslog       = 10.0.0.100:514
 syslog_iface = 192.168.1.5
+cpu          = 3               # pin the capture thread (Linux)
+rt           = 0               # 1: SCHED_FIFO capture thread (root)
 
 # Saved display-filter presets (name: alnum/_/-, max 31 chars)
 preset web = tcp and (port 80 or port 443)
@@ -238,11 +257,11 @@ lists the first few preset names.
 
 | Mode | Flags | Memory | Output |
 |------|-------|--------|--------|
-| **TUI** | (default) | ~640MB ring + sessions | Interactive terminal UI |
-| **Headless** | `--no-ui` | ~640MB ring + sessions | Packets to stdout |
-| **Headless + export** | `--no-ui -o file` | ~640MB ring + sessions | Stdout + file on exit |
-| **Headless + syslog** | `--no-ui --syslog h:p` | ~16KB ring, no sessions | Stdout + UDP syslog |
-| **Silent syslog** | `-q --syslog h:p` | ~16KB ring, no sessions | UDP syslog only |
+| **TUI** | (default) | ~26MB ring (20MB payload arena + records) + sessions | Interactive terminal UI |
+| **Headless** | `--no-ui` | ~26MB ring + sessions | Packets to stdout |
+| **Headless + export** | `--no-ui -o file` | ~26MB ring + sessions | Stdout + file on exit |
+| **Headless + syslog** | `--no-ui --syslog h:p` | ~3.4MB ring, no sessions | Stdout + UDP syslog |
+| **Silent syslog** | `-q --syslog h:p` | ~3.4MB ring, no sessions | UDP syslog only |
 
 ---
 
@@ -269,6 +288,11 @@ Press `H` or `?` for the built-in help overlay.
 | H / ? | Help overlay |
 | Q | Quit |
 | Escape | Cancel input |
+
+The screen is redrawn at most 30 times a second (at once on a key press,
+every 250 ms when nothing changes), whatever the packet rate. The sessions
+view works from a copy of the session table refreshed every 250 ms, or
+immediately when you switch to it, change the sort or page through it.
 
 ---
 
@@ -409,13 +433,91 @@ Non-TCP (empty TCP fields):
 
 Packets to/from the syslog destination are automatically excluded.
 
+### Delivery
+
+`--syslog` and `-w` are served by an output thread (`snf-output`), not by
+the capture thread: it reads committed records from the ring buffer by
+sequence, exactly like the headless printer, and sleeps on the ring's
+wake-up when idle. Syslog records are formatted there and handed to the
+kernel in batches of up to 32 with one non-blocking `sendmmsg(2)` (Linux;
+one non-blocking `sendto(2)` per record elsewhere); a batch leaves as soon
+as the thread catches up with the ring, so a record never waits longer
+than one wake-up at low rates. The socket gets a 16 MB send buffer
+(`SO_SNDBUFFORCE`, needing the root/CAP_NET_ADMIN snuffles still holds at
+that point; unprivileged it falls back to `SO_SNDBUF`, which the kernel
+caps at `net.core.wmem_max`). When even that fills — a slow or absent
+collector, NIC backpressure — the thread never blocks: those datagrams are
+dropped and counted as `syslog_fail` in `--stats`. The `-w` file gets a
+1 MB stdio buffer, flushed whenever the thread goes idle and at exit.
+
+The capture thread is never slowed by either sink: a collector or disk
+that cannot keep up lets the ring wrap past the output thread instead,
+and the records it never saw are counted as `out_missed` in `--stats`
+(so `syslog_sent + syslog_fail + out_missed == captured`). The lean
+`-q --syslog` ring is 4 096 slots (about 4 ms of headroom at 1 M pps;
+`-b` overrides it). Measured on `lo` at 150 kpps with `--syslog`: capture
+thread 5.6-6.0 µs -> 0.8 µs per packet, the same as quiet mode; the
+output thread carries the ~5.4 µs per datagram the kernel charges for
+`sendmmsg` on a loopback path.
+
+### Counters, summary and placement
+
+Headless modes (`--no-ui`, `--jsonl`, `-q`) print one `summary ...` line to
+stderr at exit — captured, kernel drops (`kdrop`), interface drops, records
+the consumer missed, syslog/stream counts and the records the output thread
+missed (`out_missed`), sessions — even without
+`--stats`; `--no-summary` turns it off, `--stats` adds the same line every
+second (`--stats=FILE` sends everything to a file). `kill -USR1 <pid>`
+prints a `stats ...` line on demand. If the kernel dropped packets, a hint
+follows the summary (`try -B <bigger>, -s <smaller>, -q, or --cpu`), and a
+frame longer than 1518 bytes on a non-jumbo interface warns once about
+GRO/GSO super-frames (`ethtool -K <if> gro off gso off tso off` restores
+wire-sized frames).
+
+`--cpu N` pins the capture thread to CPU N and keeps every other thread
+(the headless consumer or the TUI, the output and stats threads) on the other
+CPUs; `--rt` runs the capture thread at `SCHED_FIFO` priority 1 (set
+before privileges are dropped, so it needs root or `CAP_SYS_NICE`;
+unprivileged it warns and continues). Both are Linux features (`--rt`
+also works on other POSIX systems); both have config keys (`cpu`, `rt`).
+Use `--rt` together with `--cpu` on machines with spare cores: a
+real-time capture thread that saturates its CPU starves whatever else was
+scheduled there.
+
+Reading a file with `-r` into a headless consumer never loses records: the
+reader waits for the consumer instead of lapping the ring, so
+`snuffles -r big.pcap --jsonl | slow-tool` emits every packet with
+`missed=0` regardless of `-b`.
+
 ### Memory
 
 | Mode | Memory |
 |------|--------|
-| `-q --syslog` | ~16KB (64 slots x 256 bytes, no sessions) |
-| `--no-ui --syslog` | ~16KB + stdout buffering |
+| `-q --syslog` | ~3.4MB ring (4096 records x 592 bytes + a 4096 x 256-byte payload arena, no sessions) + 18KB syslog batch |
+| `--no-ui --syslog` | same + stdout buffering |
 | TUI + syslog | Full ring buffer + sessions |
+
+The ring buffer keeps one ~350-byte record per packet plus the packet
+bytes in a shared payload arena, not a snaplen-sized slot per record: by
+default `ring_size x min(snaplen, 2048)` bytes (20 MB for the default
+10 000-packet ring, whatever the snaplen; `--arena-mb` / `arena_mb`
+overrides it). Packets take only the bytes they need, so with MTU-sized
+frames the arena outlives the ring; with larger frames (GRO/GSO
+super-frames, jumbo, `-s 65535` in the TUI) the arena wraps before the
+ring does and the oldest records keep their summary but lose their bytes
+— the TUI hex view says so, `-o` writes them with a zero captured length
+(Wireshark: "packet size limited during capture"). Headless modes and
+`-w` default the snaplen to 1518 (one Ethernet frame with a VLAN tag)
+unless `-s` or the config file set it; the TUI keeps 65535 for its hex
+view.
+
+These figures cover snuffles' own buffers. Both builds also map the
+kernel capture buffer into the process (64 MB by default, so RSS shows
+~70 MB; the lean `-q --syslog` forwarder defaults to 8 MB, ~14 MB RSS);
+shrink it further with `-B 1` or `buffer_mb` in the config file where
+memory matters more than burst tolerance. When the raw build has to fall
+back to a socket receive queue (no TPACKET_V3 ring available) that memory
+stays in the kernel and does not show up in RSS.
 
 ---
 
@@ -485,10 +587,22 @@ sudo ./snuffles -i en0 -c 100 -o capture.json
 
 - **Two threads**: capture (producer) + UI (consumer)
 - **Ring buffer**: pre-allocated, no malloc in hot path
+- **Lazy dissection**: the capture thread stores a binary summary only
+  (addresses, ports, ids, MAC bytes, the info line's ingredients); the text
+  columns (`src_ip`, `info`, ...) are produced by `summary_format()` on the
+  consumer's copy when a record is printed, exported, searched or matched
+  by a text predicate. No `snprintf`/`inet_ntop` runs per packet on the
+  capture thread; syslog formats only the two addresses it sends
 - **Silent mode**: capture thread only, main thread sleeps
-- **Session table**: normalized 5-tuple, 100K cap, LRU eviction
-- **Display filter**: recursive descent, 48-node fixed AST
-- **Syslog**: single UDP socket, stack buffer, loop guard
+- **Session table**: binary canonical 5-tuple key (both directions map to one
+  entry), seeded hash over 2x-cap power-of-two buckets, preallocated entry
+  pool, O(1) LRU eviction at the 100K cap; non-first IP fragments are not
+  tracked. Stream buffers (16 MB budget) are recycled: closed flows are
+  reclaimed first, idle holders (60 s) are released, oldest holder otherwise
+- **Display filter**: recursive descent, 48-node fixed AST; IP, port,
+  protocol, length, VLAN and session predicates evaluate on the binary
+  fields, MAC and `info` predicates format a private copy of the record
+- **Syslog**: single UDP socket (16 MB send buffer), 32-record batch, non-blocking `sendmmsg`, loop guard
 
 ---
 
@@ -513,9 +627,10 @@ snuffles/
     +-- capture_raw.c             # Raw socket backend (NO_PCAP)
     +-- dissect.c / .h            # Protocol dissectors (L2-L7)
     +-- filter.c / .h             # Display filter parser + evaluator
-    +-- ringbuf.c / .h            # Ring buffer + pipe notification
+    +-- ringbuf.c / .h            # Ring buffer + on-demand consumer wakeup
     +-- session.c / .h            # Session tracking hash table
     +-- syslog_out.c / .h         # UDP syslog forwarder
+    +-- output.c / .h             # output thread: --syslog and -w off the ring
     +-- ui.c / .h                 # ANSI TUI
     +-- export_pcap.c / .h        # PCAP writer
     +-- export_json.c / .h        # JSON writer
@@ -534,12 +649,14 @@ Drops from root to original user (sudo) or `nobody` after opening capture device
 
 | Resource | Limit |
 |----------|-------|
-| snaplen | 64 - 65,535 bytes |
+| snaplen | 64 - 65,535 bytes (default 65,535 TUI, 1,518 headless / `-w`) |
 | ring_size | 16 - 1,000,000 packets |
+| arena_mb | 1 - 65,536 MB payload arena (default ring_size x min(snaplen, 2048) bytes; a packet longer than the arena is cut to it) |
+| buffer_mb | 1 - 2,047 MB kernel capture buffer (default 64; a TPACKET_V3 block ring in both builds, the raw build uses the socket receive queue when no ring is available) |
 | Session table | 100,000 (LRU eviction) |
 | UI render buffer | 4 MB |
 | Filter preview | 2,000 packet scan |
-| Quiet + syslog mode | ~16 KB total |
+| Quiet + syslog mode | ~3.4 MB user-space + kernel capture buffer (`-B`) |
 
 ### Parser Hardening
 
@@ -577,6 +694,7 @@ Packets to/from syslog destination excluded automatically.
 |---------|-------------------|---------------------|
 | Dependencies | libpcap / Npcap | None |
 | BPF kernel filter | Yes | Linux: subset (proto/host/port + and) |
+| Capture buffer `-B` | Kernel TPACKET ring (mmap'd) | Linux: TPACKET_V3 ring (mmap'd), kernel timestamps; recvmmsg + SO_RCVBUF when no ring |
 | Offline pcap | Yes | No |
 | Ethernet/ARP | Yes | Linux only |
 | Syslog | Yes | Yes |

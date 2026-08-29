@@ -1,0 +1,120 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 3K of event 'cycles:P'
+# Event count (approx.): 5252804613
+#
+# Overhead  Command      Shared Object      Symbol                                   
+# ........  ...........  .................  .........................................
+#
+    27.41%  snf-capture  snuffles           [.] dissect_packet
+            |          
+            |--9.27%--dissect_packet
+            |          |          
+            |           --9.20%--capture_callback
+            |                     0x7fd940460527
+            |          
+            |--4.63%--session_table_update
+            |          |          
+            |           --4.59%--capture_callback
+            |                     0x7fd940460527
+            |          
+            |--4.34%--ringbuf_producer_commit
+            |          |          
+            |           --4.29%--capture_callback
+            |                     0x7fd940460527
+            |          
+            |--2.24%--ringbuf_producer_next
+            |          0x7fd940460527
+            |          
+            |--1.41%--capture_callback
+            |          |          
+            |           --1.30%--0x7fd940460527
+            |          
+            |--1.27%--dissect_udp.isra.0
+            |          |          
+            |           --0.94%--capture_callback
+            |                     0x7fd940460527
+            |          
+             --0.53%--dissect_ipv4.isra.0
+                       capture_callback
+                       0x7fd940460527
+
+    19.29%  snuffles     snuffles           [.] read_slot
+            |          
+            |--13.64%--read_slot
+            |          ringbuf_read_seq
+            |          sync_stats
+            |          ui_run
+            |          main
+            |          0x7fd94019cca8
+            |          
+            |--4.06%--ringbuf_read_seq
+            |          |          
+            |           --3.84%--sync_stats
+            |                     ui_run
+            |                     main
+            |                     0x7fd94019cca8
+            |          
+             --1.10%--stats_update
+                       ui_run
+                       main
+                       0x7fd94019cca8
+
+    13.63%  snf-capture  snuffles           [.] session_table_update
+            |          
+            |--3.64%--session_table_update
+            |          |          
+            |           --3.45%--capture_callback
+            |                     0x7fd940460527
+            |          
+            |--3.27%--dissect_packet
+            |          |          
+            |           --3.25%--capture_callback
+            |                     0x7fd940460527
+            |          
+            |--2.71%--ringbuf_producer_commit
+            |          |          
+            |           --2.68%--capture_callback
+            |                     0x7fd940460527
+            |          
+            |--0.65%--pthread_mutex_lock
+            |          capture_callback
+            |          0x7fd940460527
+            |          
+             --0.63%--ringbuf_producer_next
+                       0x7fd940460527
+
+     4.00%  snf-capture  snuffles           [.] ringbuf_producer_commit
+            |          
+            |--1.07%--ringbuf_producer_commit
+            |          capture_callback
+            |          0x7fd940460527
+            |          
+            |--0.87%--dissect_packet
+            |          |          
+            |           --0.84%--capture_callback
+            |                     0x7fd940460527
+            |          
+             --0.85%--session_table_update
+                       capture_callback
+                       0x7fd940460527
+
+     3.95%  snf-capture  snuffles           [.] capture_callback
+            |          
+            |--1.03%--dissect_packet
+            |          capture_callback
+            |          0x7fd940460527
+            |          
+             --0.88%--session_table_update
+                       capture_callback
+                       0x7fd940460527
+
+     3.18%  snf-capture  libc.so.6          [.] pthread_mutex_lock
+            |          
+            |--1.12%--session_table_update
+            |          capture_callback
+            |          0x7fd940460527
+            |          

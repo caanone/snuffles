@@ -1,0 +1,22 @@
+# started on Fri Aug 28 15:07:32 2026
+
+
+ Performance counter stats for process id '60207':
+
+           9995.81 msec task-clock                       #    0.999 CPUs utilized             
+               224      context-switches                 #   22.409 /sec                      
+                12      cpu-migrations                   #    1.201 /sec                      
+                 0      page-faults                      #    0.000 /sec                      
+       39722995152      cycles                           #    3.974 GHz                       
+       52928264209      instructions                     #    1.33  insn per cycle            
+         113919681      cache-misses                                                          
+         366031158      branch-misses                                                         
+           3927739      syscalls:sys_enter_write         #  392.939 K/sec                     
+                 0      syscalls:sys_enter_sendto        #    0.000 /sec                      
+               959      syscalls:sys_enter_getsockopt    #   95.940 /sec                      
+                 0      syscalls:sys_enter_recvfrom      #    0.000 /sec                      
+                 0      syscalls:sys_enter_select        #    0.000 /sec                      
+                 0      syscalls:sys_enter_poll          #    0.000 /sec                      
+
+      10.001396411 seconds time elapsed
+

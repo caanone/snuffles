@@ -1,0 +1,17 @@
+{
+  "name": "C9-replay-unique-ip",
+  "build": "pcap",
+  "mode": "quiet",
+  "iface": "br0",
+  "bpf": "",
+  "duration": 30,
+  "perf": false,
+  "mtu": 1500,
+  "offloads": "on",
+  "rps": "off",
+  "traffic": {
+    "kind": "replay",
+    "gens": [1, 2, 3, 4],
+    "extra": "--unique-ip"
+  }
+}

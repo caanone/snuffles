@@ -12,8 +12,12 @@
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     if (size > 65535) return 0;
     pkt_summary_t out;
+    /* the binary summary, then the text columns a consumer would produce */
     dissect_packet(data, (uint32_t)size, 1, &out);     /* Ethernet */
+    summary_format(&out);
     dissect_packet(data, (uint32_t)size, 228, &out);   /* raw IPv4 */
+    summary_format(&out);
     dissect_packet(data, (uint32_t)size, 229, &out);   /* raw IPv6 */
+    summary_format(&out);
     return 0;
 }

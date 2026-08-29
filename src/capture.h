@@ -7,8 +7,9 @@
 
 typedef struct {
     uint64_t    pkts_recv;
-    uint64_t    pkts_drop;
+    uint64_t    pkts_drop;      /* dropped by the kernel (socket buffer full) */
     uint64_t    bytes_total;
+    uint64_t    pkts_ifdrop;    /* dropped by the interface/driver (pcap only) */
 } capture_stats_raw_t;
 
 typedef struct capture_ctx capture_ctx_t;

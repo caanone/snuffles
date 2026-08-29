@@ -115,6 +115,12 @@ static void parse_keyval(const char *path, int lineno, char *line,
     } else if (strcmp(key, "ring_size") == 0) {
         if (!cfg_num(val, 16, 1000000, &cfg->ring_size))
             warn_line(path, lineno, "ring_size out of range (16-1000000)", val);
+    } else if (strcmp(key, "buffer_mb") == 0) {
+        if (!cfg_num(val, 1, 2047, &cfg->buffer_mb))
+            warn_line(path, lineno, "buffer_mb out of range (1-2047)", val);
+    } else if (strcmp(key, "arena_mb") == 0) {
+        if (!cfg_num(val, 1, 65536, &cfg->arena_mb))
+            warn_line(path, lineno, "arena_mb out of range (1-65536)", val);
     } else if (strcmp(key, "promisc") == 0) {
         if (!cfg_num(val, 0, 1, &cfg->promisc))
             warn_line(path, lineno, "promisc must be 0 or 1", val);
@@ -122,6 +128,12 @@ static void parse_keyval(const char *path, int lineno, char *line,
         snprintf(cfg->syslog_target, sizeof(cfg->syslog_target), "%s", val);
     } else if (strcmp(key, "syslog_iface") == 0) {
         snprintf(cfg->syslog_iface, sizeof(cfg->syslog_iface), "%s", val);
+    } else if (strcmp(key, "cpu") == 0) {
+        if (!cfg_num(val, 0, 8191, &cfg->cpu))
+            warn_line(path, lineno, "cpu out of range (0-8191)", val);
+    } else if (strcmp(key, "rt") == 0) {
+        if (!cfg_num(val, 0, 1, &cfg->rt))
+            warn_line(path, lineno, "rt must be 0 or 1", val);
     } else {
         warn_line(path, lineno, "unknown key", key);
     }

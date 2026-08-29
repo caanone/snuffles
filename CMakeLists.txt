@@ -45,11 +45,12 @@ set(COMMON_SOURCES
     src/stats.c
     src/session.c
     src/syslog_out.c
+    src/output.c
 )
 
 if(NO_PCAP)
     # ── Raw socket build (no libpcap) ──
-    set(SOURCES ${COMMON_SOURCES} src/capture_raw.c src/cbpf.c)
+    set(SOURCES ${COMMON_SOURCES} src/capture_raw.c src/cbpf.c src/rawring.c)
     add_executable(${PROJECT_NAME} ${SOURCES})
     target_compile_definitions(${PROJECT_NAME} PRIVATE NO_PCAP)
     target_include_directories(${PROJECT_NAME} PRIVATE include)
@@ -77,12 +78,41 @@ endif()
 # Tests (backend-independent: each links only the sources it exercises)
 include(CTest)
 if(BUILD_TESTING)
-    foreach(t filter ringbuf session dissect cbpf config)
+    foreach(t ringbuf session dissect cbpf rawring config syslog_out)
         add_executable(test_${t} tests/test_${t}.c src/${t}.c)
         target_include_directories(test_${t} PRIVATE include src)
         target_link_libraries(test_${t} PRIVATE Threads::Threads m)
         add_test(NAME ${t} COMMAND test_${t})
     endforeach()
+    # the display filter formats text columns on demand (summary_format)
+    add_executable(test_filter tests/test_filter.c src/filter.c src/dissect.c)
+    target_include_directories(test_filter PRIVATE include src)
+    target_link_libraries(test_filter PRIVATE Threads::Threads m)
+    add_test(NAME filter COMMAND test_filter)
+    # export_json.c also walks the ring through the display filter
+    add_executable(test_export_json tests/test_export_json.c src/export_json.c
+                   src/filter.c src/dissect.c src/ringbuf.c)
+    target_include_directories(test_export_json PRIVATE include src)
+    target_link_libraries(test_export_json PRIVATE Threads::Threads m)
+    add_test(NAME export_json COMMAND test_export_json)
+    # the output thread drives both sinks off the ring
+    add_executable(test_output tests/test_output.c src/output.c src/ringbuf.c
+                   src/syslog_out.c src/export_pcap.c src/filter.c src/dissect.c)
+    target_include_directories(test_output PRIVATE include src)
+    target_link_libraries(test_output PRIVATE Threads::Threads m)
+    if(WIN32)
+        target_link_libraries(test_output PRIVATE ws2_32)
+    endif()
+    add_test(NAME output COMMAND test_output)
+    # test_ui.c includes src/ui.c (white-box pacing counters) and stubs the
+    # capture/export entry points; POSIX only (pipes, pthread).
+    if(NOT WIN32)
+        add_executable(test_ui tests/test_ui.c src/filter.c src/dissect.c
+                       src/stats.c src/session.c src/ringbuf.c)
+        target_include_directories(test_ui PRIVATE include src)
+        target_link_libraries(test_ui PRIVATE Threads::Threads m)
+        add_test(NAME ui COMMAND test_ui)
+    endif()
 endif()
 
 # Install

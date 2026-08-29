@@ -1,0 +1,35 @@
+{
+  "name": "A10-pktgen64-8cpu-rps",
+  "build": "pcap",
+  "mode": "quiet",
+  "iface": "br0",
+  "bpf": "",
+  "duration": 30,
+  "perf": false,
+  "mtu": 1500,
+  "offloads": "on",
+  "rps": "on",
+  "traffic": {
+    "kind": "pktgen",
+    "gens": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "cpus": [
+      4,
+      5,
+      6,
+      7,
+      12,
+      13,
+      14,
+      15
+    ],
+    "pkt_size": 64,
+    "pps": 0,
+    "flows": 1,
+    "dst": "sink"
+  }
+}
