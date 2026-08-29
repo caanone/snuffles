@@ -1,0 +1,22 @@
+# started on Sat Aug 29 00:28:35 2026
+
+
+ Performance counter stats for process id '1540':
+
+           2744.54 msec task-clock                       #    0.274 CPUs utilized             
+             14082      context-switches                 #    5.131 K/sec                     
+               283      cpu-migrations                   #  103.114 /sec                      
+                 0      page-faults                      #    0.000 /sec                      
+       10581093354      cycles                           #    3.855 GHz                       
+       17848635323      instructions                     #    1.69  insn per cycle            
+          97871941      cache-misses                                                          
+           7884620      branch-misses                                                         
+                10      syscalls:sys_enter_write         #    3.644 /sec                      
+                 0      syscalls:sys_enter_sendto        #    0.000 /sec                      
+             13888      syscalls:sys_enter_getsockopt    #    5.060 K/sec                     
+                 0      syscalls:sys_enter_recvfrom      #    0.000 /sec                      
+                 0      syscalls:sys_enter_select        #    0.000 /sec                      
+             13869      syscalls:sys_enter_poll          #    5.053 K/sec                     
+
+      10.001385165 seconds time elapsed
+

@@ -1,0 +1,120 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 7K of event 'cycles:P'
+# Event count (approx.): 17785479675
+#
+# Overhead  Command      Shared Object      Symbol                                    
+# ........  ...........  .................  ..........................................
+#
+    56.75%  snf-capture  snuffles           [.] session_table_update
+            |          
+            |--34.33%--session_table_update
+            |          |          
+            |           --34.31%--capture_callback
+            |                     0x7f31aea0e527
+            |          
+            |--8.04%--dissect_packet
+            |          |          
+            |           --7.93%--capture_callback
+            |                     0x7f31aea0e527
+            |          
+            |--3.32%--ringbuf_producer_commit
+            |          |          
+            |           --3.23%--capture_callback
+            |                     0x7f31aea0e527
+            |          
+            |--1.61%--capture_callback
+            |          |          
+            |           --1.51%--0x7f31aea0e527
+            |          
+            |--1.31%--ringbuf_producer_next
+            |          0x7f31aea0e527
+            |          
+            |--1.02%--dissect_udp.isra.0
+            |          |          
+            |           --0.61%--capture_callback
+            |                     0x7f31aea0e527
+            |          
+            |--0.86%--dissect_ipv4.isra.0
+            |          capture_callback
+            |          0x7f31aea0e527
+            |          
+             --0.59%--pthread_mutex_lock
+                       capture_callback
+                       0x7f31aea0e527
+
+    18.30%  snf-capture  snuffles           [.] dissect_packet
+            |          
+            |--11.22%--session_table_update
+            |          |          
+            |           --11.19%--capture_callback
+            |                     0x7f31aea0e527
+            |          
+            |--2.58%--dissect_packet
+            |          |          
+            |           --2.55%--capture_callback
+            |                     0x7f31aea0e527
+            |          
+            |--1.26%--ringbuf_producer_commit
+            |          |          
+            |           --1.25%--capture_callback
+            |                     0x7f31aea0e527
+            |          
+             --0.59%--capture_callback
+                       |          
+                        --0.54%--0x7f31aea0e527
+
+     2.85%  snf-capture  libc.so.6          [.] pthread_mutex_lock
+            |          
+             --1.95%--session_table_update
+                       |          
+                        --1.91%--capture_callback
+                                  0x7f31aea0e527
+
+     2.81%  snf-capture  snuffles           [.] capture_callback
+            |          
+             --1.77%--session_table_update
+                       |          
+                        --1.76%--capture_callback
+                                  0x7f31aea0e527
+
+     1.89%  snf-capture  snuffles           [.] dissect_udp.isra.0
+            |          
+             --1.19%--session_table_update
+                       capture_callback
+                       0x7f31aea0e527
+
+     1.66%  snf-capture  snuffles           [.] ringbuf_producer_commit
+            |          
+             --0.99%--session_table_update
+                       capture_callback
+                       0x7f31aea0e527
+
+     1.15%  snf-capture  snuffles           [.] dissect_ipv4.isra.0
+            |          
+             --0.70%--session_table_update
+                       capture_callback
+                       0x7f31aea0e527
+
+     1.07%  snf-capture  snuffles           [.] ringbuf_producer_next
+     0.70%  snf-capture  snuffles           [.] entry_release_streams
+     0.30%  snf-capture  libc.so.6          [.] pthread_mutex_unlock
+     0.28%  snf-capture  snuffles           [.] pthread_mutex_unlock@plt
+     0.24%  snf-capture  libpcap.so.1.10.5  [.] 0x0000000000009498
+     0.23%  snf-capture  libpcap.so.1.10.5  [.] 0x000000000000949c
+     0.22%  snf-capture  snuffles           [.] memcmp@plt
+     0.19%  snf-capture  libpcap.so.1.10.5  [.] 0x0000000000009554
+     0.17%  snf-capture  libpcap.so.1.10.5  [.] 0x00000000000094a8
+     0.17%  snf-capture  libpcap.so.1.10.5  [.] 0x00000000000094a0
+     0.15%  snf-capture  libc.so.6          [.] 0x0000000000097725
+     0.14%  snf-capture  libpcap.so.1.10.5  [.] 0x00000000000099c0
+     0.14%  snf-capture  snuffles           [.] pthread_mutex_lock@plt
+     0.14%  snf-capture  libpcap.so.1.10.5  [.] 0x00000000000099d9
+     0.14%  snf-capture  libc.so.6          [.] 0x0000000000097762
+     0.14%  snf-capture  [kernel.kallsyms]  [k] sched_balance_update_blocked_averages
+     0.13%  snf-capture  libpcap.so.1.10.5  [.] 0x00000000000099de
+     0.13%  snf-capture  libpcap.so.1.10.5  [.] 0x0000000000009980
+     0.13%  snf-capture  libc.so.6          [.] 0x00000000001624c1

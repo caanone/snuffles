@@ -119,11 +119,12 @@
   <h1 style="margin-top:10px">Snuffles at 2.8 Mpps</h1>
   <p class="lede prose">We built a six-container rig on this host, drove snuffles with kernel <code>pktgen</code>, userland floods, SYN floods, HTTP, iperf3 and a 20 k-packet mixed-protocol corpus, profiled every path, and then measured six targeted changes. The capture thread of v1.3.1 saturates one core at about <b>600 kpps</b>; with the changes it holds <b>1 M pps with zero loss</b> and tops out near <b>1.16 Mpps</b>. Four correctness bugs surfaced on the way. Below: what breaks, why, what each fix bought, how established tools do it, and a ranked plan.</p>
 
+  <div class="note prose"><b>Update, 29 Aug:</b> plan items 1–10 and 13 are now implemented on <code>exp/all</code> and re-measured — see <a href="#after">After the plan</a>. The rig can no longer saturate the capture thread: 2.56 Mpps offered (its maximum) is captured with <b>0% loss at 29% of one core</b>, with 1 M flows too; RSS is 87 MB instead of 630 MB. The numbers in the KPI row and the sections below are the original 28 Aug results (v1.3.1 vs the first six experiments) and remain the evidence for the plan.</div>
   <div class="kpis">
-    <div class="kpi"><div class="label">Capture ceiling, 64 B packets, one core</div><div class="value">1.16<small>Mpps</small></div><div class="delta up">▲ from 595 kpps (+95%)</div></div>
+    <div class="kpi"><div class="label">Capture ceiling, 64 B packets, one core</div><div class="value">1.16<small>Mpps</small></div><div class="delta up">▲ from 595 kpps (+95%) · now &gt; 2.56 Mpps</div></div>
     <div class="kpi"><div class="label">Packets dropped at 1 M pps offered (quiet)</div><div class="value">0<small>%</small></div><div class="delta up">▼ from 39.4%</div></div>
-    <div class="kpi"><div class="label">TUI at 1 M pps, kernel drops</div><div class="value">6.9<small>%</small></div><div class="delta up">▼ from 59.8%</div></div>
-    <div class="kpi"><div class="label">Syslog forwarder</div><div class="value">255<small>kpps</small></div><div class="delta up">▲ from 154 kpps (+66%), 100% delivered</div></div>
+    <div class="kpi"><div class="label">TUI at 1 M pps, kernel drops</div><div class="value">6.9<small>%</small></div><div class="delta up">▼ from 59.8% · now 0%</div></div>
+    <div class="kpi"><div class="label">Syslog forwarder</div><div class="value">255<small>kpps</small></div><div class="delta up">▲ from 154 kpps (+66%), 100% delivered · now 330 k off-thread</div></div>
     <div class="kpi"><div class="label">Bugs found &amp; fixed on the way</div><div class="value">4</div><div class="delta">raw <code>-i</code>, live <code>-c</code>, lapped output, Windows build</div></div>
     <div class="kpi"><div class="label">Measured runs</div><div class="value">48<small>+ 47</small></div><div class="delta">baseline matrix + experiment &amp; validation runs</div></div>
   </div>
@@ -340,6 +341,24 @@
   </ol>
   <p class="note prose">The through-line: every practice the established tools converge on — batch, never signal per packet; size the kernel buffer; keep outputs and display off the capture thread; key flows on bytes, not strings; copy no more than you must; count drops at every hop — corresponds to a cost we measured in v1.3.1, and the first five items are already implemented and measured on <code>exp/all</code>.</p>
   </div>
+
+  <h2 id="after">After the plan — waves 1 and 2 re-measured (29 Aug)</h2>
+  <p class="prose">Implemented on <code>exp/all</code> since the report was written: binary session keys with a sized table, O(1) eviction and an entry pool (1 M distinct inserts 1 490 → ~130 ns each); TUI capped at ~30 fps with 250 ms session snapshots; headless exit summary by default, <code>SIGUSR1</code>, <code>--cpu/--rt</code>, offline <code>-r</code> back-pressure; the raw build on a TPACKET_V3 ring with drain-before-filter; lazy dissection (no string formatting on the capture thread: 0.7 → 0.13 µs per packet); a 20 MB payload arena instead of the 655 MB pool; and a dedicated output thread for syslog and <code>-w</code>. Nine scenarios were re-run on the same rig against the same generators (30 s each).</p>
+  <div class="tbl"><table>
+    <thead><tr><th>Scenario</th><th class="n">offered</th><th class="n">v1.3.1</th><th class="n">first six experiments</th><th class="n">now</th><th class="n">kernel drop now</th><th class="n">capture cpu</th><th class="n">rss MB</th><th>sinks</th></tr></thead>
+    <tbody>
+      <tr><td>64 B pktgen, 8 threads, maximum</td><td class="n">2.56 M</td><td class="n">595 k</td><td class="n">1.16 M</td><td class="n">2.56 M</td><td class="n">0.0%</td><td class="n">29%</td><td class="n">87</td><td>—</td></tr>
+      <tr><td>64 B, 1 M pps offered, quiet</td><td class="n">1.00 M</td><td class="n">606 k</td><td class="n">1.00 M</td><td class="n">1.00 M</td><td class="n">0.0%</td><td class="n">11%</td><td class="n">87</td><td>—</td></tr>
+      <tr><td>64 B, 1 M source flows, maximum</td><td class="n">2.51 M</td><td class="n">260 k</td><td class="n">—</td><td class="n">2.51 M</td><td class="n">0.0%</td><td class="n">56%</td><td class="n">119</td><td>100 k sessions at cap</td></tr>
+      <tr><td>raw-socket build, maximum</td><td class="n">2.53 M</td><td class="n">410 k</td><td class="n">581 k</td><td class="n">2.53 M</td><td class="n">0.0%</td><td class="n">28%</td><td class="n">86</td><td>—</td></tr>
+      <tr><td>headless text at 1 M pps</td><td class="n">1.00 M</td><td class="n">398 k</td><td class="n">894 k</td><td class="n">1.00 M</td><td class="n">0.0%</td><td class="n">12%</td><td class="n">87</td><td>printer emitted 83%, 17% lapped (counted as <code>missed</code>)</td></tr>
+      <tr><td>syslog forwarder at 1 M pps</td><td class="n">1.00 M</td><td class="n">154 k</td><td class="n">210 k (255 k connected)</td><td class="n">1.00 M</td><td class="n">0.0%</td><td class="n">8%</td><td class="n">14</td><td>output thread sent 330 kpps, 100% delivered; 67% lapped (<code>out_missed</code>)</td></tr>
+      <tr><td>TUI at 1 M pps</td><td class="n">1.00 M</td><td class="n">402 k</td><td class="n">921 k</td><td class="n">1.00 M</td><td class="n">0.0%</td><td class="n">12%</td><td class="n">92</td><td>—</td></tr>
+      <tr><td>TUI sessions view, 1 M flows, 1 M pps</td><td class="n">1.00 M</td><td class="n">100 k</td><td class="n">136 k</td><td class="n">1.00 M</td><td class="n">0.0%</td><td class="n">24%</td><td class="n">156</td><td>100 k sessions at cap</td></tr>
+      <tr><td>iperf3 TCP, GSO super-frames</td><td class="n">105 k</td><td class="n">104 k</td><td class="n">70 k</td><td class="n">105 k</td><td class="n">0.0%</td><td class="n">25%</td><td class="n">87</td><td>—</td></tr>
+    </tbody>
+  </table></div>
+  <p class="small prose">Reading the sinks column honestly: capture no longer loses anything the kernel delivers, so the remaining limits moved to the consumers and are now counted where they happen — the single-thread text printer manages ~840 kpps and the syslog output thread ~330 kpps per thread, and both report what they could not keep up with (<code>missed</code>, <code>out_missed</code>) instead of stalling capture. Those are the next items if export throughput matters: integer-formatted syslog, several output threads, or a faster line format. Remaining plan items not done: <code>PACKET_FANOUT</code> workers (no longer needed to beat this rig), AF_XDP (needs a physical NIC), the rig's NDR search is implemented but not yet used for a regression gate. Results: <code>loadtest/results/final/</code>.</p>
 
   <h2>Method &amp; caveats</h2>
   <ul class="prose small">

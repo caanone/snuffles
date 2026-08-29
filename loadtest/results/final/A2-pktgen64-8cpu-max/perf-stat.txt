@@ -1,0 +1,22 @@
+# started on Sat Aug 29 00:26:40 2026
+
+
+ Performance counter stats for process id '317':
+
+           2947.53 msec task-clock                       #    0.295 CPUs utilized             
+             14995      context-switches                 #    5.087 K/sec                     
+               285      cpu-migrations                   #   96.691 /sec                      
+                 0      page-faults                      #    0.000 /sec                      
+       11354678102      cycles                           #    3.852 GHz                       
+       19361444907      instructions                     #    1.71  insn per cycle            
+         113902834      cache-misses                                                          
+           8069170      branch-misses                                                         
+                10      syscalls:sys_enter_write         #    3.393 /sec                      
+                 0      syscalls:sys_enter_sendto        #    0.000 /sec                      
+                40      syscalls:sys_enter_getsockopt    #   13.571 /sec                      
+                 0      syscalls:sys_enter_recvfrom      #    0.000 /sec                      
+                 0      syscalls:sys_enter_select        #    0.000 /sec                      
+             14747      syscalls:sys_enter_poll          #    5.003 K/sec                     
+
+      10.001679947 seconds time elapsed
+
