@@ -1,5 +1,17 @@
 #include "session.h"
 #include "test_common.h"
+
+/* ASan/UBSan builds skip the wall-clock bound of the scale test. */
+#if defined(__SANITIZE_ADDRESS__)
+  #define SESSION_TEST_SANITIZED 1
+#elif defined(__has_feature)
+  #if __has_feature(address_sanitizer)
+    #define SESSION_TEST_SANITIZED 1
+  #endif
+#endif
+#ifndef SESSION_TEST_SANITIZED
+  #define SESSION_TEST_SANITIZED 0
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -254,7 +266,7 @@ int main(void) {
         /* Wall-clock bound: 20 ms natively on x86-64, but the sanitized
          * arm64 CI runner needs ~4.3 s (21 us/insert under ASan/UBSan), so
          * only enforce it in unsanitized builds. */
-#if !defined(__SANITIZE_ADDRESS__) && !(defined(__has_feature) && __has_feature(address_sanitizer))
+#if !SESSION_TEST_SANITIZED
         CHECK(dt < 2.0);
 #endif
         CHECK(session_table_count(st) == cap);
