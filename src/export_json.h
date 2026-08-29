@@ -10,7 +10,8 @@ int export_json(const char *path, ringbuf_t *rb,
                 const display_filter_t *filt,
                 const char *iface, const char *bpf_filter);
 
-/* Write one packet as a single JSON object on one line (JSON Lines). */
+/* Write one packet as a single JSON object on one line (JSON Lines).
+ * Reads the text columns: the caller runs summary_format() first. */
 void json_line_write(FILE *f, const pkt_summary_t *s);
 
 #endif /* EXPORT_JSON_H */

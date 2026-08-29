@@ -1,6 +1,11 @@
 #include "export_json.h"
 #include "test_common.h"
 #include <stdlib.h>
+#ifdef _WIN32
+  #include <process.h>
+#else
+  #include <unistd.h>
+#endif
 #include <string.h>
 
 /* json_line_write() builds each line in a stack buffer and emits it with
@@ -219,6 +224,51 @@ int main(void) {
         CHECK(out[n - 2] == '}' && out[n - 1] == '\n');
         CHECK(memchr(out, '\n', n - 1) == NULL);   /* one record, one line */
         printf("worst-case line: %zu bytes\n", n);
+    }
+
+    /* ── the file exporter formats pending records on its copy ── */
+    {
+        ringbuf_t *rb = ringbuf_create(8, 256);
+        CHECK(rb != NULL);
+        pkt_record_t *r = ringbuf_producer_next(rb);
+        memset(&r->summary, 0, sizeof(r->summary));
+        r->summary.text_pending = 1;
+        r->summary.addr_family = 4;
+        r->summary.src_addr[0] = 10; r->summary.src_addr[3] = 9;
+        r->summary.dst_addr[0] = 8; r->summary.dst_addr[1] = 8;
+        r->summary.dst_addr[2] = 8; r->summary.dst_addr[3] = 8;
+        r->summary.src_port = 5353; r->summary.dst_port = 53;
+        r->summary.l4_proto = r->summary.highest_proto = PROTO_UDP;
+        r->summary.proto_label = proto_label_of(PROTO_UDP);
+        r->summary.info_kind = INFO_UDP;
+        r->summary.u.udp.len = 40;
+        r->summary.length = 82;
+        r->raw_len = 2;
+        r->raw_data[0] = 0xde; r->raw_data[1] = 0xad;
+        ringbuf_producer_commit(rb);
+
+        char path[64];
+        snprintf(path, sizeof(path), "test_export_json_%ld.json", (long)getpid());
+        display_filter_t none;
+        filter_compile("", &none);
+        CHECK(export_json(path, rb, &none, "lo", "") == 1);
+        FILE *f = fopen(path, "r");
+        CHECK(f != NULL);
+        char buf[2048];
+        size_t n = f ? fread(buf, 1, sizeof(buf) - 1, f) : 0;
+        if (f) fclose(f);
+        remove(path);
+        buf[n] = '\0';
+        CHECK(strstr(buf, "\"src_ip\": \"10.0.0.9\"") != NULL);
+        CHECK(strstr(buf, "\"dst_ip\": \"8.8.8.8\"") != NULL);
+        CHECK(strstr(buf, "\"protocol\": \"UDP\"") != NULL);
+        CHECK(strstr(buf, "\"info\": \"5353 -> 53 Len=40\"") != NULL);
+        CHECK(strstr(buf, "\"hex\": \"de ad\"") != NULL);
+        /* the ring slot itself was never formatted */
+        pkt_record_t back;
+        CHECK(ringbuf_read(rb, 0, &back, NULL) == 1);
+        CHECK(back.summary.text_pending == 1 && back.summary.info[0] == 0);
+        ringbuf_destroy(rb);
     }
 
     /* ── a burst: consecutive records do not leak state ──────── */

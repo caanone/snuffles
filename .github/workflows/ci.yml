@@ -148,7 +148,7 @@ jobs:
             fuzz/fuzz_dissect.c src/dissect.c -o fuzz_dissect
           clang -std=c11 -g -O1 -fsanitize=fuzzer,address,undefined \
             -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -Iinclude -Isrc \
-            fuzz/fuzz_filter.c src/filter.c -o fuzz_filter
+            fuzz/fuzz_filter.c src/filter.c src/dissect.c -o fuzz_filter
       - name: Fuzz dissectors
         run: ./fuzz_dissect -runs=200000 -max_len=1500 -print_final_stats=1
       - name: Fuzz filter compiler

@@ -125,15 +125,22 @@ $(OBJDIR)/tests/test_%: tests/test_%.c src/%.c | $(OBJDIR)/tests
 	$(CC) $(BASE_CFLAGS) $(TEST_FLAGS) -Isrc $(CFLAGS) -o $@ $^ \
 	      $(TEST_LDFLAGS) $(LDFLAGS) $(TEST_LDLIBS)
 
+# the display filter formats text columns on demand (summary_format)
+$(OBJDIR)/tests/test_filter: tests/test_filter.c src/filter.c src/dissect.c \
+                             | $(OBJDIR)/tests
+	$(CC) $(BASE_CFLAGS) $(TEST_FLAGS) -Isrc $(CFLAGS) -o $@ $^ \
+	      $(TEST_LDFLAGS) $(LDFLAGS) $(TEST_LDLIBS)
+
 # export_json.c also walks the ring through the display filter
 $(OBJDIR)/tests/test_export_json: tests/test_export_json.c src/export_json.c \
-                                  src/filter.c src/ringbuf.c | $(OBJDIR)/tests
+                                  src/filter.c src/dissect.c src/ringbuf.c \
+                                  | $(OBJDIR)/tests
 	$(CC) $(BASE_CFLAGS) $(TEST_FLAGS) -Isrc $(CFLAGS) -o $@ $^ \
 	      $(TEST_LDFLAGS) $(LDFLAGS) $(TEST_LDLIBS)
 
 # test_ui.c includes src/ui.c (white-box access to the pacing counters)
 # and stubs the capture/export entry points; it links what the UI uses.
-$(OBJDIR)/tests/test_ui: tests/test_ui.c src/filter.c src/stats.c \
+$(OBJDIR)/tests/test_ui: tests/test_ui.c src/filter.c src/dissect.c src/stats.c \
                          src/session.c src/ringbuf.c | $(OBJDIR)/tests
 	$(CC) $(BASE_CFLAGS) $(TEST_FLAGS) -Isrc $(CFLAGS) -o $@ $^ \
 	      $(TEST_LDFLAGS) $(LDFLAGS) $(TEST_LDLIBS)

@@ -148,9 +148,11 @@ static int process_packet(capture_ctx_t *ctx, const uint8_t *pkt,
             } else if (ver == 6 && caplen >= 40) {
                 dissect_packet(pkt, caplen, 229 /* DLT_IPV6 */, &rec->summary);
             } else {
-                snprintf(rec->summary.protocol, sizeof(rec->summary.protocol), "RAW");
-                snprintf(rec->summary.info, sizeof(rec->summary.info),
-                         "Raw IP (ver=%d, len=%u)", ver, caplen);
+                rec->summary.proto_label  = LABEL_RAW;
+                rec->summary.info_kind    = INFO_RAWIP;
+                rec->summary.u.rawip.ver  = ver;
+                rec->summary.u.rawip.len  = caplen;
+                rec->summary.text_pending = 1;
             }
         }
     }

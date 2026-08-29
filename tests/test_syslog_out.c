@@ -79,11 +79,24 @@ static int commas(const char *s) {
 
 /* ── fixtures ────────────────────────────────────────────────── */
 
+/* The sender reads the binary address pair and the protocol label, the
+ * way records come off the dissector; the text columns stay empty. */
+static void set_v4(uint8_t *addr, const char *dotted) {
+    unsigned a = 0, b = 0, c = 0, d = 0;
+    memset(addr, 0, 16);
+    if (sscanf(dotted, "%u.%u.%u.%u", &a, &b, &c, &d) == 4) {
+        addr[0] = (uint8_t)a; addr[1] = (uint8_t)b;
+        addr[2] = (uint8_t)c; addr[3] = (uint8_t)d;
+    }
+}
+
 static void tcp_pkt(pkt_summary_t *p) {
     memset(p, 0, sizeof(*p));
-    snprintf(p->src_ip, sizeof(p->src_ip), "10.0.0.1");
-    snprintf(p->dst_ip, sizeof(p->dst_ip), "93.184.216.34");
-    snprintf(p->protocol, sizeof(p->protocol), "TCP");
+    set_v4(p->src_addr, "10.0.0.1");
+    set_v4(p->dst_addr, "93.184.216.34");
+    p->addr_family = 4;
+    p->proto_label = proto_label_of(PROTO_TCP);
+    p->text_pending = 1;
     p->src_port = 55555; p->dst_port = 443;
     p->ts.tv_sec = 1774973651;
     p->length = 54;
@@ -96,9 +109,11 @@ static void tcp_pkt(pkt_summary_t *p) {
 
 static void udp_pkt(pkt_summary_t *p) {
     memset(p, 0, sizeof(*p));
-    snprintf(p->src_ip, sizeof(p->src_ip), "192.168.1.100");
-    snprintf(p->dst_ip, sizeof(p->dst_ip), "8.8.8.8");
-    snprintf(p->protocol, sizeof(p->protocol), "DNS");
+    set_v4(p->src_addr, "192.168.1.100");
+    set_v4(p->dst_addr, "8.8.8.8");
+    p->addr_family = 4;
+    p->proto_label = proto_label_of(PROTO_DNS);
+    p->text_pending = 1;
     p->src_port = 54321; p->dst_port = 53;
     p->ts.tv_sec = 1774973652;
     p->length = 54;
@@ -136,14 +151,31 @@ static void test_format(syslog_out_t *sl, lsock_t ls) {
     CHECK(commas(lines[0]) == 15);
 
     /* no L3 info: nothing queued, nothing sent */
-    p.src_ip[0] = '\0';
+    p.addr_family = 0;
     syslog_out_send(sl, &p);
     CHECK(syslog_out_pending(sl) == 0);
     syslog_out_flush(sl);
     CHECK(collect(ls, lines, 128, 1, 50) == 0);
 
+    /* IPv6 pair, and a hand-built summary whose protocol string stands
+     * in for a missing label */
+    tcp_pkt(&p);
+    static const uint8_t a6[16] = { 0xfe, 0x80, 0,0,0,0,0,0, 0,0,0,0,0,0,0, 1 };
+    static const uint8_t b6[16] = { 0x20, 0x01, 0x0d, 0xb8, 0,0,0,0, 0,0,0,0, 0,0,0, 2 };
+    memcpy(p.src_addr, a6, 16);
+    memcpy(p.dst_addr, b6, 16);
+    p.addr_family = 6;
+    p.proto_label = 0;
+    snprintf(p.protocol, sizeof(p.protocol), "TCP6");
+    syslog_out_send(sl, &p);
+    syslog_out_flush(sl);
+    CHECK(collect(ls, lines, 128, 1, 500) == 1);
+    CHECK(strcmp(lines[0],
+        "fe80::1,55555,2001:db8::2,443,1774973651,54,TCP6,"
+        "64,1,0x0000,0x4000,SA,100,0,65535,0xbeef\n") == 0);
+
     syslog_out_counts(sl, &sent, &failed);
-    CHECK(sent == 2);
+    CHECK(sent == 3);
     CHECK(failed == 0);
 }
 
@@ -205,7 +237,7 @@ static void test_self(syslog_out_t *sl, const char *target) {
 
     /* third-party UDP to the same port is NOT ours (source port differs) */
     udp_pkt(&p);
-    snprintf(p.dst_ip, sizeof(p.dst_ip), "127.0.0.1");
+    set_v4(p.dst_addr, "127.0.0.1");
     p.dst_port = (uint16_t)port;
     p.src_port = 1;
     CHECK(syslog_out_is_self(sl, &p) == 0);

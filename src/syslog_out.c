@@ -52,7 +52,8 @@ struct syslog_out {
     int                  connected;   /* connect() succeeded: send without an address */
     sock_t              sock;
     struct sockaddr_in  dest;
-    char                dest_ip[46];   /* resolved IP string for self-check */
+    char                dest_ip[46];   /* resolved IP string (banner) */
+    uint8_t             dest_addr[4];  /* same, binary, for the self-check */
     uint16_t            dest_port;
     uint16_t            src_port;      /* our bound port, for the self-check */
     atomic_uint_fast64_t sent;
@@ -158,8 +159,9 @@ syslog_out_t *syslog_out_create(const char *host_port, const char *src_iface) {
     sl->dest.sin_port = htons(port);
     sl->dest_port = port;
 
-    /* store resolved IP for self-check */
+    /* store resolved IP for the banner and the self-check */
     inet_ntop(AF_INET, &sl->dest.sin_addr, sl->dest_ip, sizeof(sl->dest_ip));
+    memcpy(sl->dest_addr, &sl->dest.sin_addr, 4);
 
     freeaddrinfo(res);
 
@@ -247,28 +249,30 @@ syslog_out_t *syslog_out_create(const char *host_port, const char *src_iface) {
 
 int syslog_out_is_self(const syslog_out_t *sl, const pkt_summary_t *pkt) {
     if (!sl) return 0;
+    /* the collector is IPv4: compare the binary address pair (the text
+     * columns are not produced on the capture thread) */
+    if (pkt->addr_family != 4) return 0;
+    int to_dest   = memcmp(pkt->dst_addr, sl->dest_addr, 4) == 0;
+    int from_dest = memcmp(pkt->src_addr, sl->dest_addr, 4) == 0;
 
     /* our own datagrams to the collector */
-    if (pkt->l4_proto == PROTO_UDP &&
+    if (pkt->l4_proto == PROTO_UDP && to_dest &&
         pkt->dst_port == sl->dest_port &&
-        (sl->src_port == 0 || pkt->src_port == sl->src_port) &&
-        strcmp(pkt->dst_ip, sl->dest_ip) == 0) {
+        (sl->src_port == 0 || pkt->src_port == sl->src_port)) {
         return 1;
     }
 
     /* replies from the collector back to us */
-    if (pkt->l4_proto == PROTO_UDP &&
+    if (pkt->l4_proto == PROTO_UDP && from_dest &&
         pkt->src_port == sl->dest_port &&
-        (sl->src_port == 0 || pkt->dst_port == sl->src_port) &&
-        strcmp(pkt->src_ip, sl->dest_ip) == 0) {
+        (sl->src_port == 0 || pkt->dst_port == sl->src_port)) {
         return 1;
     }
 
     /* ICMP errors involving the collector (e.g. port unreachable while it
      * is down): forwarding them would elicit more of them, forever. */
     if ((pkt->l4_proto == PROTO_ICMP4 || pkt->l4_proto == PROTO_ICMP6) &&
-        (strcmp(pkt->src_ip, sl->dest_ip) == 0 ||
-         strcmp(pkt->dst_ip, sl->dest_ip) == 0)) {
+        (from_dest || to_dest)) {
         return 1;
     }
 
@@ -281,7 +285,18 @@ void syslog_out_send(syslog_out_t *sl, const pkt_summary_t *pkt) {
     if (!sl || sl->sock == SOCK_INVALID) return;
 
     /* skip packets without IP info */
-    if (!pkt->src_ip[0] || !pkt->dst_ip[0]) return;
+    if (!pkt->addr_family) return;
+
+    /* Address and protocol text from the binary summary: this runs on the
+     * capture thread, so only what the record needs is produced (never the
+     * info line). ns_ip_str writes IPv4 by hand; IPv6 goes through
+     * inet_ntop. A hand-built summary with the label unset keeps its
+     * protocol string. */
+    char src_ip[46], dst_ip[46];
+    ns_ip_str(pkt->addr_family, pkt->src_addr, src_ip, sizeof(src_ip));
+    ns_ip_str(pkt->addr_family, pkt->dst_addr, dst_ip, sizeof(dst_ip));
+    const char *protocol = pkt->proto_label ? proto_label_str(pkt->proto_label)
+                                            : pkt->protocol;
 
     /* format TCP flags string */
     char flags[16] = "-";
@@ -308,10 +323,10 @@ void syslog_out_send(syslog_out_t *sl, const pkt_summary_t *pkt) {
         len = snprintf(msg, SYSLOG_MSG_MAX,
             "%s,%u,%s,%u,%ld,%u,%s,"
             "%u,%u,0x%04x,0x%04x,%s,%u,%u,%u,0x%04x\n",
-            pkt->src_ip, pkt->src_port,
-            pkt->dst_ip, pkt->dst_port,
+            src_ip, pkt->src_port,
+            dst_ip, pkt->dst_port,
             (long)pkt->ts.tv_sec,
-            pkt->length, pkt->protocol,
+            pkt->length, protocol,
             pkt->ip_ttl, pkt->ip_id,
             pkt->ip_checksum, pkt->ip_frag_off,
             flags, pkt->tcp_seq, pkt->tcp_ack,
@@ -320,10 +335,10 @@ void syslog_out_send(syslog_out_t *sl, const pkt_summary_t *pkt) {
         len = snprintf(msg, SYSLOG_MSG_MAX,
             "%s,%u,%s,%u,%ld,%u,%s,"
             "%u,%u,0x%04x,0x%04x,,,,,\n",
-            pkt->src_ip, pkt->src_port,
-            pkt->dst_ip, pkt->dst_port,
+            src_ip, pkt->src_port,
+            dst_ip, pkt->dst_port,
             (long)pkt->ts.tv_sec,
-            pkt->length, pkt->protocol,
+            pkt->length, protocol,
             pkt->ip_ttl, pkt->ip_id,
             pkt->ip_checksum, pkt->ip_frag_off);
     }

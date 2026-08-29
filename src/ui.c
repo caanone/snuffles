@@ -429,8 +429,10 @@ static uint32_t filtered_count(ui_ctx_t *ctx) {
  * valid until the next filtered_peek call. */
 static const pkt_record_t *filtered_peek(ui_ctx_t *ctx, uint32_t idx) {
     if (!dfilter_active(ctx)) {
-        if (ringbuf_read(ctx->rb, idx, &ctx->peek_rec, ctx->peek_data))
+        if (ringbuf_read(ctx->rb, idx, &ctx->peek_rec, ctx->peek_data)) {
+            summary_format(&ctx->peek_rec.summary);
             return &ctx->peek_rec;
+        }
         return NULL;
     }
 
@@ -442,8 +444,10 @@ static const pkt_record_t *filtered_peek(ui_ctx_t *ctx, uint32_t idx) {
     if (seq < oldest)
         return NULL;   /* raced away between sync and read */
     if (ringbuf_read(ctx->rb, (uint32_t)(seq - oldest),
-                     &ctx->peek_rec, ctx->peek_data))
+                     &ctx->peek_rec, ctx->peek_data)) {
+        summary_format(&ctx->peek_rec.summary);
         return &ctx->peek_rec;
+    }
     return NULL;
 }
 

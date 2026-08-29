@@ -316,6 +316,7 @@ static void run_headless(ringbuf_t *rb, capture_ctx_t *cap,
              * shift to a different (newer) record after a lap. */
             pkt_record_t rec;
             if (ringbuf_read_seq(rb, last, &rec, NULL)) {
+                summary_format(&rec.summary);   /* text columns, our copy */
                 const pkt_summary_t *s = &rec.summary;
                 if (cfg->jsonl) {
                     json_line_write(stdout, s);

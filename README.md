@@ -555,13 +555,21 @@ sudo ./snuffles -i en0 -c 100 -o capture.json
 
 - **Two threads**: capture (producer) + UI (consumer)
 - **Ring buffer**: pre-allocated, no malloc in hot path
+- **Lazy dissection**: the capture thread stores a binary summary only
+  (addresses, ports, ids, MAC bytes, the info line's ingredients); the text
+  columns (`src_ip`, `info`, ...) are produced by `summary_format()` on the
+  consumer's copy when a record is printed, exported, searched or matched
+  by a text predicate. No `snprintf`/`inet_ntop` runs per packet on the
+  capture thread; syslog formats only the two addresses it sends
 - **Silent mode**: capture thread only, main thread sleeps
 - **Session table**: binary canonical 5-tuple key (both directions map to one
   entry), seeded hash over 2x-cap power-of-two buckets, preallocated entry
   pool, O(1) LRU eviction at the 100K cap; non-first IP fragments are not
   tracked. Stream buffers (16 MB budget) are recycled: closed flows are
   reclaimed first, idle holders (60 s) are released, oldest holder otherwise
-- **Display filter**: recursive descent, 48-node fixed AST
+- **Display filter**: recursive descent, 48-node fixed AST; IP, port,
+  protocol, length, VLAN and session predicates evaluate on the binary
+  fields, MAC and `info` predicates format a private copy of the record
 - **Syslog**: single UDP socket (16 MB send buffer), 32-record batch, non-blocking `sendmmsg`, loop guard
 
 ---
