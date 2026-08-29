@@ -228,9 +228,9 @@ int main(void) {
 
     /* ── the file exporter formats pending records on its copy ── */
     {
-        ringbuf_t *rb = ringbuf_create(8, 256);
+        ringbuf_t *rb = ringbuf_create(8, 256, 0);
         CHECK(rb != NULL);
-        pkt_record_t *r = ringbuf_producer_next(rb);
+        pkt_record_t *r = ringbuf_producer_next(rb, 2);
         memset(&r->summary, 0, sizeof(r->summary));
         r->summary.text_pending = 1;
         r->summary.addr_family = 4;

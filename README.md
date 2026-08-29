@@ -38,7 +38,7 @@ dependencies beyond (optional) libpcap.
 - Session/stream tracking `[S]` — bidirectional 5-tuple aggregation with TCP state machine
 - Protocol statistics `[V]` — live per-protocol breakdown with rates and drop counts
 - Syslog forwarding `--syslog` — real-time UDP CSV with full header details, feedback loop prevention
-- Silent mode `-q` — no packet output, minimal user-space memory (~40KB ring; the libpcap build adds a kernel capture buffer, `-B`), pure syslog forwarder
+- Silent mode `-q` — no packet output, minimal user-space memory (~3.4MB ring: 4096 records + a 1MB payload arena; the libpcap build adds a kernel capture buffer, `-B`), pure syslog forwarder
 - ANSI terminal UI with color-coded protocols, scrollable list, detail panel, hex dump, help overlay
 - Streaming write `-w` — tcpdump-style write-while-capturing (`-w -` pipes into Wireshark)
 - JSON Lines output `--jsonl` — one JSON object per packet on stdout, made for `jq`
@@ -94,7 +94,7 @@ Windows MinGW one-liner:
 gcc -std=c11 -Wall -O2 -DNO_PCAP -D_WIN32_WINNT=0x0601 -Iinclude ^
     src/main.c src/capture_raw.c src/cbpf.c src/dissect.c src/filter.c ^
     src/ringbuf.c src/ui.c src/export_pcap.c src/export_json.c src/stats.c ^
-    src/session.c src/syslog_out.c -o snuffles.exe -lws2_32 -liphlpapi
+    src/session.c src/syslog_out.c src/output.c -o snuffles.exe -lws2_32 -liphlpapi
 ```
 
 ### Cross-Compilation
@@ -257,11 +257,11 @@ lists the first few preset names.
 
 | Mode | Flags | Memory | Output |
 |------|-------|--------|--------|
-| **TUI** | (default) | ~24MB ring + sessions | Interactive terminal UI |
-| **Headless** | `--no-ui` | ~19MB ring + sessions | Packets to stdout |
-| **Headless + export** | `--no-ui -o file` | ~19MB ring + sessions | Stdout + file on exit |
-| **Headless + syslog** | `--no-ui --syslog h:p` | ~16KB ring, no sessions | Stdout + UDP syslog |
-| **Silent syslog** | `-q --syslog h:p` | ~16KB ring, no sessions | UDP syslog only |
+| **TUI** | (default) | ~26MB ring (20MB payload arena + records) + sessions | Interactive terminal UI |
+| **Headless** | `--no-ui` | ~26MB ring + sessions | Packets to stdout |
+| **Headless + export** | `--no-ui -o file` | ~26MB ring + sessions | Stdout + file on exit |
+| **Headless + syslog** | `--no-ui --syslog h:p` | ~3.4MB ring, no sessions | Stdout + UDP syslog |
+| **Silent syslog** | `-q --syslog h:p` | ~3.4MB ring, no sessions | UDP syslog only |
 
 ---
 
@@ -435,23 +435,37 @@ Packets to/from the syslog destination are automatically excluded.
 
 ### Delivery
 
-Records are queued on the capture thread and handed to the kernel in
-batches of up to 32 with one non-blocking `sendmmsg(2)` (Linux; one
-non-blocking `sendto(2)` per record elsewhere). A batch leaves as soon as
-the capture loop goes idle, so a record never waits longer than one
-dispatch cycle (<= 100 ms) at low rates. The socket gets a 16 MB send
-buffer (`SO_SNDBUFFORCE`, needing the root/CAP_NET_ADMIN snuffles still
-holds at that point; unprivileged it falls back to `SO_SNDBUF`, which the
-kernel caps at `net.core.wmem_max`). When even that fills — a slow or absent
-collector, NIC backpressure — the capture thread never blocks: those
-datagrams are dropped and counted as `syslog_fail` in `--stats`, and
-capture (and the kernel drop counters) carry on unaffected.
+`--syslog` and `-w` are served by an output thread (`snf-output`), not by
+the capture thread: it reads committed records from the ring buffer by
+sequence, exactly like the headless printer, and sleeps on the ring's
+wake-up when idle. Syslog records are formatted there and handed to the
+kernel in batches of up to 32 with one non-blocking `sendmmsg(2)` (Linux;
+one non-blocking `sendto(2)` per record elsewhere); a batch leaves as soon
+as the thread catches up with the ring, so a record never waits longer
+than one wake-up at low rates. The socket gets a 16 MB send buffer
+(`SO_SNDBUFFORCE`, needing the root/CAP_NET_ADMIN snuffles still holds at
+that point; unprivileged it falls back to `SO_SNDBUF`, which the kernel
+caps at `net.core.wmem_max`). When even that fills — a slow or absent
+collector, NIC backpressure — the thread never blocks: those datagrams are
+dropped and counted as `syslog_fail` in `--stats`. The `-w` file gets a
+1 MB stdio buffer, flushed whenever the thread goes idle and at exit.
+
+The capture thread is never slowed by either sink: a collector or disk
+that cannot keep up lets the ring wrap past the output thread instead,
+and the records it never saw are counted as `out_missed` in `--stats`
+(so `syslog_sent + syslog_fail + out_missed == captured`). The lean
+`-q --syslog` ring is 4 096 slots (about 4 ms of headroom at 1 M pps;
+`-b` overrides it). Measured on `lo` at 150 kpps with `--syslog`: capture
+thread 5.6-6.0 µs -> 0.8 µs per packet, the same as quiet mode; the
+output thread carries the ~5.4 µs per datagram the kernel charges for
+`sendmmsg` on a loopback path.
 
 ### Counters, summary and placement
 
 Headless modes (`--no-ui`, `--jsonl`, `-q`) print one `summary ...` line to
 stderr at exit — captured, kernel drops (`kdrop`), interface drops, records
-the consumer missed, syslog/stream counts, sessions — even without
+the consumer missed, syslog/stream counts and the records the output thread
+missed (`out_missed`), sessions — even without
 `--stats`; `--no-summary` turns it off, `--stats` adds the same line every
 second (`--stats=FILE` sends everything to a file). `kill -USR1 <pid>`
 prints a `stats ...` line on demand. If the kernel dropped packets, a hint
@@ -461,7 +475,7 @@ GRO/GSO super-frames (`ethtool -K <if> gro off gso off tso off` restores
 wire-sized frames).
 
 `--cpu N` pins the capture thread to CPU N and keeps every other thread
-(the headless consumer or the TUI, and the stats thread) on the other
+(the headless consumer or the TUI, the output and stats threads) on the other
 CPUs; `--rt` runs the capture thread at `SCHED_FIFO` priority 1 (set
 before privileges are dropped, so it needs root or `CAP_SYS_NICE`;
 unprivileged it warns and continues). Both are Linux features (`--rt`
@@ -479,7 +493,7 @@ reader waits for the consumer instead of lapping the ring, so
 
 | Mode | Memory |
 |------|--------|
-| `-q --syslog` | ~40KB ring (64 records + a 16KB payload arena, no sessions) + 18KB syslog batch |
+| `-q --syslog` | ~3.4MB ring (4096 records x 592 bytes + a 4096 x 256-byte payload arena, no sessions) + 18KB syslog batch |
 | `--no-ui --syslog` | same + stdout buffering |
 | TUI + syslog | Full ring buffer + sessions |
 
@@ -499,7 +513,7 @@ view.
 
 These figures cover snuffles' own buffers. Both builds also map the
 kernel capture buffer into the process (64 MB by default, so RSS shows
-~70 MB; the lean `-q --syslog` forwarder defaults to 8 MB, ~13 MB RSS);
+~70 MB; the lean `-q --syslog` forwarder defaults to 8 MB, ~14 MB RSS);
 shrink it further with `-B 1` or `buffer_mb` in the config file where
 memory matters more than burst tolerance. When the raw build has to fall
 back to a socket receive queue (no TPACKET_V3 ring available) that memory
@@ -616,6 +630,7 @@ snuffles/
     +-- ringbuf.c / .h            # Ring buffer + on-demand consumer wakeup
     +-- session.c / .h            # Session tracking hash table
     +-- syslog_out.c / .h         # UDP syslog forwarder
+    +-- output.c / .h             # output thread: --syslog and -w off the ring
     +-- ui.c / .h                 # ANSI TUI
     +-- export_pcap.c / .h        # PCAP writer
     +-- export_json.c / .h        # JSON writer
@@ -641,7 +656,7 @@ Drops from root to original user (sudo) or `nobody` after opening capture device
 | Session table | 100,000 (LRU eviction) |
 | UI render buffer | 4 MB |
 | Filter preview | 2,000 packet scan |
-| Quiet + syslog mode | ~16 KB user-space + kernel capture buffer (`-B`) |
+| Quiet + syslog mode | ~3.4 MB user-space + kernel capture buffer (`-B`) |
 
 ### Parser Hardening
 

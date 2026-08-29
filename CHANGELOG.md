@@ -72,6 +72,25 @@
   `lo` (libpcap build, `-q`): RSS 712 MB -> 88 MB (64 MB of it the kernel
   ring); capture-thread CPU per packet 0.78 -> 0.68 us at 64 B and
   1.11 -> 0.85 us at 1472 B UDP payloads.
+- **`--syslog` and `-w` moved off the capture thread.** An output thread
+  (`snf-output`) reads committed records from the ring buffer by sequence,
+  like the headless printer, formats and sends the syslog batches and
+  writes the `-w` stream (1 MB stdio buffer, flushed when idle and at
+  exit). The capture callbacks no longer touch either sink, so a slow
+  collector or disk can no longer slow capture: the ring wraps past the
+  output thread instead and the records it never saw are counted as
+  `out_missed=` in `--stats` (`syslog_sent + syslog_fail + out_missed ==
+  captured`). The lean `-q --syslog` ring grows from 64 to 4 096 slots
+  (~3.4 MB with its 256-byte-per-slot payload arena) so the thread has
+  headroom; `-b` still overrides it. Offline
+  replay (`-r`) waits for the output thread as it does for the headless
+  consumer, so `-r file -w out.pcap` still copies every packet. Ring
+  buffer: the wake-up handshake now has one slot per blocking consumer
+  (`ringbuf_waiter_*`), with a single waiter count on the producer's
+  path, so the printer/TUI and the output thread each get their own
+  wake-up. Measured on `lo` at 150 kpps with `--syslog`: capture thread
+  5.6-6.0 µs -> 0.8 µs per packet (quiet-mode cost), output thread
+  ~5.4 µs per datagram.
 - **Session table rebuilt for flow churn.** Keys are now a packed binary
   5-tuple (canonical order, so both directions of a flow hit one entry)
   compared with `memcmp` and hashed with a per-process seeded xxHash-style
