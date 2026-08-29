@@ -1,0 +1,69 @@
+{
+  "name": "B3-syslog-1m",
+  "run_id": "final",
+  "status": "ok",
+  "build": "pcap",
+  "mode": "syslog",
+  "iface": "br0",
+  "duration": 30,
+  "perf": true,
+  "traffic": {
+    "kind": "pktgen",
+    "pkt_size": 64,
+    "dst": "sink",
+    "pps": 125000,
+    "flows": 1,
+    "gens": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "cpus": [
+      4,
+      5,
+      6,
+      7,
+      12,
+      13,
+      14,
+      15
+    ]
+  },
+  "knobs": {
+    "mtu": 1500,
+    "offloads": "on",
+    "rps": "off",
+    "snaplen": null,
+    "ring": null,
+    "bpf": ""
+  },
+  "git_sha": "b1fe8ccde4811d4319c082dc33ccab89da3be015",
+  "snuffles_version": "Snuffles v1.3.1",
+  "host_uname": "Linux 6.12.101+deb13-amd64 x86_64 GNU/Linux",
+  "cpuset": {
+    "sut": "2,3,10,11",
+    "gen1": "4,12",
+    "gen2": "5,13",
+    "gen3": "6,14",
+    "gen4": "7,15",
+    "sink": "0,8"
+  },
+  "run_start": 1787963384.786272943,
+  "run_end": 1787963426.666599185,
+  "snuffles_start": 1787963387.193767636,
+  "stats_t0_epoch": 1787963387.312805,
+  "traffic_start": 1787963391.823018084,
+  "traffic_end": 1787963421.966463637,
+  "traffic_start_issued": 1787963391.319023779,
+  "traffic_stop_done": 1787963422.109483572,
+  "window_note": "traffic_start = every generator running; traffic_end = stop issued to the first generator (steady-state window for rates/CPU%); traffic_start_issued/traffic_stop_done bound the full envelope",
+  "perf_schedule": {
+    "offset_s": 8,
+    "stat_s": 10,
+    "record_s": 8
+  },
+  "exit_code": 0,
+  "exit_latency_ms": 154,
+  "killed": false
+}
