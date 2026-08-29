@@ -1,6 +1,12 @@
 # Changelog
 
-## [Unreleased]
+## [1.4.0] - 2026-08-29
+
+A performance release: a full load-test rig, a measured hardening pass over
+the capture path, and seven bug fixes found while measuring. Under a
+2.5 Mpps flood of 64-byte frames v1.3.1 captured ~600 kpps at 100% of a
+core and dropped 79% of the traffic; v1.4.0 captures the same flood with
+no kernel drops at under a third of a core, in 87 MB instead of 630 MB.
 
 ### Added
 - **Load-test regression gate.** `loadtest/gate.sh` runs a fixed set of
