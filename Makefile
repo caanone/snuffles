@@ -52,7 +52,8 @@ COMMON_SRCS = src/main.c       \
               src/export_json.c \
               src/stats.c       \
               src/session.c     \
-              src/syslog_out.c
+              src/syslog_out.c  \
+              src/output.c
 
 SRCS_PCAP = $(COMMON_SRCS) src/capture.c
 SRCS_RAW  = $(COMMON_SRCS) src/capture_raw.c src/cbpf.c src/rawring.c
@@ -67,7 +68,7 @@ OBJS_DEBUG = $(SRCS_PCAP:src/%.c=$(OBJDIR)/debug/%.o)
 
 # ── Unit tests (also runnable via CTest; this target keeps them
 #    available on the make-only path, e.g. macOS release builds) ──
-TESTS      = filter ringbuf session dissect cbpf rawring config export_json syslog_out ui
+TESTS      = filter ringbuf session dissect cbpf rawring config export_json syslog_out output ui
 TEST_BINS  = $(TESTS:%=$(OBJDIR)/tests/test_%)
 # make test SAN=1 -> run the suite under ASan/UBSan
 ifdef SAN
@@ -128,6 +129,13 @@ $(OBJDIR)/tests/test_%: tests/test_%.c src/%.c | $(OBJDIR)/tests
 # export_json.c also walks the ring through the display filter
 $(OBJDIR)/tests/test_export_json: tests/test_export_json.c src/export_json.c \
                                   src/filter.c src/ringbuf.c | $(OBJDIR)/tests
+	$(CC) $(BASE_CFLAGS) $(TEST_FLAGS) -Isrc $(CFLAGS) -o $@ $^ \
+	      $(TEST_LDFLAGS) $(LDFLAGS) $(TEST_LDLIBS)
+
+# the output thread drives both sinks off the ring
+$(OBJDIR)/tests/test_output: tests/test_output.c src/output.c src/ringbuf.c \
+                             src/syslog_out.c src/export_pcap.c src/filter.c \
+                             | $(OBJDIR)/tests
 	$(CC) $(BASE_CFLAGS) $(TEST_FLAGS) -Isrc $(CFLAGS) -o $@ $^ \
 	      $(TEST_LDFLAGS) $(LDFLAGS) $(TEST_LDLIBS)
 

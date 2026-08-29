@@ -45,6 +45,7 @@ set(COMMON_SOURCES
     src/stats.c
     src/session.c
     src/syslog_out.c
+    src/output.c
 )
 
 if(NO_PCAP)
@@ -89,6 +90,15 @@ if(BUILD_TESTING)
     target_include_directories(test_export_json PRIVATE include src)
     target_link_libraries(test_export_json PRIVATE Threads::Threads m)
     add_test(NAME export_json COMMAND test_export_json)
+    # the output thread drives both sinks off the ring
+    add_executable(test_output tests/test_output.c src/output.c src/ringbuf.c
+                   src/syslog_out.c src/export_pcap.c src/filter.c)
+    target_include_directories(test_output PRIVATE include src)
+    target_link_libraries(test_output PRIVATE Threads::Threads m)
+    if(WIN32)
+        target_link_libraries(test_output PRIVATE ws2_32)
+    endif()
+    add_test(NAME output COMMAND test_output)
     # test_ui.c includes src/ui.c (white-box pacing counters) and stubs the
     # capture/export entry points; POSIX only (pipes, pthread).
     if(NOT WIN32)

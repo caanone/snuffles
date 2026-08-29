@@ -9,6 +9,8 @@
 #include "session.h"
 #include "export_pcap.h"
 #include "export_json.h"
+#include "syslog_out.h"
+#include "output.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -135,6 +137,7 @@ typedef struct {
     FILE               *out;
     ringbuf_t          *rb;
     capture_ctx_t      *cap;
+    output_t           *outp;       /* --syslog / -w thread, or NULL */
     session_table_t    *st;
     struct timeval      t0;
     atomic_int          stop;
@@ -174,13 +177,15 @@ static long rss_kb(void) {
 
 static void stats_report_line(stats_reporter_t *r, const char *tag) {
     capture_stats_raw_t cs;
+    output_stats_t os;
     capture_get_stats(r->cap, &cs);
+    output_get_stats(r->outp, &os);
     struct timeval now;
     wall_now(&now);
     fprintf(r->out,
             "%s t=%.3f captured=%llu kdrop=%llu ifdrop=%llu ring=%u "
             "emitted=%llu missed=%llu syslog_sent=%llu syslog_fail=%llu "
-            "streamed=%llu sessions=%u wakeups=%llu rss_kb=%ld\n",
+            "streamed=%llu out_missed=%llu sessions=%u wakeups=%llu rss_kb=%ld\n",
             tag, tv_secs(&now, &r->t0),
             (unsigned long long)cs.pkts_recv,
             (unsigned long long)cs.pkts_drop,
@@ -188,9 +193,10 @@ static void stats_report_line(stats_reporter_t *r, const char *tag) {
             ringbuf_count(r->rb),
             (unsigned long long)atomic_load_explicit(&g_emitted, memory_order_relaxed),
             (unsigned long long)atomic_load_explicit(&g_missed, memory_order_relaxed),
-            (unsigned long long)cs.syslog_sent,
-            (unsigned long long)cs.syslog_failed,
-            (unsigned long long)cs.stream_pkts,
+            (unsigned long long)os.syslog_sent,
+            (unsigned long long)os.syslog_failed,
+            (unsigned long long)os.streamed,
+            (unsigned long long)os.missed,
             r->st ? session_table_count(r->st) : 0u,
             (unsigned long long)ringbuf_notify_sent(r->rb),
             rss_kb());
@@ -233,7 +239,7 @@ static void *stats_thread_fn(void *arg) {
 static void run_headless(ringbuf_t *rb, capture_ctx_t *cap,
                          const capture_cfg_t *cfg, stats_reporter_t *rep) {
     if (cfg->quiet) {
-        /* silent mode: capture thread handles syslog, we just wait */
+        /* silent mode: the output thread serves --syslog / -w, we just wait */
         while (!g_stop) {
 #ifndef _WIN32
             struct timeval tv = { .tv_sec = 0, .tv_usec = 200000 };
@@ -576,7 +582,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Warning: -q without --syslog captures packets "
                         "but produces no output anywhere\n");
 
-    /* Lean mode (tiny ring, no session table) applies only to the syslog
+    /* Lean mode (small ring, no session table) applies only to the syslog
        forwarding modes documented in the README: headless/quiet WITH
        --syslog and no export file. Plain --no-ui keeps the full ring and
        sessions, and explicit -b/-s always win. */
@@ -584,7 +590,9 @@ int main(int argc, char *argv[]) {
                             !cfg.output_file[0]);
     if (headless_minimal) {
         if (!ring_set)
-            cfg.ring_size = 64;    /* tiny scratch buffer */
+            cfg.ring_size = 4096;  /* ~4 ms of headroom at 1 M pps for the
+                                      output thread (64 slots lapped it on
+                                      every scheduling hiccup); ~2.7 MB */
         if (!snaplen_set && cfg.snaplen > 256)
             cfg.snaplen = 256;     /* syslog only needs headers */
         if (!buffer_set && cfg.buffer_mb > 8)
@@ -626,14 +634,52 @@ int main(int argc, char *argv[]) {
     placement_t place = { .cpu = cfg.cpu, .rt = cfg.rt };
     placement_rt_raise(&place);
 
+    /* syslog socket before capture_create(), which drops privileges: the
+       16 MB send buffer (SO_SNDBUFFORCE) and --syslog-iface <dev>
+       (SO_BINDTODEVICE) need the capabilities */
+    syslog_out_t *syslog = NULL;
+    if (cfg.syslog_target[0]) {
+        syslog = syslog_out_create(cfg.syslog_target, cfg.syslog_iface);
+        if (!syslog)
+            fprintf(stderr, "Warning: syslog output disabled\n");
+    }
+
     /* create capture context */
     capture_ctx_t *cap = capture_create(&cfg, rb, sessions);
     if (!cap) {
+        syslog_out_destroy(syslog);
         session_table_destroy(sessions);
         ringbuf_destroy(rb);
         return 1;
     }
     g_capture = cap;
+
+    /* -w writer after the privilege drop (file owned by the invoking
+       user, not root); both sinks are served by the output thread, which
+       takes its ring slot now, before the producer starts */
+    pcap_writer_t *stream = NULL;
+    if (cfg.stream_file[0]) {
+        stream = pcap_writer_open(cfg.stream_file, (uint32_t)cfg.snaplen,
+                                  (uint32_t)capture_get_datalink(cap));
+        if (!stream)
+            fprintf(stderr, "Warning: cannot open '%s' for -w streaming\n",
+                    cfg.stream_file);
+    }
+    output_t *outp = NULL;
+    if (syslog || stream) {
+        outp = output_create(rb, syslog, stream, cfg.stream_file);
+        if (!outp) {
+            pcap_writer_close(stream);
+            syslog_out_destroy(syslog);
+            capture_destroy(cap);
+            session_table_destroy(sessions);
+            ringbuf_destroy(rb);
+            return 1;
+        }
+        /* offline replay: the file reader waits for the sinks as well */
+        if (capture_is_offline(cap))
+            output_attach_position(outp);
+    }
 
     /* install signal handlers */
     signal(SIGINT,  signal_handler);
@@ -660,6 +706,18 @@ int main(int argc, char *argv[]) {
     int started = capture_start(cap);
     placement_release_main(&place);
     if (started != 0) {
+        output_destroy(outp);
+        capture_destroy(cap);
+        session_table_destroy(sessions);
+        ringbuf_destroy(rb);
+        return 1;
+    }
+
+    /* output thread: after placement_release_main so it inherits the
+       consumer CPUs, before SIGUSR1 is unblocked so it inherits the block */
+    if (outp && output_start(outp) != 0) {
+        capture_stop(cap);
+        output_destroy(outp);
         capture_destroy(cap);
         session_table_destroy(sessions);
         ringbuf_destroy(rb);
@@ -671,7 +729,7 @@ int main(int argc, char *argv[]) {
     stats_reporter_t rep;
     memset(&rep, 0, sizeof(rep));
     rep.out = stderr;
-    rep.rb = rb; rep.cap = cap; rep.st = sessions;
+    rep.rb = rb; rep.cap = cap; rep.outp = outp; rep.st = sessions;
     wall_now(&rep.t0);
     atomic_store(&rep.stop, 0);
     if (stats_on) {
@@ -699,6 +757,7 @@ int main(int argc, char *argv[]) {
         if (!ui) {
             fprintf(stderr, "Failed to create UI\n");
             capture_stop(cap);
+            output_destroy(outp);
             capture_destroy(cap);
             session_table_destroy(sessions);
             ringbuf_destroy(rb);
@@ -708,8 +767,10 @@ int main(int argc, char *argv[]) {
         ui_destroy(ui);
     }
 
-    /* stop capture */
+    /* stop capture, then let the output thread emit what is still in the
+       ring; the summary below carries the final sink counts */
     capture_stop(cap);
+    output_stop(outp);
 
     if (stats_on) {
         atomic_store(&rep.stop, 1);
@@ -718,6 +779,8 @@ int main(int argc, char *argv[]) {
     if (stats_on || (cfg.no_ui && !cfg.no_summary))
         stats_report_line(&rep, "summary");
     if (rep.out != stderr) fclose(rep.out);
+
+    output_destroy(outp);   /* closes the sinks: 'Streamed N packets to ...' */
 
     if (cfg.no_ui && !cfg.no_summary) {
         capture_stats_raw_t cs;
