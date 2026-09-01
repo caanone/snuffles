@@ -53,6 +53,9 @@ dependencies beyond (optional) libpcap.
 
 ---
 
+> **Working on snuffles?** `docs/NEXT-SESSION.md` is the current resume point:
+> repository state, the load-test rig, open lanes and the hazards worth knowing.
+
 ## Build
 
 ### Default (libpcap)
