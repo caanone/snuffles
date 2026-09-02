@@ -169,6 +169,10 @@ int                 ringbuf_waiter_add(ringbuf_t *rb);   /* new slot id, -1 if f
 int                 ringbuf_waiter_fd(ringbuf_t *rb, int id);   /* -1 on Windows */
 void                ringbuf_waiter_will_wait(ringbuf_t *rb, int id);
 void                ringbuf_waiter_drain(ringbuf_t *rb, int id);
+/* Wake slot id without an announcement: its owner blocks on the channel
+ * for reasons of its own (a parked output helper) and another thread
+ * wakes it. The owner drains as usual. Not counted in notify_sent. */
+void                ringbuf_waiter_kick(ringbuf_t *rb, int id);
 
 void                ringbuf_consumer_will_wait(ringbuf_t *rb);
 void                ringbuf_drain_notify(ringbuf_t *rb);
@@ -196,6 +200,10 @@ uint64_t            ringbuf_notify_sent(const ringbuf_t *rb);
  * The ringbuf_consumer_* forms are the same calls for slot 0. */
 #define RINGBUF_NO_CONSUMER UINT64_MAX
 void                ringbuf_waiter_attach(ringbuf_t *rb, int id);
+/* Attach mid-stream (a helper joining at the sequence it will read next)
+ * and detach (the slot no longer holds the producer back). */
+void                ringbuf_waiter_attach_at(ringbuf_t *rb, int id, uint64_t next_seq);
+void                ringbuf_waiter_detach(ringbuf_t *rb, int id);
 void                ringbuf_waiter_publish(ringbuf_t *rb, int id, uint64_t next_seq);
 void                ringbuf_consumer_attach(ringbuf_t *rb);
 void                ringbuf_consumer_publish(ringbuf_t *rb, uint64_t next_seq);

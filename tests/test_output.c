@@ -161,7 +161,7 @@ static void test_delivery(void) {
     pcap_writer_t *pw = pcap_writer_open(STREAM_FILE, 128, 1);
     CHECK(pw != NULL);
 
-    output_t *o = output_create(rb, sl, 1, pw, STREAM_FILE);
+    output_t *o = output_create(rb, sl, 1, 1, pw, STREAM_FILE);
     CHECK(o != NULL);
     CHECK(output_start(o) == 0);
 
@@ -206,7 +206,7 @@ static void test_lapped(void) {
     CHECK(sl != NULL);
     pcap_writer_t *pw = pcap_writer_open(STREAM_FILE, 128, 1);
     CHECK(pw != NULL);
-    output_t *o = output_create(rb, sl, 1, pw, STREAM_FILE);
+    output_t *o = output_create(rb, sl, 1, 1, pw, STREAM_FILE);
     CHECK(o != NULL);
     CHECK(output_start(o) == 0);
 
@@ -217,7 +217,7 @@ static void test_lapped(void) {
     output_stats_t st;
     output_get_stats(o, &st);
     CHECK(st.syslog_sent + st.syslog_failed + st.missed == N);
-    CHECK(st.streamed + st.missed == N);
+    CHECK(st.streamed + st.stream_missed == N); /* the stream has its own worker */
     CHECK(st.streamed >= 16);                   /* the tail is always seen */
     printf("lapped: sent=%llu fail=%llu streamed=%llu missed=%llu\n",
            (unsigned long long)st.syslog_sent,
@@ -245,7 +245,7 @@ static void test_attached(void) {
     CHECK(rb != NULL);
     pcap_writer_t *pw = pcap_writer_open(STREAM_FILE, 128, 1);
     CHECK(pw != NULL);
-    output_t *o = output_create(rb, NULL, 1, pw, STREAM_FILE);
+    output_t *o = output_create(rb, NULL, 1, 1, pw, STREAM_FILE);
     CHECK(o != NULL);
     output_attach_position(o);
     CHECK(output_start(o) == 0);
@@ -272,10 +272,10 @@ static void test_attached(void) {
     ringbuf_destroy(rb);
 }
 
-/* --syslog-threads 3 with -w: three syslog workers, each on its own
- * socket, taking every third record, plus a stream worker. Slow producer:
- * every record reaches the collector exactly once, the stream is complete,
- * nothing is missed on either path. */
+/* Three pinned syslog workers (min = max = 3), each on its own socket,
+ * claiming chunks from the shared cursor, plus a stream worker. Slow
+ * producer: every record reaches the collector exactly once, the stream is
+ * complete, nothing is missed on either path. */
 static void test_sharded(void) {
     char target[64];
     lsock_t ls = listener_open(target, sizeof(target));
@@ -288,7 +288,7 @@ static void test_sharded(void) {
     pcap_writer_t *pw = pcap_writer_open(STREAM_FILE, 128, 1);
     CHECK(pw != NULL);
 
-    output_t *o = output_create(rb, sl, 3, pw, STREAM_FILE);
+    output_t *o = output_create(rb, sl, 3, 3, pw, STREAM_FILE);
     CHECK(o != NULL);
     CHECK(output_syslog_threads(o) == 3);
     CHECK(output_start(o) == 0);
@@ -307,6 +307,7 @@ static void test_sharded(void) {
     CHECK(st.streamed == N);
     CHECK(st.missed == 0);
     CHECK(st.stream_missed == 0);
+    CHECK(st.syslog_threads == 3);              /* pinned: all three ran */
 
     int bad = 0;
     CHECK(collect(ls, 300, &bad) == (int)N);
@@ -334,7 +335,7 @@ static void test_sharded_lapped(void) {
     CHECK(sl != NULL);
     pcap_writer_t *pw = pcap_writer_open(STREAM_FILE, 128, 1);
     CHECK(pw != NULL);
-    output_t *o = output_create(rb, sl, 4, pw, STREAM_FILE);
+    output_t *o = output_create(rb, sl, 4, 4, pw, STREAM_FILE);
     CHECK(o != NULL);
     CHECK(output_start(o) == 0);
 
@@ -368,8 +369,9 @@ static void test_sharded_lapped(void) {
     lsock_close(ls);
 }
 
-/* Offline replay with sharded workers: every worker publishes its own
- * position, the producer waits for the slowest, nothing is lapped. */
+/* Offline replay with scaling workers (1-3): running workers publish their
+ * positions, helpers attach when woken and detach when they park, the
+ * producer waits for the slowest, nothing is lapped. */
 static void test_sharded_attached(void) {
     char target[64];
     lsock_t ls = listener_open(target, sizeof(target));
@@ -378,7 +380,7 @@ static void test_sharded_attached(void) {
     CHECK(rb != NULL);
     syslog_out_t *sl = syslog_out_create(target, NULL);
     CHECK(sl != NULL);
-    output_t *o = output_create(rb, sl, 3, NULL, NULL);
+    output_t *o = output_create(rb, sl, 1, 3, NULL, NULL);
     CHECK(o != NULL);
     output_attach_position(o);
     CHECK(output_start(o) == 0);
@@ -402,11 +404,84 @@ static void test_sharded_attached(void) {
     lsock_close(ls);
 }
 
+/* Scaling under load: one running worker, two parked helpers, a producer
+ * that fills a 1024-slot ring as fast as the sinks allow (attached, so the
+ * accounting is exact). The unclaimed backlog exceeds an eighth of the ring
+ * almost at once, so a helper is woken; the high-water mark shows it. */
+static void test_scaled_dynamic(void) {
+    char target[64];
+    lsock_t ls = listener_open(target, sizeof(target));
+    CHECK(ls != LSOCK_INVALID);
+    ringbuf_t *rb = ringbuf_create(1024, 128, 0);
+    CHECK(rb != NULL);
+    syslog_out_t *sl = syslog_out_create(target, NULL);
+    CHECK(sl != NULL);
+    output_t *o = output_create(rb, sl, 1, 3, NULL, NULL);
+    CHECK(o != NULL);
+    CHECK(output_syslog_threads(o) == 3);
+    output_attach_position(o);
+    CHECK(output_start(o) == 0);
+
+    const uint32_t N = 20000;
+    for (uint32_t s = 0; s < N; s++) {
+        int spins = 0;
+        while (!ringbuf_producer_may_write(rb)) {
+            if (++spins > 100000) break;
+            if (spins % 1000 == 0) nap_ms(1);
+        }
+        push(rb, s);
+    }
+    output_stop(o);
+    output_stats_t st;
+    output_get_stats(o, &st);
+    CHECK(st.syslog_sent + st.syslog_failed == N);
+    CHECK(st.missed == 0);
+    CHECK(st.syslog_threads >= 2);              /* a helper was woken */
+    CHECK(st.syslog_threads <= 3);
+    printf("scaled: sent=%llu threads=%d\n",
+           (unsigned long long)st.syslog_sent, st.syslog_threads);
+    output_destroy(o);
+    ringbuf_destroy(rb);
+    lsock_close(ls);
+}
+
+/* Light load never wakes a helper: batches of 50 records stay under the
+ * 128-record threshold of a 1024-slot ring, so only worker 0 ever runs. */
+static void test_scaled_idle(void) {
+    char target[64];
+    lsock_t ls = listener_open(target, sizeof(target));
+    CHECK(ls != LSOCK_INVALID);
+    ringbuf_t *rb = ringbuf_create(1024, 128, 0);
+    CHECK(rb != NULL);
+    syslog_out_t *sl = syslog_out_create(target, NULL);
+    CHECK(sl != NULL);
+    output_t *o = output_create(rb, sl, 1, 3, NULL, NULL);
+    CHECK(o != NULL);
+    CHECK(output_start(o) == 0);
+    const uint32_t N = 500;
+    for (uint32_t s = 0; s < N; s++) {
+        push(rb, s);
+        if (s % 50 == 49) nap_ms(20);
+    }
+    output_stop(o);
+    output_stats_t st;
+    output_get_stats(o, &st);
+    CHECK(st.syslog_sent == N);
+    CHECK(st.missed == 0);
+    CHECK(st.syslog_threads == 1);
+    int bad = 0;
+    CHECK(collect(ls, 300, &bad) == (int)N);
+    CHECK(bad == 0);
+    output_destroy(o);
+    ringbuf_destroy(rb);
+    lsock_close(ls);
+}
+
 /* No sinks and never started: create/stop/destroy must be inert. */
 static void test_idle(void) {
     ringbuf_t *rb = ringbuf_create(8, 64, 0);
     CHECK(rb != NULL);
-    output_t *o = output_create(rb, NULL, 1, NULL, NULL);
+    output_t *o = output_create(rb, NULL, 1, 1, NULL, NULL);
     CHECK(o != NULL);
     output_stop(o);
     output_stats_t st;
@@ -426,6 +501,8 @@ int main(void) {
     test_sharded();
     test_sharded_lapped();
     test_sharded_attached();
+    test_scaled_dynamic();
+    test_scaled_idle();
     test_idle();
     TEST_MAIN_END();
 }

@@ -512,6 +512,16 @@ void ringbuf_waiter_drain(ringbuf_t *rb, int id) {
 #endif
 }
 
+void ringbuf_waiter_kick(ringbuf_t *rb, int id) {
+    ringbuf_waiter_t *w = &rb->waiters[id];
+#ifdef _WIN32
+    SetEvent(w->event);
+#else
+    char c = 1;
+    (void)write(w->pipe[1], &c, 1);
+#endif
+}
+
 int ringbuf_get_notify_fd(ringbuf_t *rb) {
     return ringbuf_waiter_fd(rb, 0);
 }
@@ -532,6 +542,16 @@ uint64_t ringbuf_notify_sent(const ringbuf_t *rb) {
 
 void ringbuf_waiter_attach(ringbuf_t *rb, int id) {
     atomic_store(&rb->waiters[id].next_seq, 0);
+}
+
+void ringbuf_waiter_attach_at(ringbuf_t *rb, int id, uint64_t next_seq) {
+    atomic_store_explicit(&rb->waiters[id].next_seq, next_seq,
+                          memory_order_release);
+}
+
+void ringbuf_waiter_detach(ringbuf_t *rb, int id) {
+    atomic_store_explicit(&rb->waiters[id].next_seq, RINGBUF_NO_CONSUMER,
+                          memory_order_release);
 }
 
 void ringbuf_waiter_publish(ringbuf_t *rb, int id, uint64_t next_seq) {

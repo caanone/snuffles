@@ -130,8 +130,13 @@ static void parse_keyval(const char *path, int lineno, char *line,
     } else if (strcmp(key, "syslog_iface") == 0) {
         snprintf(cfg->syslog_iface, sizeof(cfg->syslog_iface), "%s", val);
     } else if (strcmp(key, "syslog_threads") == 0) {
-        if (!cfg_num(val, 1, 8, &cfg->syslog_threads))
-            warn_line(path, lineno, "syslog_threads out of range (1-8)", val);
+        if (strcmp(val, "auto") == 0)
+            cfg->syslog_threads = 0;
+        else if (!cfg_num(val, 1, 8, &cfg->syslog_threads))
+            warn_line(path, lineno, "syslog_threads must be auto or 1-8", val);
+    } else if (strcmp(key, "syslog_min_threads") == 0) {
+        if (!cfg_num(val, 1, 8, &cfg->syslog_min_threads))
+            warn_line(path, lineno, "syslog_min_threads out of range (1-8)", val);
     } else if (strcmp(key, "cpu") == 0) {
         if (!cfg_num(val, 0, 8191, &cfg->cpu))
             warn_line(path, lineno, "cpu out of range (0-8191)", val);

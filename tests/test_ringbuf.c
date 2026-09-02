@@ -662,6 +662,13 @@ static void test_waiters(void) {
     CHECK(ringbuf_notify_sent(rb) == 3);
     CHECK(!wake_take_slot(rb, w1));
 
+    /* a kick wakes the slot without an announcement (parked output
+     * helpers are woken by their peers, not by commits) */
+    ringbuf_waiter_kick(rb, w1);
+    CHECK(wake_take_slot(rb, w1));
+    CHECK(!wake_take_slot(rb, w1));
+    CHECK(ringbuf_notify_sent(rb) == 3);        /* not a producer wakeup */
+
     /* slots are finite */
     for (int i = 2; i < RINGBUF_MAX_WAITERS; i++)
         CHECK(ringbuf_waiter_add(rb) == i);
@@ -727,6 +734,11 @@ static void test_backpressure_basic(void) {
     ringbuf_consumer_publish(rb, ringbuf_total(rb) - 7);
     ringbuf_waiter_publish(rb, w1, ringbuf_total(rb));
     CHECK(ringbuf_producer_may_write(rb) == 0); /* slot 0 now the slow one */
+    /* a detached slot holds nobody; attaching mid-stream holds again */
+    ringbuf_waiter_detach(rb, 0);
+    CHECK(ringbuf_producer_may_write(rb) == 1);
+    ringbuf_waiter_attach_at(rb, 0, ringbuf_total(rb) - 7);
+    CHECK(ringbuf_producer_may_write(rb) == 0);
     ringbuf_destroy(rb);
 }
 

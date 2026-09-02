@@ -33,6 +33,8 @@ int main(void) {
         "promisc = 0\n"
         "syslog = 10.0.0.1:514\n"
         "syslog_iface = eth1\n"
+        "syslog_threads = 6\n"
+        "syslog_min_threads = 2\n"
         "workers = 4\n"
         "workers = 99\n"                /* out of range: keep 4 */
         "cpu = 3\n"
@@ -73,6 +75,8 @@ int main(void) {
     CHECK(cfg.promisc == 0);
     CHECK(strcmp(cfg.syslog_target, "10.0.0.1:514") == 0);
     CHECK(strcmp(cfg.syslog_iface, "eth1") == 0);
+    CHECK(cfg.syslog_threads == 6);
+    CHECK(cfg.syslog_min_threads == 2);
     CHECK(cfg.workers == 4);
     CHECK(cfg.cpu == 3);
     CHECK(cfg.rt == 1);

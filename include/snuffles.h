@@ -395,7 +395,9 @@ typedef struct {
     int         verbose;
     char        syslog_target[256];
     char        syslog_iface[64];
-    int         syslog_threads; /* --syslog-threads: output threads (one UDP socket each), 1-8; 0 = 1 */
+    int         syslog_threads;     /* --syslog-threads: most syslog output threads (one UDP
+                                       socket each), 1-8; 0 = auto (CPUs we may run on, <= 8) */
+    int         syslog_min_threads; /* --syslog-min-threads: always-running ones, 1-8; 0 = 1 */
     int         buffer_mb;      /* -B: kernel capture buffer in MB (TPACKET ring; raw: SO_RCVBUF fallback) */
     int         arena_mb;       /* --arena-mb: payload arena in MB (0: ring x min(snaplen, 2 KB)) */
     int         immediate;      /* --immediate: per-packet delivery (no TPACKET_V3 blocks) */

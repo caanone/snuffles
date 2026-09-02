@@ -147,20 +147,28 @@ burst the capture thread hands over in one go cannot lap the output threads.
 .BI \-\-syslog\-iface " ip|dev"
 Source address or device for syslog datagrams.
 .TP
-.BI \-\-syslog\-threads " N"
-Run \fIN\fR (1\-8, default 1) syslog output threads, each with its own UDP
-socket, taking every \fIN\fRth record by sequence number. One thread hands
-the kernel roughly 300k datagrams/s; the cost is the kernel's per-datagram
-send path, so throughput scales with threads and cores. The record format
-is unchanged; the collector sees \fIN\fR source ports. With \fB\-w\fR the
-stream then runs on a thread of its own.
+.BI \-\-syslog\-threads " N|auto"
+The most syslog output threads (1\-8), each with its own UDP socket;
+\fBauto\fR (the default) means one per CPU the process may run on, at most 8.
+One thread hands the kernel roughly 200\-330k datagrams/s, the cost being
+the kernel's per\-datagram send path, so the threads scale with the
+traffic: they claim records in 32\-record chunks from a shared cursor, and
+whenever the unclaimed backlog exceeds an eighth of the ring a running
+thread wakes one parked helper (at most one every 2 ms); a helper that
+finds nothing left to claim parks again. The record format is unchanged;
+the collector sees up to \fIN\fR source ports. With \fB\-w\fR the stream
+runs on a thread of its own.
+.TP
+.BI \-\-syslog\-min\-threads " N"
+Syslog output threads that never park (1\-8, default 1). Equal to
+\fB\-\-syslog\-threads\fR it pins the count.
 .TP
 .BR \-\-stats [=\fIfile\fR]
 Print a counters line (captured, kernel and interface drops \(em per
 worker as well with \fB\-j\fR, ring
 occupancy, records emitted and missed by the consumer, syslog and stream
 counts, records missed by the syslog and by the stream output threads,
-sessions, wake\-ups, RSS)
+the most syslog threads that ran at once, sessions, wake\-ups, RSS)
 every second and a
 .B summary
 line at exit, to stderr or to \fIfile\fR (the TUI requires \fIfile\fR).
@@ -284,6 +292,7 @@ pairs with the keys
 .BR syslog ,
 .BR syslog_iface ,
 .BR syslog_threads ,
+.BR syslog_min_threads ,
 .BR cpu " (0\-8191), and"
 .BR rt " (0/1)."
 Saved display\-filter presets are declared as

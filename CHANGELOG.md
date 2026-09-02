@@ -3,16 +3,22 @@
 ## [Unreleased]
 
 ### Added
-- **`--syslog-threads N`** (config key `syslog_threads`): N syslog output
-  threads, one UDP socket each, sharing the records by sequence number.
-  The record format is unchanged; the collector sees N source ports. A
-  single thread is bounded at ~300k records/s by the kernel's per-datagram
-  send path (formatting is under 10% of the cost), and the loopback
-  measurement scales almost linearly to four threads. On the rig at
-  500 kpps offered, one thread delivered 49% of the records at 99% of a
-  core; four threads delivered 93% at about half a core each. With `-w`
-  the stream moves to a worker of its own. The `--stats` line gains `stream_missed=`,
-  the records the `-w` path lost, next to `out_missed=` for the syslog path.
+- **Syslog output scales with the traffic.** A single output thread is
+  bounded at ~200-330k records/s by the kernel's per-datagram send path
+  (formatting is under 10% of the cost). Up to `--syslog-threads` workers
+  now exist from the start, one UDP socket each, by default one per CPU the
+  process may run on (at most 8); `--syslog-min-threads` of them run always
+  (default 1), the rest park. Workers claim records in 32-record chunks
+  from a shared cursor, so any number of them can share the stream; when
+  the unclaimed backlog exceeds an eighth of the ring a running worker wakes
+  one parked helper (at most one every 2 ms), and a helper that finds
+  nothing left to claim parks again. The record format is unchanged; the
+  collector sees up to N source ports. With `-w` the stream runs on a worker
+  of its own. `--stats` gains `stream_missed=`, the records the `-w` path
+  lost, next to `out_missed=` for the syslog path, and `syslog_threads=`,
+  the most workers that ran at once since the previous line. Config keys
+  `syslog_threads` (a number or `auto`) and `syslog_min_threads`.
+  Measured on the rig (30 s, no flags): see the numbers below.
 
 ### Changed
 - **The lean `-q --syslog` forwarder sizes its ring to the kernel buffer**

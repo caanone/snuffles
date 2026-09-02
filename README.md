@@ -175,7 +175,9 @@ Options:
   -q, --quiet         Silent mode (no packet output, use with --syslog)
   --syslog <host:port> Forward packets via UDP syslog
   --syslog-iface <ip|dev>  Source interface/IP for syslog
-  --syslog-threads <N> Output threads (UDP sockets) for --syslog, 1-8
+  --syslog-threads <N|auto>  Most syslog output threads (one UDP socket each);
+                      auto = CPUs the process may run on, at most 8
+  --syslog-min-threads <N>  Syslog threads that never park (default 1)
   --stats[=FILE]      Capture/drop counters every second and at exit
   --no-summary        Headless modes: no counters line at exit
   --cpu <N>           Pin the capture thread to CPU N (Linux)
@@ -207,8 +209,10 @@ sudo ./snuffles -i en0 -q --syslog 10.0.0.100:514
 # Syslog via specific interface
 sudo ./snuffles -i en0 -q --syslog 10.0.0.100:514 --syslog-iface 192.168.1.5
 
-# Syslog above ~300k packets/s: spread the datagrams over four sockets/threads
-sudo ./snuffles -i eth0 -q --syslog 10.0.0.100:514 --syslog-threads 4
+# Syslog at high rates needs nothing: output threads scale with the backlog
+# (one socket per CPU, at most 8). Pin one thread if the collector must
+# see a single source port:
+sudo ./snuffles -i eth0 -q --syslog 10.0.0.100:514 --syslog-threads 1
 
 # Headless, 100 packets, JSON export
 sudo ./snuffles -i en0 -c 100 --no-ui -o output.json
@@ -472,7 +476,16 @@ dropped and counted as `syslog_fail` in `--stats`. The `-w` file gets a
 The capture thread is never slowed by either sink: a collector or disk
 that cannot keep up lets the ring wrap past the output thread instead,
 and the records it never saw are counted as `out_missed` in `--stats`
-(so `syslog_sent + syslog_fail + out_missed == captured`). The lean
+(so `syslog_sent + syslog_fail + out_missed == captured`). One output
+thread hands the kernel roughly 200-330k datagrams a second, the cost
+being the kernel's per-datagram send path rather than formatting, so the
+syslog workers scale with the traffic: up to `--syslog-threads` of them
+exist from the start (one UDP socket each, by default one per CPU the
+process may run on, at most 8), they claim records in 32-record chunks
+from a shared cursor, and whenever the unclaimed backlog exceeds an
+eighth of the ring a running worker wakes one parked helper (at most one
+every 2 ms); a helper that finds nothing left to claim parks again.
+`--stats` reports the most that ran at once as `syslog_threads`. The lean
 `-q --syslog` ring holds as many records as the kernel buffer holds
 minimum-size frames (8 192 slots per MB of `-B`, 4 096-65 536): the
 capture thread hands over every retired kernel block in one go, and a
