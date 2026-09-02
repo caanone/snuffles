@@ -18,7 +18,12 @@
   lost, next to `out_missed=` for the syslog path, and `syslog_threads=`,
   the most workers that ran at once since the previous line. Config keys
   `syslog_threads` (a number or `auto`) and `syslog_min_threads`.
-  Measured on the rig (30 s, no flags): see the numbers below.
+  Measured on the rig with no flags (30 s, four CPUs available): at
+  200 kpps everything is delivered by one worker and the helpers use no
+  CPU; at 500 kpps helpers engage in order (88/56/32/19% of a core) and
+  nothing is missed; at 1 Mpps four workers deliver 80% and are CPU-bound
+  on the rig's two SUT cores. A single thread topped out at ~58% of
+  500 kpps.
 
 ### Changed
 - **The lean `-q --syslog` forwarder sizes its ring to the kernel buffer**

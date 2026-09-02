@@ -7,8 +7,8 @@ anything; it is the record, not recall.
 
 | | |
 |---|---|
-| `main` | tip carries `--syslog-threads` (c6539c5) and the lean-ring sizing (branch `perf/lean-ring`, merged after CI), pushed |
-| Release | **v1.4.0** is the latest tag — https://github.com/caanone/snuffles/releases/tag/v1.4.0. `main` carries unreleased work (see CHANGELOG `[Unreleased]`): `--syslog-threads`, `stream_missed=`, stress-loop diagnostics |
+| `main` | tip carries the syslog auto-scaling (branch `perf/syslog-autoscale`, merged after CI), the lean-ring sizing and `--syslog-threads`, pushed |
+| Release | **v1.4.0** is the latest tag — https://github.com/caanone/snuffles/releases/tag/v1.4.0. `main` carries unreleased work (see CHANGELOG `[Unreleased]`): syslog output threads that scale with the backlog, the lean ring sized to the kernel buffer, `stream_missed=`/`syslog_threads=` stats, stress-loop diagnostics and the flake fix |
 | Release assets (v1.4.0) | `snuffles-1.4.0-linux-x86_64`, `snuffles-1.4.0-windows-x64.exe`, `SHA256SUMS`; **macOS arm64 still missing** |
 | Working tree | clean; only `main` exists locally and remotely (stale branches deleted 2026-09-02) |
 | Load-test rig | **down**. No `snf-*` containers, host sysctls restored (`rmem_max` 33554432) |
@@ -68,6 +68,23 @@ Sanity check learned the hard way: with no collector listening, ICMP port-unreac
 connected socket's sends fail and the records land in `syslog_fail`, not `syslog_sent` — read all
 three counters (`syslog_sent + syslog_fail + out_missed == captured`) before suspecting a leak.
 
+**Dynamic scaling (user request: "make dynamic scaling against high traffic").** The syslog
+workers now scale at runtime: up to `--syslog-threads` (auto = CPUs the process may run on, ≤ 8)
+exist from the start, `--syslog-min-threads` run always (default 1), the rest park; workers claim
+32-record chunks from a shared cursor (`output.c`), a running worker wakes one parked helper when
+the unclaimed backlog exceeds ring/8 (one per 2 ms, `ringbuf_waiter_kick`), a helper parks again
+when nothing is left to claim. `--stats` shows the high-water mark as `syslog_threads=`. Rig, no
+flags, 30 s (the SUT cpuset gives auto = 4):
+
+| offered | delivered | `syslog_threads` per second | worker CPU (0/1/2/3) |
+|---|---|---|---|
+| 200 kpps | 100 % | 1 in every second | 77 / 0 / 0 / 0 % |
+| 500 kpps | 100 %, 0 missed | 4 in 31 of 36 s (helpers cascade in within ~6 ms, drain, park) | 88 / 56 / 32 / 19 % |
+| 1 Mpps | 80 % | 4 | 84 / 77 / 81 / 85 %: CPU-bound on 2 cores |
+
+Runs: `loadtest/results/as200 as500 as1m` (untracked; the 200 k scenario is a scratch copy of B3
+with `pps` 25000 — add it to `loadtest/scenarios/` if it is wanted again).
+
 ## Open lanes, in priority order
 
 1. **macOS arm64 release asset for v1.4.0** — unchanged; build on a Mac from the tag:
@@ -80,7 +97,10 @@ three counters (`syslog_sent + syslog_fail + out_missed == captured`) before sus
 2. **Release v1.5.0** when wanted: CHANGELOG `[Unreleased]` is written; binaries follow the
    v1.4.0 procedure (static linux-x86_64 via `make nopcap`, windows-x64 via
    `scripts/test-windows.sh`'s MinGW container, SHA256SUMS, macOS by the user).
-3. **Syslog, remaining ideas.** (0) The record struct is 592 B, of which ~270 B are text
+3. **Syslog, remaining ideas.** (-) Scaling tunables are compile-time (`OUTPUT_KICK_NS` 2 ms,
+   threshold ring/8, `OUTPUT_LINGER` 8 yields): at 500 kpps the helpers cascade to all four every
+   second and park again, which is correct but could be smoother with a lower threshold or a
+   slower cascade; measure before touching. (0) The record struct is 592 B, of which ~270 B are text
    columns the syslog path never uses; a slimmer record would cut the lean ring's 38 MB and
    the copy per read. (a) Opt-in packing of several CSV lines per datagram would
    amortise the per-datagram kernel cost (~4 µs) — a wire-format change, so behind a flag; rsyslog
