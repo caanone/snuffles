@@ -650,8 +650,8 @@ static void test_waiters(void) {
     CHECK(!wake_take_slot(rb, w1));
 
     /* slots are finite */
-    CHECK(ringbuf_waiter_add(rb) == 2);
-    CHECK(ringbuf_waiter_add(rb) == 3);
+    for (int i = 2; i < RINGBUF_MAX_WAITERS; i++)
+        CHECK(ringbuf_waiter_add(rb) == i);
     CHECK(ringbuf_waiter_add(rb) == -1);
     ringbuf_destroy(rb);
 }

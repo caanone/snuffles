@@ -175,6 +175,7 @@ Options:
   -q, --quiet         Silent mode (no packet output, use with --syslog)
   --syslog <host:port> Forward packets via UDP syslog
   --syslog-iface <ip|dev>  Source interface/IP for syslog
+  --syslog-threads <N> Output threads (UDP sockets) for --syslog, 1-8
   --stats[=FILE]      Capture/drop counters every second and at exit
   --no-summary        Headless modes: no counters line at exit
   --cpu <N>           Pin the capture thread to CPU N (Linux)
@@ -205,6 +206,9 @@ sudo ./snuffles -i en0 -q --syslog 10.0.0.100:514
 
 # Syslog via specific interface
 sudo ./snuffles -i en0 -q --syslog 10.0.0.100:514 --syslog-iface 192.168.1.5
+
+# Syslog above ~300k packets/s: spread the datagrams over four sockets/threads
+sudo ./snuffles -i eth0 -q --syslog 10.0.0.100:514 --syslog-threads 4
 
 # Headless, 100 packets, JSON export
 sudo ./snuffles -i en0 -c 100 --no-ui -o output.json

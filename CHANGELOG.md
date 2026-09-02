@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **`--syslog-threads N`** (config key `syslog_threads`): N syslog output
+  threads, one UDP socket each, sharing the records by sequence number.
+  The record format is unchanged; the collector sees N source ports. A
+  single thread is bounded at ~300k records/s by the kernel's per-datagram
+  send path (formatting is under 10% of the cost), and the loopback
+  measurement scales almost linearly to four threads. With `-w` the stream
+  moves to a worker of its own. The `--stats` line gains `stream_missed=`,
+  the records the `-w` path lost, next to `out_missed=` for the syslog path.
+
+### Changed
+- The concurrency stress loop in CI (`make test-stress`) prints the output
+  of every failing round and a manual workflow run can set the round count,
+  after a 1-in-30 failure on the macOS arm64 runner left no trace of which
+  check tripped (180 further rounds on both arm64 runners passed).
+
 ## [1.4.0] - 2026-08-29
 
 A performance release: a full load-test rig, a measured hardening pass over

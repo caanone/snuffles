@@ -111,6 +111,7 @@ static void print_usage(const char *prog) {
            "  -q, --quiet       Silent mode (no packet output, use with --syslog)\n"
            "  --syslog <h:p>   Send packet CSV to syslog server (UDP)\n"
            "  --syslog-iface <ip|dev>  Source interface/IP for syslog\n"
+           "  --syslog-threads <N>  Output threads (UDP sockets) for --syslog, 1-8\n"
            "  --stats[=FILE]    Report capture/drop counters every second and\n"
            "                    at exit (stderr, or FILE; the TUI needs FILE)\n"
            "  --no-summary      Headless modes: no counters line at exit\n"
@@ -203,7 +204,7 @@ static void stats_report_line(stats_reporter_t *r, const char *tag) {
     fprintf(r->out,
             "%s t=%.3f captured=%llu kdrop=%llu ifdrop=%llu %sring=%u "
             "emitted=%llu missed=%llu syslog_sent=%llu syslog_fail=%llu "
-            "streamed=%llu out_missed=%llu sessions=%u wakeups=%llu rss_kb=%ld\n",
+            "streamed=%llu out_missed=%llu stream_missed=%llu sessions=%u wakeups=%llu rss_kb=%ld\n",
             tag, tv_secs(&now, &r->t0),
             (unsigned long long)cs.pkts_recv,
             (unsigned long long)cs.pkts_drop,
@@ -216,6 +217,7 @@ static void stats_report_line(stats_reporter_t *r, const char *tag) {
             (unsigned long long)os.syslog_failed,
             (unsigned long long)os.streamed,
             (unsigned long long)os.missed,
+            (unsigned long long)os.stream_missed,
             session_tables_count(r->sts, r->nsts),
             (unsigned long long)ringbuf_notify_sent(r->rb),
             rss_kb());
@@ -537,6 +539,7 @@ int main(int argc, char *argv[]) {
         {"list-ifaces", no_argument,       0, 'L'},
         {"syslog",       required_argument, 0, 'Y'},
         {"syslog-iface", required_argument, 0, 'Z'},
+        {"syslog-threads", required_argument, 0, 'T'},
         {"stats",        optional_argument, 0, 'S'},
         {"no-summary",   no_argument,       0, 'X'},
         {"cpu",          required_argument, 0, 'C'},
@@ -575,6 +578,8 @@ int main(int argc, char *argv[]) {
             case 'L': cfg.list_ifaces = 1; break;
             case 'Y': snprintf(cfg.syslog_target, sizeof(cfg.syslog_target), "%s", optarg); break;
             case 'Z': snprintf(cfg.syslog_iface, sizeof(cfg.syslog_iface), "%s", optarg); break;
+            case 'T': cfg.syslog_threads = (int)parse_num(optarg, "syslog threads", 1,
+                                                          OUTPUT_MAX_THREADS); break;
             case 'S': stats_on = 1;
                       if (optarg) snprintf(stats_path, sizeof(stats_path), "%s", optarg);
                       break;
@@ -743,7 +748,7 @@ int main(int argc, char *argv[]) {
     }
     output_t *outp = NULL;
     if (syslog || stream) {
-        outp = output_create(rb, syslog, stream, cfg.stream_file);
+        outp = output_create(rb, syslog, cfg.syslog_threads, stream, cfg.stream_file);
         if (!outp) {
             pcap_writer_close(stream);
             syslog_out_destroy(syslog);

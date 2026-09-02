@@ -161,7 +161,7 @@ static void test_delivery(void) {
     pcap_writer_t *pw = pcap_writer_open(STREAM_FILE, 128, 1);
     CHECK(pw != NULL);
 
-    output_t *o = output_create(rb, sl, pw, STREAM_FILE);
+    output_t *o = output_create(rb, sl, 1, pw, STREAM_FILE);
     CHECK(o != NULL);
     CHECK(output_start(o) == 0);
 
@@ -206,7 +206,7 @@ static void test_lapped(void) {
     CHECK(sl != NULL);
     pcap_writer_t *pw = pcap_writer_open(STREAM_FILE, 128, 1);
     CHECK(pw != NULL);
-    output_t *o = output_create(rb, sl, pw, STREAM_FILE);
+    output_t *o = output_create(rb, sl, 1, pw, STREAM_FILE);
     CHECK(o != NULL);
     CHECK(output_start(o) == 0);
 
@@ -245,7 +245,7 @@ static void test_attached(void) {
     CHECK(rb != NULL);
     pcap_writer_t *pw = pcap_writer_open(STREAM_FILE, 128, 1);
     CHECK(pw != NULL);
-    output_t *o = output_create(rb, NULL, pw, STREAM_FILE);
+    output_t *o = output_create(rb, NULL, 1, pw, STREAM_FILE);
     CHECK(o != NULL);
     output_attach_position(o);
     CHECK(output_start(o) == 0);
@@ -272,11 +272,141 @@ static void test_attached(void) {
     ringbuf_destroy(rb);
 }
 
+/* --syslog-threads 3 with -w: three syslog workers, each on its own
+ * socket, taking every third record, plus a stream worker. Slow producer:
+ * every record reaches the collector exactly once, the stream is complete,
+ * nothing is missed on either path. */
+static void test_sharded(void) {
+    char target[64];
+    lsock_t ls = listener_open(target, sizeof(target));
+    CHECK(ls != LSOCK_INVALID);
+
+    ringbuf_t *rb = ringbuf_create(1024, 128, 0);
+    CHECK(rb != NULL);
+    syslog_out_t *sl = syslog_out_create(target, NULL);
+    CHECK(sl != NULL);
+    pcap_writer_t *pw = pcap_writer_open(STREAM_FILE, 128, 1);
+    CHECK(pw != NULL);
+
+    output_t *o = output_create(rb, sl, 3, pw, STREAM_FILE);
+    CHECK(o != NULL);
+    CHECK(output_syslog_threads(o) == 3);
+    CHECK(output_start(o) == 0);
+
+    const uint32_t N = 600;
+    for (uint32_t s = 0; s < N; s++) {
+        push(rb, s);
+        if (s % 50 == 49) nap_ms(20);
+    }
+    output_stop(o);
+
+    output_stats_t st;
+    output_get_stats(o, &st);
+    CHECK(st.syslog_sent == N);
+    CHECK(st.syslog_failed == 0);
+    CHECK(st.streamed == N);
+    CHECK(st.missed == 0);
+    CHECK(st.stream_missed == 0);
+
+    int bad = 0;
+    CHECK(collect(ls, 300, &bad) == (int)N);
+    CHECK(bad == 0);
+
+    output_destroy(o);
+    long pbad = 0;
+    CHECK(pcap_records(STREAM_FILE, &pbad) == (long)N);
+    CHECK(pbad == 0);
+    remove(STREAM_FILE);
+    ringbuf_destroy(rb);
+    lsock_close(ls);
+}
+
+/* Sharded workers lapped by a fast producer into a 16-slot ring: the
+ * accounting closes exactly on both paths, and whatever arrived is intact. */
+static void test_sharded_lapped(void) {
+    char target[64];
+    lsock_t ls = listener_open(target, sizeof(target));
+    CHECK(ls != LSOCK_INVALID);
+
+    ringbuf_t *rb = ringbuf_create(16, 128, 0);
+    CHECK(rb != NULL);
+    syslog_out_t *sl = syslog_out_create(target, NULL);
+    CHECK(sl != NULL);
+    pcap_writer_t *pw = pcap_writer_open(STREAM_FILE, 128, 1);
+    CHECK(pw != NULL);
+    output_t *o = output_create(rb, sl, 4, pw, STREAM_FILE);
+    CHECK(o != NULL);
+    CHECK(output_start(o) == 0);
+
+    const uint32_t N = 200000;
+    for (uint32_t s = 0; s < N; s++) push(rb, s);
+    output_stop(o);
+
+    output_stats_t st;
+    output_get_stats(o, &st);
+    CHECK(st.syslog_sent + st.syslog_failed + st.missed == N);
+    CHECK(st.streamed + st.stream_missed == N);
+    CHECK(st.streamed >= 16);
+    printf("sharded lapped: sent=%llu fail=%llu missed=%llu streamed=%llu "
+           "stream_missed=%llu\n",
+           (unsigned long long)st.syslog_sent,
+           (unsigned long long)st.syslog_failed,
+           (unsigned long long)st.missed, (unsigned long long)st.streamed,
+           (unsigned long long)st.stream_missed);
+
+    int bad = 0;
+    int got = collect(ls, 300, &bad);
+    CHECK(got <= (int)st.syslog_sent);
+    CHECK(bad == 0);
+
+    output_destroy(o);
+    long pbad = 0;
+    CHECK(pcap_records(STREAM_FILE, &pbad) == (long)st.streamed);
+    CHECK(pbad == 0);
+    remove(STREAM_FILE);
+    ringbuf_destroy(rb);
+    lsock_close(ls);
+}
+
+/* Offline replay with sharded workers: every worker publishes its own
+ * position, the producer waits for the slowest, nothing is lapped. */
+static void test_sharded_attached(void) {
+    char target[64];
+    lsock_t ls = listener_open(target, sizeof(target));
+    CHECK(ls != LSOCK_INVALID);
+    ringbuf_t *rb = ringbuf_create(16, 128, 0);
+    CHECK(rb != NULL);
+    syslog_out_t *sl = syslog_out_create(target, NULL);
+    CHECK(sl != NULL);
+    output_t *o = output_create(rb, sl, 3, NULL, NULL);
+    CHECK(o != NULL);
+    output_attach_position(o);
+    CHECK(output_start(o) == 0);
+
+    const uint32_t N = 20000;
+    for (uint32_t s = 0; s < N; s++) {
+        int spins = 0;
+        while (!ringbuf_producer_may_write(rb)) {
+            if (++spins > 100000) break;
+            if (spins % 1000 == 0) nap_ms(1);
+        }
+        push(rb, s);
+    }
+    output_stop(o);
+    output_stats_t st;
+    output_get_stats(o, &st);
+    CHECK(st.syslog_sent + st.syslog_failed == N);
+    CHECK(st.missed == 0);
+    output_destroy(o);
+    ringbuf_destroy(rb);
+    lsock_close(ls);
+}
+
 /* No sinks and never started: create/stop/destroy must be inert. */
 static void test_idle(void) {
     ringbuf_t *rb = ringbuf_create(8, 64, 0);
     CHECK(rb != NULL);
-    output_t *o = output_create(rb, NULL, NULL, NULL);
+    output_t *o = output_create(rb, NULL, 1, NULL, NULL);
     CHECK(o != NULL);
     output_stop(o);
     output_stats_t st;
@@ -293,6 +423,9 @@ int main(void) {
     test_delivery();
     test_lapped();
     test_attached();
+    test_sharded();
+    test_sharded_lapped();
+    test_sharded_attached();
     test_idle();
     TEST_MAIN_END();
 }

@@ -55,7 +55,12 @@ struct syslog_out {
     char                dest_ip[46];   /* resolved IP string (banner) */
     uint8_t             dest_addr[4];  /* same, binary, for the self-check */
     uint16_t            dest_port;
-    uint16_t            src_port;      /* our bound port, for the self-check */
+    uint16_t            src_port;      /* our bound port */
+    char                src_iface[64]; /* what we were bound to (clones repeat it) */
+    /* Source ports of every socket in the group (syslog_out_link), for the
+     * self-check; just our own until linked. */
+    uint16_t            src_ports[SYSLOG_MAX_SOCKETS];
+    unsigned            nsrc;
     atomic_uint_fast64_t sent;
     atomic_uint_fast64_t failed;
 
@@ -74,7 +79,7 @@ struct syslog_out {
 /* ── Send buffer: 16 MB so a slow collector or NIC backpressure is absorbed
  *    in the kernel instead of stalling the capture thread ────────────── */
 
-static void set_sndbuf(syslog_out_t *sl) {
+static void set_sndbuf(syslog_out_t *sl, int quiet) {
     int want = SYSLOG_SNDBUF;
     int done = 0;
 #if defined(__linux__) && defined(SO_SNDBUFFORCE)
@@ -98,7 +103,7 @@ static void set_sndbuf(syslog_out_t *sl) {
         got = 0;
     /* Linux reports twice the requested value (bookkeeping overhead);
      * anything below the request means the kernel clipped it. */
-    if (got < want)
+    if (got < want && !quiet)
         fprintf(stderr, "syslog: send buffer limited to %d KB by the "
                         "kernel (wanted %d KB"
 #ifdef __linux__
@@ -106,6 +111,90 @@ static void set_sndbuf(syslog_out_t *sl) {
 #endif
                         ")\n",
                 got / 1024, want / 1024);
+}
+
+/* Open, size, bind and connect one UDP socket to sl->dest and learn its
+ * source port. quiet silences the notes a clone would only repeat.
+ * -1 if socket() fails (sl->sock stays SOCK_INVALID). */
+static int open_socket(syslog_out_t *sl, const char *src_iface, int quiet) {
+    sl->sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sl->sock == SOCK_INVALID) {
+        fprintf(stderr, "syslog: socket() failed\n");
+        return -1;
+    }
+    set_sndbuf(sl, quiet);
+#ifdef _WIN32
+    /* No MSG_DONTWAIT on Winsock: make the socket itself non-blocking. */
+    u_long nb = 1;
+    (void)ioctlsocket(sl->sock, FIONBIO, &nb);
+#endif
+
+    /* bind to source interface/IP if specified */
+    if (src_iface && src_iface[0]) {
+        struct sockaddr_in src_addr;
+        memset(&src_addr, 0, sizeof(src_addr));
+        src_addr.sin_family = AF_INET;
+
+        /* try as IP address first */
+        if (inet_pton(AF_INET, src_iface, &src_addr.sin_addr) == 1) {
+            if (bind(sl->sock, (struct sockaddr *)&src_addr, sizeof(src_addr)) != 0)
+                fprintf(stderr, "syslog: warning: bind to %s failed\n", src_iface);
+            else if (!quiet)
+                fprintf(stderr, "Syslog source: %s\n", src_iface);
+        }
+#if !defined(_WIN32) && defined(SO_BINDTODEVICE)
+        /* try as interface name (Linux only) */
+        else {
+            if (setsockopt(sl->sock, SOL_SOCKET, SO_BINDTODEVICE,
+                           src_iface, (socklen_t)strlen(src_iface)) != 0)
+                fprintf(stderr, "syslog: warning: bind to device %s failed\n", src_iface);
+            else if (!quiet)
+                fprintf(stderr, "Syslog source device: %s\n", src_iface);
+        }
+#endif
+    }
+
+    /* Learn our own source port so the self-check can match precisely
+     * instead of swallowing all third-party traffic on the syslog port. */
+    struct sockaddr_in local;
+    socklen_t llen = sizeof(local);
+    memset(&local, 0, sizeof(local));
+    if (getsockname(sl->sock, (struct sockaddr *)&local, &llen) != 0 ||
+        local.sin_port == 0) {
+        memset(&local, 0, sizeof(local));
+        local.sin_family      = AF_INET;
+        local.sin_addr.s_addr = htonl(INADDR_ANY);
+        local.sin_port        = 0;
+        (void)bind(sl->sock, (struct sockaddr *)&local, sizeof(local));
+        llen = sizeof(local);
+        (void)getsockname(sl->sock, (struct sockaddr *)&local, &llen);
+    }
+    sl->src_port = ntohs(local.sin_port);
+
+    /* Connect the UDP socket: an unconnected sendto() does a full route
+     * lookup (fib_table_lookup / ip_route_output) per datagram, which the
+     * load-test profile showed dominating the syslog path. A connected
+     * socket caches the route; send() / sendmmsg() with a NULL address
+     * then skip it. */
+    sl->connected = (connect(sl->sock, (struct sockaddr *)&sl->dest,
+                             sizeof(sl->dest)) == 0);
+
+#ifdef __linux__
+    /* Fixed parts of the sendmmsg() vector; only iov_len varies per flush. */
+    for (unsigned i = 0; i < SYSLOG_BATCH; i++) {
+        sl->iov[i].iov_base           = sl->msgs[i];
+        sl->mm[i].msg_hdr.msg_name    = sl->connected ? NULL : (void *)&sl->dest;
+        sl->mm[i].msg_hdr.msg_namelen = sl->connected ? 0 : sizeof(sl->dest);
+        sl->mm[i].msg_hdr.msg_iov     = &sl->iov[i];
+        sl->mm[i].msg_hdr.msg_iovlen  = 1;
+    }
+#endif
+
+    sl->src_ports[0] = sl->src_port;
+    sl->nsrc = 1;
+    if (src_iface && src_iface != sl->src_iface)
+        snprintf(sl->src_iface, sizeof(sl->src_iface), "%s", src_iface);
+    return 0;
 }
 
 /* ── Create: parse host:port, resolve, open UDP socket ───────── */
@@ -165,87 +254,56 @@ syslog_out_t *syslog_out_create(const char *host_port, const char *src_iface) {
 
     freeaddrinfo(res);
 
-    /* open UDP socket */
-    sl->sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sl->sock == SOCK_INVALID) {
-        fprintf(stderr, "syslog: socket() failed\n");
+    if (open_socket(sl, src_iface, 0) != 0) {
         free(sl);
         return NULL;
     }
-
-    set_sndbuf(sl);
-#ifdef _WIN32
-    /* No MSG_DONTWAIT on Winsock: make the socket itself non-blocking. */
-    u_long nb = 1;
-    (void)ioctlsocket(sl->sock, FIONBIO, &nb);
-#endif
-
-    /* bind to source interface/IP if specified */
-    if (src_iface && src_iface[0]) {
-        struct sockaddr_in src_addr;
-        memset(&src_addr, 0, sizeof(src_addr));
-        src_addr.sin_family = AF_INET;
-
-        /* try as IP address first */
-        if (inet_pton(AF_INET, src_iface, &src_addr.sin_addr) == 1) {
-            if (bind(sl->sock, (struct sockaddr *)&src_addr, sizeof(src_addr)) != 0)
-                fprintf(stderr, "syslog: warning: bind to %s failed\n", src_iface);
-            else
-                fprintf(stderr, "Syslog source: %s\n", src_iface);
-        }
-#if !defined(_WIN32) && defined(SO_BINDTODEVICE)
-        /* try as interface name (Linux only) */
-        else {
-            if (setsockopt(sl->sock, SOL_SOCKET, SO_BINDTODEVICE,
-                           src_iface, (socklen_t)strlen(src_iface)) != 0)
-                fprintf(stderr, "syslog: warning: bind to device %s failed\n", src_iface);
-            else
-                fprintf(stderr, "Syslog source device: %s\n", src_iface);
-        }
-#endif
-    }
-
-    /* Learn our own source port so the self-check can match precisely
-     * instead of swallowing all third-party traffic on the syslog port. */
-    struct sockaddr_in local;
-    socklen_t llen = sizeof(local);
-    memset(&local, 0, sizeof(local));
-    if (getsockname(sl->sock, (struct sockaddr *)&local, &llen) != 0 ||
-        local.sin_port == 0) {
-        memset(&local, 0, sizeof(local));
-        local.sin_family      = AF_INET;
-        local.sin_addr.s_addr = htonl(INADDR_ANY);
-        local.sin_port        = 0;
-        (void)bind(sl->sock, (struct sockaddr *)&local, sizeof(local));
-        llen = sizeof(local);
-        (void)getsockname(sl->sock, (struct sockaddr *)&local, &llen);
-    }
-    sl->src_port = ntohs(local.sin_port);
-
-    /* Connect the UDP socket: an unconnected sendto() does a full route
-     * lookup (fib_table_lookup / ip_route_output) per datagram, which the
-     * load-test profile showed dominating the syslog path. A connected
-     * socket caches the route; send() / sendmmsg() with a NULL address
-     * then skip it. */
-    sl->connected = (connect(sl->sock, (struct sockaddr *)&sl->dest,
-                             sizeof(sl->dest)) == 0);
-
-#ifdef __linux__
-    /* Fixed parts of the sendmmsg() vector; only iov_len varies per flush. */
-    for (unsigned i = 0; i < SYSLOG_BATCH; i++) {
-        sl->iov[i].iov_base           = sl->msgs[i];
-        sl->mm[i].msg_hdr.msg_name    = sl->connected ? NULL : (void *)&sl->dest;
-        sl->mm[i].msg_hdr.msg_namelen = sl->connected ? 0 : sizeof(sl->dest);
-        sl->mm[i].msg_hdr.msg_iov     = &sl->iov[i];
-        sl->mm[i].msg_hdr.msg_iovlen  = 1;
-    }
-#endif
-
     fprintf(stderr, "Syslog output: %s:%u (UDP)\n", sl->dest_ip, port);
     return sl;
 }
 
+/* ── Clone: another socket to the same collector ─────────────── */
+
+syslog_out_t *syslog_out_clone(const syslog_out_t *src) {
+    if (!src || src->sock == SOCK_INVALID) return NULL;
+    syslog_out_t *sl = calloc(1, sizeof(syslog_out_t));
+    if (!sl) return NULL;
+    sl->dest      = src->dest;
+    sl->dest_port = src->dest_port;
+    memcpy(sl->dest_ip,   src->dest_ip,   sizeof(sl->dest_ip));
+    memcpy(sl->dest_addr, src->dest_addr, sizeof(sl->dest_addr));
+    memcpy(sl->src_iface, src->src_iface, sizeof(sl->src_iface));
+    if (open_socket(sl, sl->src_iface, 1) != 0) {
+        free(sl);
+        return NULL;
+    }
+    return sl;
+}
+
+void syslog_out_link(syslog_out_t *const *sls, unsigned n) {
+    if (n > SYSLOG_MAX_SOCKETS) n = SYSLOG_MAX_SOCKETS;
+    for (unsigned i = 0; i < n; i++) {
+        if (!sls[i]) continue;
+        sls[i]->nsrc = 0;
+        for (unsigned j = 0; j < n; j++)
+            if (sls[j]) sls[i]->src_ports[sls[i]->nsrc++] = sls[j]->src_port;
+    }
+}
+
+uint16_t syslog_out_src_port(const syslog_out_t *sl) {
+    return sl ? sl->src_port : 0;
+}
+
 /* ── Self-check: is this packet our own syslog traffic? ──────── */
+
+/* Is port one of the group's source ports? An unknown (0) port matches
+ * anything, as before: better to swallow a stranger's datagram to the
+ * collector than to forward our own forever. */
+static int own_port(const syslog_out_t *sl, uint16_t port) {
+    for (unsigned i = 0; i < sl->nsrc; i++)
+        if (sl->src_ports[i] == 0 || sl->src_ports[i] == port) return 1;
+    return sl->nsrc == 0;
+}
 
 int syslog_out_is_self(const syslog_out_t *sl, const pkt_summary_t *pkt) {
     if (!sl) return 0;
@@ -257,15 +315,13 @@ int syslog_out_is_self(const syslog_out_t *sl, const pkt_summary_t *pkt) {
 
     /* our own datagrams to the collector */
     if (pkt->l4_proto == PROTO_UDP && to_dest &&
-        pkt->dst_port == sl->dest_port &&
-        (sl->src_port == 0 || pkt->src_port == sl->src_port)) {
+        pkt->dst_port == sl->dest_port && own_port(sl, pkt->src_port)) {
         return 1;
     }
 
     /* replies from the collector back to us */
     if (pkt->l4_proto == PROTO_UDP && from_dest &&
-        pkt->src_port == sl->dest_port &&
-        (sl->src_port == 0 || pkt->dst_port == sl->src_port)) {
+        pkt->src_port == sl->dest_port && own_port(sl, pkt->dst_port)) {
         return 1;
     }
 

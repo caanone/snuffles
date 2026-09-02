@@ -289,7 +289,60 @@ static void test_failure(void) {
     syslog_out_destroy(bad);
 }
 
+/* A clone is a second socket to the same collector; after linking, every
+ * member recognises datagrams from every member's port as its own. */
+static void test_clone(void) {
+    char target[64];
+    lsock_t ls = listener_open(target, sizeof(target));
+    CHECK(ls != LSOCK_INVALID);
+    unsigned port = (unsigned)atoi(strrchr(target, ':') + 1);
+
+    syslog_out_t *sl = syslog_out_create(target, NULL);
+    syslog_out_t *c  = syslog_out_clone(sl);
+    CHECK(sl != NULL && c != NULL);
+    CHECK(syslog_out_src_port(sl) != 0 && syslog_out_src_port(c) != 0);
+    CHECK(syslog_out_src_port(sl) != syslog_out_src_port(c));
+
+    pkt_summary_t p;
+    memset(&p, 0, sizeof(p));
+    p.addr_family = 4;
+    set_v4(p.src_addr, "127.0.0.1");
+    set_v4(p.dst_addr, "127.0.0.1");
+    p.l4_proto = PROTO_UDP;
+    p.dst_port = (uint16_t)port;
+    p.src_port = syslog_out_src_port(c);
+    CHECK(syslog_out_is_self(sl, &p) == 0);      /* not linked: only its own port */
+    CHECK(syslog_out_is_self(c, &p) == 1);
+
+    syslog_out_t *group[2] = { sl, c };
+    syslog_out_link(group, 2);
+    CHECK(syslog_out_is_self(sl, &p) == 1);
+    p.src_port = syslog_out_src_port(sl);
+    CHECK(syslog_out_is_self(c, &p) == 1);
+    /* the reverse direction (collector back to a member) too */
+    p.src_port = (uint16_t)port;
+    p.dst_port = syslog_out_src_port(c);
+    CHECK(syslog_out_is_self(sl, &p) == 1);
+    p.dst_port = 1;
+    CHECK(syslog_out_is_self(sl, &p) == 0);
+
+    /* the clone sends on its own; the primary's counters stay untouched */
+    syslog_out_send(c, &p);
+    syslog_out_flush(c);
+    uint64_t sent, failed;
+    syslog_out_counts(c, &sent, &failed);
+    CHECK(sent == 1 && failed == 0);
+    syslog_out_counts(sl, &sent, &failed);
+    CHECK(sent == 0 && failed == 0);
+
+    CHECK(syslog_out_clone(NULL) == NULL);
+    syslog_out_destroy(c);
+    syslog_out_destroy(sl);
+    lsock_close(ls);
+}
+
 int main(void) {
+    test_clone();
     char target[64];
     lsock_t ls = listener_open(target, sizeof(target));
     CHECK(ls != LSOCK_INVALID);

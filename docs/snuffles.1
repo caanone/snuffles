@@ -145,11 +145,20 @@ Without \fB\-b\fR the headless/quiet syslog modes use a 4096\-slot ring.
 .BI \-\-syslog\-iface " ip|dev"
 Source address or device for syslog datagrams.
 .TP
+.BI \-\-syslog\-threads " N"
+Run \fIN\fR (1\-8, default 1) syslog output threads, each with its own UDP
+socket, taking every \fIN\fRth record by sequence number. One thread hands
+the kernel roughly 300k datagrams/s; the cost is the kernel's per-datagram
+send path, so throughput scales with threads and cores. The record format
+is unchanged; the collector sees \fIN\fR source ports. With \fB\-w\fR the
+stream then runs on a thread of its own.
+.TP
 .BR \-\-stats [=\fIfile\fR]
 Print a counters line (captured, kernel and interface drops \(em per
 worker as well with \fB\-j\fR, ring
 occupancy, records emitted and missed by the consumer, syslog and stream
-counts, records missed by the output thread, sessions, wake\-ups, RSS)
+counts, records missed by the syslog and by the stream output threads,
+sessions, wake\-ups, RSS)
 every second and a
 .B summary
 line at exit, to stderr or to \fIfile\fR (the TUI requires \fIfile\fR).
@@ -272,6 +281,7 @@ pairs with the keys
 .BR promisc " (0/1),"
 .BR syslog ,
 .BR syslog_iface ,
+.BR syslog_threads ,
 .BR cpu " (0\-8191), and"
 .BR rt " (0/1)."
 Saved display\-filter presets are declared as

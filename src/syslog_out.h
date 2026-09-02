@@ -9,10 +9,24 @@ typedef struct syslog_out syslog_out_t;
  * per record from the same queue. */
 #define SYSLOG_BATCH 32
 
+/* Sockets one --syslog target may fan out over (--syslog-threads). */
+#define SYSLOG_MAX_SOCKETS 8
+
 /* Open the UDP socket. Call BEFORE ns_drop_privileges(): the 16 MB send
  * buffer (SO_SNDBUFFORCE) and SO_BINDTODEVICE need capabilities. */
 syslog_out_t   *syslog_out_create(const char *host_port,
                                    const char *src_iface);
+/* Another socket to the same collector, bound like the original (same
+ * source address/device), for a second output thread. Prints nothing:
+ * the original already announced the target. NULL on failure. */
+syslog_out_t   *syslog_out_clone(const syslog_out_t *sl);
+/* Make every object in the group recognise every group member's own
+ * datagrams in syslog_out_is_self(): a record lands on whichever thread
+ * its sequence number selects, not on the socket that sent it. Call once
+ * after cloning, before the threads start. */
+void            syslog_out_link(syslog_out_t *const *sls, unsigned n);
+/* The socket's own UDP source port (0 if unknown). */
+uint16_t        syslog_out_src_port(const syslog_out_t *sl);
 int             syslog_out_is_self(const syslog_out_t *sl, const pkt_summary_t *pkt);
 /* Format one CSV record into the outgoing batch (output thread only).
  * Flushes by itself once SYSLOG_BATCH records are queued; the output

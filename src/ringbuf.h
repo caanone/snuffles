@@ -26,9 +26,10 @@
 /* Consumers that block on the ring each own a waiter slot: a wake-up
  * channel (pipe on POSIX, auto-reset event on Windows), a waiting flag
  * and, for offline back-pressure, the position they will read next.
- * Slot 0 is the display/headless consumer and exists from creation; an
- * output thread takes another with ringbuf_waiter_add(). */
-#define RINGBUF_MAX_WAITERS 4
+ * Slot 0 is the display/headless consumer and exists from creation; each
+ * output worker takes another with ringbuf_waiter_add(): up to
+ * OUTPUT_MAX_THREADS syslog shards plus one -w stream worker. */
+#define RINGBUF_MAX_WAITERS 10
 
 typedef struct {
     atomic_int           waiting;   /* set right before the owner blocks */

@@ -129,6 +129,9 @@ static void parse_keyval(const char *path, int lineno, char *line,
         snprintf(cfg->syslog_target, sizeof(cfg->syslog_target), "%s", val);
     } else if (strcmp(key, "syslog_iface") == 0) {
         snprintf(cfg->syslog_iface, sizeof(cfg->syslog_iface), "%s", val);
+    } else if (strcmp(key, "syslog_threads") == 0) {
+        if (!cfg_num(val, 1, 8, &cfg->syslog_threads))
+            warn_line(path, lineno, "syslog_threads out of range (1-8)", val);
     } else if (strcmp(key, "cpu") == 0) {
         if (!cfg_num(val, 0, 8191, &cfg->cpu))
             warn_line(path, lineno, "cpu out of range (0-8191)", val);
