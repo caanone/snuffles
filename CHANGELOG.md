@@ -3,27 +3,25 @@
 ## [Unreleased]
 
 ### Added
-- **Syslog output scales with the traffic.** A single output thread is
-  bounded at ~200-330k records/s by the kernel's per-datagram send path
-  (formatting is under 10% of the cost). Up to `--syslog-threads` workers
-  now exist from the start, one UDP socket each, by default one per CPU the
-  process may run on (at most 8); `--syslog-min-threads` of them run always
-  (default 1), the rest park. Workers claim records in 32-record chunks
-  from a shared cursor, so any number of them can share the stream; when
-  the unclaimed backlog exceeds an eighth of the ring a running worker wakes
-  one parked helper (at most one every 2 ms), and a helper that finds
-  nothing left to claim parks again. The record format is unchanged; the
-  collector sees up to N source ports. With `-w` the stream runs on a worker
-  of its own. `--stats` gains `stream_missed=`, the records the `-w` path
-  lost, next to `out_missed=` for the syslog path, and `syslog_threads=`,
-  the most workers that ran at once since the previous line. Config keys
-  `syslog_threads` (a number or `auto`) and `syslog_min_threads`.
-  Measured on the rig with no flags (30 s, four CPUs available): at
-  200 kpps everything is delivered by one worker and the helpers use no
-  CPU; at 500 kpps helpers engage in order (88/56/32/19% of a core) and
-  nothing is missed; at 1 Mpps four workers deliver 80% and are CPU-bound
-  on the rig's two SUT cores. A single thread topped out at ~58% of
-  500 kpps.
+- **Syslog output threads are created and retired with the traffic.** A
+  single output thread is bounded at ~200-330k records/s by the kernel's
+  per-datagram send path (formatting is under 10% of the cost). One UDP
+  socket per possible thread is opened at start (`--syslog-threads N|auto`,
+  auto = the CPUs the process may run on, at most 16), but only
+  `--syslog-min-threads` threads run (default 1). Workers claim records in
+  32-record chunks from a shared cursor and keep a running busy fraction;
+  when the unclaimed backlog exceeds an eighth of the ring, or the running
+  threads average 85% busy with records queued, a running thread wakes a
+  parked one or creates a new one (at most one every 2 ms); a helper parks
+  when the others would average no more than 70% busy without it, and a
+  parked thread exits after 3 s without work. The record format is
+  unchanged; the collector sees up to N source ports. With `-w` the stream
+  runs on a worker of its own. `--stats` gains `stream_missed=` (records the
+  `-w` path lost, next to `out_missed=` for the syslog path),
+  `syslog_threads=` (most threads alive at once since the previous line)
+  and `syslog_alive=` (alive now). Config keys `syslog_threads` (a number or
+  `auto`) and `syslog_min_threads`. Measured on the rig with no flags (30 s,
+  four CPUs available): see the table below.
 
 ### Fixed
 - An output worker could exit on stop with the last committed records

@@ -148,19 +148,22 @@ burst the capture thread hands over in one go cannot lap the output threads.
 Source address or device for syslog datagrams.
 .TP
 .BI \-\-syslog\-threads " N|auto"
-The most syslog output threads (1\-8), each with its own UDP socket;
-\fBauto\fR (the default) means one per CPU the process may run on, at most 8.
-One thread hands the kernel roughly 200\-330k datagrams/s, the cost being
-the kernel's per\-datagram send path, so the threads scale with the
-traffic: they claim records in 32\-record chunks from a shared cursor, and
-whenever the unclaimed backlog exceeds an eighth of the ring a running
-thread wakes one parked helper (at most one every 2 ms); a helper that
-finds nothing left to claim parks again. The record format is unchanged;
-the collector sees up to \fIN\fR source ports. With \fB\-w\fR the stream
-runs on a thread of its own.
+The most syslog output threads (1\-16), each with its own UDP socket;
+\fBauto\fR (the default) means one per CPU the process may run on, at most
+16. One thread hands the kernel roughly 200\-330k datagrams/s, the cost
+being the kernel's per\-datagram send path, so threads are created and
+retired with the traffic: only one runs at start; workers claim records in
+32\-record chunks from a shared cursor and keep a running busy fraction;
+when the unclaimed backlog exceeds an eighth of the ring, or the running
+threads average 85\ % busy with records queued, a running thread wakes a
+parked one or creates a new one (at most one every 2\ ms); a helper parks
+when the others would average no more than 70\ % busy without it, and a
+parked thread exits after 3\ s without work. The record format is
+unchanged; the collector sees up to \fIN\fR source ports. With \fB\-w\fR the
+stream runs on a thread of its own.
 .TP
 .BI \-\-syslog\-min\-threads " N"
-Syslog output threads that never park (1\-8, default 1). Equal to
+Syslog output threads that exist always (1\-16, default 1). Equal to
 \fB\-\-syslog\-threads\fR it pins the count.
 .TP
 .BR \-\-stats [=\fIfile\fR]
@@ -168,7 +171,8 @@ Print a counters line (captured, kernel and interface drops \(em per
 worker as well with \fB\-j\fR, ring
 occupancy, records emitted and missed by the consumer, syslog and stream
 counts, records missed by the syslog and by the stream output threads,
-the most syslog threads that ran at once, sessions, wake\-ups, RSS)
+the most syslog threads alive at once and alive now, sessions, wake\-ups,
+RSS)
 every second and a
 .B summary
 line at exit, to stderr or to \fIfile\fR (the TUI requires \fIfile\fR).

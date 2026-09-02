@@ -407,10 +407,10 @@ static void test_sharded_attached(void) {
     lsock_close(ls);
 }
 
-/* Scaling under load: one running worker, two parked helpers, a producer
- * that fills a 1024-slot ring as fast as the sinks allow (attached, so the
- * accounting is exact). The unclaimed backlog exceeds an eighth of the ring
- * almost at once, so a helper is woken; the high-water mark shows it. */
+/* Scaling under load: one thread to begin with, a producer that fills a
+ * 1024-slot ring as fast as the sinks allow (attached, so the accounting is
+ * exact). The unclaimed backlog exceeds an eighth of the ring almost at
+ * once, so a second thread is created; the high-water mark shows it. */
 static void test_scaled_dynamic(void) {
     char target[64];
     lsock_t ls = listener_open(target, sizeof(target));
@@ -439,8 +439,9 @@ static void test_scaled_dynamic(void) {
     output_get_stats(o, &st);
     CHECK(st.syslog_sent + st.syslog_failed == N);
     CHECK(st.missed == 0);
-    CHECK(st.syslog_threads >= 2);              /* a helper was woken */
+    CHECK(st.syslog_threads >= 2);              /* a thread was created */
     CHECK(st.syslog_threads <= 3);
+    CHECK(st.syslog_alive == 0);                /* all joined by stop */
     printf("scaled: sent=%llu threads=%d\n",
            (unsigned long long)st.syslog_sent, st.syslog_threads);
     output_destroy(o);
@@ -448,8 +449,62 @@ static void test_scaled_dynamic(void) {
     lsock_close(ls);
 }
 
-/* Light load never wakes a helper: batches of 50 records stay under the
- * 128-record threshold of a 1024-slot ring, so only worker 0 ever runs. */
+/* Threads come and go. A heavy phase creates helpers (their idle exit
+ * shortened to 200 ms), a quiet spell lets them park and exit, a second
+ * heavy phase creates them again in the joined slots. */
+static void test_scaled_shrink(void) {
+    char target[64];
+    lsock_t ls = listener_open(target, sizeof(target));
+    CHECK(ls != LSOCK_INVALID);
+    ringbuf_t *rb = ringbuf_create(1024, 128, 0);
+    CHECK(rb != NULL);
+    syslog_out_t *sl = syslog_out_create(target, NULL);
+    CHECK(sl != NULL);
+    output_t *o = output_create(rb, sl, 1, 3, NULL, NULL);
+    CHECK(o != NULL);
+    output_set_idle_exit_ms(o, 200);
+    output_attach_position(o);
+    CHECK(output_start(o) == 0);
+
+    const uint32_t N = 20000;
+    uint32_t seq = 0;
+    for (int phase = 0; phase < 2; phase++) {
+        for (uint32_t s = 0; s < N; s++, seq++) {
+            int spins = 0;
+            while (!ringbuf_producer_may_write(rb)) {
+                if (++spins > 100000) break;
+                if (spins % 1000 == 0) nap_ms(1);
+            }
+            push(rb, seq);
+        }
+        output_stats_t st;
+        for (int i = 0; i < 100; i++) {           /* drained: at most 5 s */
+            output_get_stats(o, &st);
+            if (st.syslog_sent + st.syslog_failed >= seq) break;
+            nap_ms(50);
+        }
+        CHECK(st.syslog_sent + st.syslog_failed == seq);
+        CHECK(st.missed == 0);
+        CHECK(st.syslog_threads >= 2);          /* created for this phase */
+        nap_ms(1500);                           /* park, then exit */
+        output_get_stats(o, &st);
+        CHECK(st.syslog_alive == 1);
+        printf("shrink phase %d: threads=%d alive=%d\n", phase,
+               st.syslog_threads, st.syslog_alive);
+    }
+    output_stop(o);
+    output_stats_t st;
+    output_get_stats(o, &st);
+    CHECK(st.syslog_sent + st.syslog_failed == seq);
+    CHECK(st.syslog_alive == 0);
+    output_destroy(o);
+    ringbuf_destroy(rb);
+    lsock_close(ls);
+}
+
+/* Light load never adds a thread: batches of 50 records stay under the
+ * 128-record threshold of a 1024-slot ring and the one thread is far from
+ * saturated, so it stays alone. */
 static void test_scaled_idle(void) {
     char target[64];
     lsock_t ls = listener_open(target, sizeof(target));
@@ -505,6 +560,7 @@ int main(void) {
     test_sharded_lapped();
     test_sharded_attached();
     test_scaled_dynamic();
+    test_scaled_shrink();
     test_scaled_idle();
     test_idle();
     TEST_MAIN_END();

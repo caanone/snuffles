@@ -27,9 +27,9 @@
  * channel (pipe on POSIX, auto-reset event on Windows), a waiting flag
  * and, for offline back-pressure, the position they will read next.
  * Slot 0 is the display/headless consumer and exists from creation; each
- * output worker takes another with ringbuf_waiter_add(): up to
- * OUTPUT_MAX_THREADS syslog shards plus one -w stream worker. */
-#define RINGBUF_MAX_WAITERS 10
+ * output worker slot takes another with ringbuf_waiter_add(): up to
+ * OUTPUT_MAX_THREADS syslog threads plus one -w stream worker. */
+#define RINGBUF_MAX_WAITERS 18
 
 typedef struct {
     atomic_int           waiting;   /* set right before the owner blocks */

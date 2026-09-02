@@ -112,8 +112,9 @@ static void print_usage(const char *prog) {
            "  --syslog <h:p>   Send packet CSV to syslog server (UDP)\n"
            "  --syslog-iface <ip|dev>  Source interface/IP for syslog\n"
            "  --syslog-threads <N|auto>  Most syslog output threads (one UDP socket\n"
-           "                    each); auto = CPUs we may run on, at most 8\n"
-           "  --syslog-min-threads <N>  Syslog threads that never park (default 1)\n"
+           "                    each, created and retired with the load); auto =\n"
+           "                    CPUs we may run on, at most 16\n"
+           "  --syslog-min-threads <N>  Syslog threads that exist always (default 1)\n"
            "  --stats[=FILE]    Report capture/drop counters every second and\n"
            "                    at exit (stderr, or FILE; the TUI needs FILE)\n"
            "  --no-summary      Headless modes: no counters line at exit\n"
@@ -206,7 +207,7 @@ static void stats_report_line(stats_reporter_t *r, const char *tag) {
     fprintf(r->out,
             "%s t=%.3f captured=%llu kdrop=%llu ifdrop=%llu %sring=%u "
             "emitted=%llu missed=%llu syslog_sent=%llu syslog_fail=%llu "
-            "streamed=%llu out_missed=%llu stream_missed=%llu syslog_threads=%d "
+            "streamed=%llu out_missed=%llu stream_missed=%llu syslog_threads=%d syslog_alive=%d "
             "sessions=%u wakeups=%llu rss_kb=%ld\n",
             tag, tv_secs(&now, &r->t0),
             (unsigned long long)cs.pkts_recv,
@@ -222,6 +223,7 @@ static void stats_report_line(stats_reporter_t *r, const char *tag) {
             (unsigned long long)os.missed,
             (unsigned long long)os.stream_missed,
             os.syslog_threads,
+            os.syslog_alive,
             session_tables_count(r->sts, r->nsts),
             (unsigned long long)ringbuf_notify_sent(r->rb),
             rss_kb());

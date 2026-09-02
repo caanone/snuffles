@@ -10,7 +10,7 @@ typedef struct syslog_out syslog_out_t;
 #define SYSLOG_BATCH 32
 
 /* Sockets one --syslog target may fan out over (--syslog-threads). */
-#define SYSLOG_MAX_SOCKETS 8
+#define SYSLOG_MAX_SOCKETS 16
 
 /* Open the UDP socket. Call BEFORE ns_drop_privileges(): the 16 MB send
  * buffer (SO_SNDBUFFORCE) and SO_BINDTODEVICE need capabilities. */
