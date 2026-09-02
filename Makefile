@@ -173,8 +173,13 @@ RUNS ?= 20
 test-stress: $(OBJDIR)/tests/test_ringbuf $(OBJDIR)/tests/test_session
 	@fail=0; \
 	for i in $$(seq 1 $(RUNS)); do \
-	  $(OBJDIR)/tests/test_ringbuf >/dev/null 2>&1 || fail=$$((fail+1)); \
-	  $(OBJDIR)/tests/test_session >/dev/null 2>&1 || fail=$$((fail+1)); \
+	  for t in test_ringbuf test_session; do \
+	    out=$$($(OBJDIR)/tests/$$t 2>&1); rc=$$?; \
+	    if [ $$rc -ne 0 ]; then \
+	      fail=$$((fail+1)); \
+	      printf '== stress round %s: %s exited %s\n%s\n' "$$i" "$$t" "$$rc" "$$out"; \
+	    fi; \
+	  done; \
 	done; \
 	echo "stress: $(RUNS) rounds, $$fail failure(s)"; \
 	[ $$fail -eq 0 ] || exit 1

@@ -3,6 +3,12 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Rounds for the concurrency stress loops (default 30)
+        default: "30"
+        required: false
 
 jobs:
   linux-make:
@@ -101,7 +107,7 @@ jobs:
       - name: Unit tests (sanitized)
         run: make clean && make test SAN=1
       - name: Concurrency stress
-        run: make clean && make test-stress RUNS=30
+        run: make clean && make test-stress RUNS=${{ github.event.inputs.runs || '30' }}
       - name: CMake + CTest
         run: |
           cmake -B build-ci -DNO_PCAP=ON
@@ -121,7 +127,7 @@ jobs:
       - name: Unit tests (sanitized)
         run: make clean && make test SAN=1
       - name: Concurrency stress
-        run: make clean && make test-stress RUNS=30
+        run: make clean && make test-stress RUNS=${{ github.event.inputs.runs || '30' }}
 
   sanitized-tests:
     name: Unit tests (ASan + UBSan)
