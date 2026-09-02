@@ -82,6 +82,12 @@ flags, 30 s (the SUT cpuset gives auto = 4):
 | 500 kpps | 100 %, 0 missed | 4 in 31 of 36 s (helpers cascade in within ~6 ms, drain, park) | 88 / 56 / 32 / 19 % |
 | 1 Mpps | 80 % | 4 | 84 / 77 / 81 / 85 %: CPU-bound on 2 cores |
 
+Found on the way, by CI on Wine and macOS: a worker that had read the ring total, flushed, and
+then saw the stop flag could exit with the tail committed during the flush unclaimed (14 of 20000
+in the attached scaling test). The single output thread of 1.4.0 had the same race a few
+nanoseconds wide. Workers now re-read the total under the flag. Reproduce Windows-only failures
+locally with `./scripts/test-windows.sh` (docker + Wine, ~3 min); it caught this one.
+
 Runs: `loadtest/results/as200 as500 as1m` (untracked; the 200 k scenario is a scratch copy of B3
 with `pps` 25000 — add it to `loadtest/scenarios/` if it is wanted again).
 
