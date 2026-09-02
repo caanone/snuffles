@@ -404,49 +404,62 @@ static int mp_check(const pkt_record_t *rec, const uint8_t *data,
 static void test_mp_stress(void) {
     uint64_t total = MP_HOT * MP_STRESS;
     g_mp_n = MP_STRESS;
-    g_mprb = ringbuf_create_mp(64, 256, 64 * 256, MP_HOT);
-    CHECK(g_mprb != NULL);
-    CHECK(ringbuf_producers(g_mprb) == MP_HOT);
 
-    pthread_t t[MP_HOT];
-    mp_start(t, MP_HOT);
+    /* The reader competes with MP_HOT producers for the runner's cores. On
+     * the 3-core macOS CI runner it has been descheduled for an entire run
+     * (reads=0, twice in 30 rounds): that run validated nothing, so it is
+     * neither a pass nor a failure — it is repeated. Only a run in which the
+     * reader actually raced the producers counts, and it must be torn-free. */
+    uint64_t ok = 0;
+    for (int attempt = 1; ; attempt++) {
+        g_mprb = ringbuf_create_mp(64, 256, 64 * 256, MP_HOT);
+        CHECK(g_mprb != NULL);
+        CHECK(ringbuf_producers(g_mprb) == MP_HOT);
 
-    uint64_t torn = 0, ok = 0, reclaimed = 0, edge = 0;
-    uint8_t data[256];
-    pkt_record_t rec;
-    unsigned seed = 99991;
-    while (ringbuf_total(g_mprb) < total) {
-        uint32_t c = ringbuf_count(g_mprb);
-        if (!c) { sched_yield(); continue; }
-        /* a batch per visibility check: the producers are the ones with
-         * the CPU here, so keep the reads dense between them */
-        for (int r = 0; r < 16; r++) {
-            seed = seed * 1103515245u + 12345u;
+        pthread_t t[MP_HOT];
+        mp_start(t, MP_HOT);
 
-            /* the records about to be overwritten, by absolute sequence */
-            uint64_t at = ringbuf_oldest(g_mprb) + ((seed >> 20) & 3u);
-            if (ringbuf_read_seq(g_mprb, at, &rec, data)) {
-                edge++;
+        uint64_t torn = 0, reclaimed = 0, edge = 0;
+        ok = 0;
+        uint8_t data[256];
+        pkt_record_t rec;
+        unsigned seed = 99991;
+        while (ringbuf_total(g_mprb) < total) {
+            uint32_t c = ringbuf_count(g_mprb);
+            if (!c) { sched_yield(); continue; }
+            /* a batch per visibility check: the producers are the ones with
+             * the CPU here, so keep the reads dense between them */
+            for (int r = 0; r < 16; r++) {
+                seed = seed * 1103515245u + 12345u;
+
+                /* the records about to be overwritten, by absolute sequence */
+                uint64_t at = ringbuf_oldest(g_mprb) + ((seed >> 20) & 3u);
+                if (ringbuf_read_seq(g_mprb, at, &rec, data)) {
+                    edge++;
+                    torn += (uint64_t)mp_check(&rec, data, &reclaimed);
+                }
+
+                /* half the display-index reads land in the lapped tail too */
+                uint32_t idx = (seed & 0x10000u) ? (seed >> 17) % c
+                                                 : (seed >> 17) % (c < 4 ? c : 4);
+                if (!ringbuf_read(g_mprb, idx, &rec, data)) continue;
+                ok++;
                 torn += (uint64_t)mp_check(&rec, data, &reclaimed);
             }
-
-            /* half the display-index reads land in the lapped tail too */
-            uint32_t idx = (seed & 0x10000u) ? (seed >> 17) % c
-                                             : (seed >> 17) % (c < 4 ? c : 4);
-            if (!ringbuf_read(g_mprb, idx, &rec, data)) continue;
-            ok++;
-            torn += (uint64_t)mp_check(&rec, data, &reclaimed);
         }
-    }
-    mp_join(t, MP_HOT);
+        mp_join(t, MP_HOT);
 
-    printf("mp stress: prods=%d reads=%llu edge=%llu reclaimed=%llu torn=%llu\n",
-           MP_HOT, (unsigned long long)ok, (unsigned long long)edge,
-           (unsigned long long)reclaimed, (unsigned long long)torn);
-    CHECK(torn == 0);
-    CHECK(ok > 1000);
-    CHECK(ringbuf_total(g_mprb) == total);   /* no reservation stuck */
-    ringbuf_destroy(g_mprb);
+        printf("mp stress: prods=%d reads=%llu edge=%llu reclaimed=%llu torn=%llu\n",
+               MP_HOT, (unsigned long long)ok, (unsigned long long)edge,
+               (unsigned long long)reclaimed, (unsigned long long)torn);
+        CHECK(torn == 0);
+        CHECK(ringbuf_total(g_mprb) == total);   /* no reservation stuck */
+        ringbuf_destroy(g_mprb);
+
+        if (ok > 1000 || attempt == 5) break;
+        printf("mp stress: reader starved, attempt %d repeated\n", attempt);
+    }
+    CHECK(ok > 1000);                            /* the reader really raced them */
 }
 
 /* ── wakeup handshake ────────────────────────────────────────── */

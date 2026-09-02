@@ -29,7 +29,10 @@
 - The concurrency stress loop in CI (`make test-stress`) prints the output
   of every failing round and a manual workflow run can set the round count,
   after a 1-in-30 failure on the macOS arm64 runner left no trace of which
-  check tripped (180 further rounds on both arm64 runners passed).
+  check tripped. The next occurrence named it: the multi-producer lapping
+  test's reader had been descheduled for the entire run on the 3-core
+  runner (`reads=0`, nothing torn), a run that validated nothing. The test
+  now repeats a starved run instead of counting it either way.
 
 ## [1.4.0] - 2026-08-29
 

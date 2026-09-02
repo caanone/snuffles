@@ -28,12 +28,13 @@ Note: the root `./snuffles` is whichever of `make` / `make nopcap` ran last. Off
 
 ## Done this session (2026-09-02)
 
-**CI stress flake.** The macOS arm64 job for cbca8bf (docs-only) failed 1 of 30 stress rounds
-with no output (the loop discarded it). `make test-stress` now prints each failing round's full
-output and CI's round count is a `workflow_dispatch` input (`runs`). 30 + 150 further rounds on
-both arm64 runners passed. Unresolved: which CHECK tripped. Candidates by inspection are the
-scheduling-dependent counts in `test_ringbuf.c` (`ok > 1000` in `test_mp_stress`, `blocks > 0`
-in `test_wakeup`); do not weaken them without evidence — the next failure will name itself.
+**CI stress flake — resolved.** The macOS arm64 job for cbca8bf (docs-only) failed 1 of 30 stress
+rounds with no output (the loop discarded it). `make test-stress` now prints each failing round's
+full output and CI's round count is a `workflow_dispatch` input (`runs`). The next failure (2 of 30,
+run 33602918592) named it: `test_ringbuf.c` `test_mp_stress`, `CHECK(ok > 1000)` with `reads=0` —
+the reader thread was descheduled for the whole run behind 12 producers on the 3-core runner, and
+`torn=0`. Not a ring bug; a run with no reads validates nothing. The test now repeats a starved
+run (up to 5 attempts) instead of passing or failing on it.
 
 **Lane 2, syslog export throughput → `--syslog-threads N`** (1-8, config key `syslog_threads`).
 N output workers, one UDP socket each, record s goes to worker s % N; `-w` gets its own worker
