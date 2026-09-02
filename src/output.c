@@ -44,6 +44,8 @@ typedef struct {
     ns_thread_t          thread;
     atomic_int           state;         /* W_* (syslog slots) */
     atomic_uint          busy_pm;       /* busy fraction, per mille, running average */
+    atomic_int           measured;      /* busy_pm has seen a full window since the thread
+                                           started or was woken */
     atomic_uint_fast64_t missed;        /* records this slot claimed/owned but could not read */
 } output_worker_t;
 
@@ -110,14 +112,19 @@ static void *output_thread_fn(void *arg);
 
 /* ── the pool ────────────────────────────────────────────────── */
 
-/* Sum of the busy fractions of the engaged syslog threads, and how many. */
-static unsigned busy_sum(output_t *o, int *engaged) {
+/* Sum of the busy fractions of the engaged syslog threads, and how many.
+ * A thread that has not completed a window yet counts as `unmeasured`:
+ * idle for the grow rule (do not add threads on an assumption) and busy
+ * for the park rule (do not retire one before it has been measured). */
+static unsigned busy_sum(output_t *o, int *engaged, unsigned unmeasured) {
     unsigned sum = 0;
     int n = 0;
     for (int i = 0; i < o->nsyslog; i++) {
-        if (atomic_load_explicit(&o->w[i].state, memory_order_relaxed) != W_ENGAGED)
+        output_worker_t *w = &o->w[i];
+        if (atomic_load_explicit(&w->state, memory_order_relaxed) != W_ENGAGED)
             continue;
-        sum += atomic_load_explicit(&o->w[i].busy_pm, memory_order_relaxed);
+        sum += atomic_load_explicit(&w->measured, memory_order_relaxed)
+             ? atomic_load_explicit(&w->busy_pm, memory_order_relaxed) : unmeasured;
         n++;
     }
     *engaged = n;
@@ -128,6 +135,7 @@ static unsigned busy_sum(output_t *o, int *engaged) {
 static int slot_start(output_t *o, int i) {
     output_worker_t *w = &o->w[i];
     atomic_store(&w->busy_pm, 1000);
+    atomic_store(&w->measured, 0);
     if (ns_thread_create(&w->thread, output_thread_fn, w) != 0) return -1;
     int a = atomic_fetch_add(&o->alive, 1) + 1;
     int h = atomic_load(&o->hwm);
@@ -154,7 +162,7 @@ static void maybe_grow(output_t *o, long long now) {
          * and there is a queue at all */
         if (lag <= OUTPUT_CHUNK) return;
         int engaged;
-        unsigned sum = busy_sum(o, &engaged);
+        unsigned sum = busy_sum(o, &engaged, 0);
         if (engaged == 0 || sum < (unsigned)engaged * OUTPUT_GROW_PM) return;
     }
     if (atomic_load(&o->stop)) return;
@@ -196,7 +204,7 @@ static void maybe_grow(output_t *o, long long now) {
  * looking at the same numbers do not both leave. */
 static int should_park(output_t *o, long long now) {
     int engaged;
-    unsigned sum = busy_sum(o, &engaged);
+    unsigned sum = busy_sum(o, &engaged, 1000);
     if (engaged <= o->min_active || engaged <= 1) return 0;
     if (sum > (unsigned)(engaged - 1) * OUTPUT_SHRINK_PM) return 0;
     long long last = atomic_load_explicit(&o->last_shrink, memory_order_relaxed);
@@ -241,6 +249,7 @@ static void run_syslog(output_worker_t *w) {
             if (frac > 1000) frac = 1000;
             unsigned pm = atomic_load_explicit(&w->busy_pm, memory_order_relaxed);
             atomic_store_explicit(&w->busy_pm, (pm + frac) / 2, memory_order_relaxed);
+            atomic_store_explicit(&w->measured, 1, memory_order_relaxed);
             win_start = now;
             win_busy  = 0;
         }
@@ -264,9 +273,11 @@ static void run_syslog(output_worker_t *w) {
                 atomic_fetch_sub(&o->active, 1);
                 if (o->attached) ringbuf_waiter_detach(rb, w->waiter);
                 if (!park_wait(w)) break;
-                /* woken: assume busy until measured, so we are not parked
-                 * again on the numbers that preceded the wake-up */
+                /* woken: unmeasured until a window has passed, so we are
+                 * neither parked again on the numbers that preceded the
+                 * wake-up nor counted as saturated */
                 atomic_store(&w->busy_pm, 1000);
+                atomic_store(&w->measured, 0);
                 win_start = mono_ns();
                 win_busy  = 0;
                 if (o->attached)

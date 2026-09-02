@@ -68,19 +68,30 @@ Sanity check learned the hard way: with no collector listening, ICMP port-unreac
 connected socket's sends fail and the records land in `syslog_fail`, not `syslog_sent` — read all
 three counters (`syslog_sent + syslog_fail + out_missed == captured`) before suspecting a leak.
 
-**Dynamic scaling (user request: "make dynamic scaling against high traffic").** The syslog
-workers now scale at runtime: up to `--syslog-threads` (auto = CPUs the process may run on, ≤ 8)
-exist from the start, `--syslog-min-threads` run always (default 1), the rest park; workers claim
-32-record chunks from a shared cursor (`output.c`), a running worker wakes one parked helper when
-the unclaimed backlog exceeds ring/8 (one per 2 ms, `ringbuf_waiter_kick`), a helper parks again
-when nothing is left to claim. `--stats` shows the high-water mark as `syslog_threads=`. Rig, no
-flags, 30 s (the SUT cpuset gives auto = 4):
+**Elastic syslog threads (user request: "make dynamic scaling ... which creates new threads when
+load is heavy").** Only one syslog thread exists at start; sockets for every possible thread are
+opened at creation (they need privileges that are gone once capture is open). Workers claim
+32-record chunks from a shared cursor and keep a busy fraction (50 ms windows, half-life one
+window). A running worker grows the pool — wakes a parked thread, else joins an exited slot and
+creates a thread there — when the unclaimed backlog exceeds ring/8 or the engaged workers average
+≥ 90 % busy with records queued (one per 2 ms). A helper parks when the others would stay ≤ 80 %
+busy without it (one per 20 ms); an engaged helper that is momentarily idle sleeps on the ring like
+the primary; a parked thread exits after 3 s (`output_set_idle_exit_ms` for tests). `--stats`:
+`syslog_threads=` (most alive since the previous line), `syslog_alive=` (now). Cap 16 threads
+(`RINGBUF_MAX_WAITERS` 18); auto = CPUs the process may run on. Rig, no flags, 30 s (auto = 4):
 
-| offered | delivered | `syslog_threads` per second | worker CPU (0/1/2/3) |
+| offered | delivered | threads alive | worker CPU |
 |---|---|---|---|
-| 200 kpps | 100 % | 1 in every second | 77 / 0 / 0 / 0 % |
-| 500 kpps | 100 %, 0 missed | 4 in 31 of 36 s (helpers cascade in within ~6 ms, drain, park) | 88 / 56 / 32 / 19 % |
-| 1 Mpps | 80 % | 4 | 84 / 77 / 81 / 85 %: CPU-bound on 2 cores |
+| 200 kpps | 100 % | 1 most of the time; a kernel-block burst creates helpers that park and exit 3 s later | 62 % / ~0 |
+| 500 kpps | 100 % (one run had a single hiccup second, 0.15 %) | 4 | 52-57 % each |
+| 1 Mpps | 63-80 % | 4 | CPU-bound; the same build varied 19.4 M vs 24.4 M sent in consecutive runs |
+
+Lessons: (1) never `sched_yield()` on a lost claim CAS — on the crowded SUT cpuset it handed the
+core away for milliseconds and cost 14 % of the records at 500 kpps with the workers at half a
+core each and no ring sleeps; (2) 10 ms busy windows read each 256 KB kernel-block burst as
+saturation and grew the pool to four at 200 kpps — 50 ms windows measure the duty cycle;
+(3) A/B two builds in the same rig session back to back (worktree + `SNF_REPO`), or host variance
+(±25 % at saturation) will be read as a regression. Runs: `loadtest/results/el* abA* abB*`.
 
 Found on the way, by CI on Wine and macOS: a worker that had read the ring total, flushed, and
 then saw the stop flag could exit with the tail committed during the flush unclaimed (14 of 20000
@@ -103,10 +114,12 @@ with `pps` 25000 — add it to `loadtest/scenarios/` if it is wanted again).
 2. **Release v1.5.0** when wanted: CHANGELOG `[Unreleased]` is written; binaries follow the
    v1.4.0 procedure (static linux-x86_64 via `make nopcap`, windows-x64 via
    `scripts/test-windows.sh`'s MinGW container, SHA256SUMS, macOS by the user).
-3. **Syslog, remaining ideas.** (-) Scaling tunables are compile-time (`OUTPUT_KICK_NS` 2 ms,
-   threshold ring/8, `OUTPUT_LINGER` 8 yields): at 500 kpps the helpers cascade to all four every
-   second and park again, which is correct but could be smoother with a lower threshold or a
-   slower cascade; measure before touching. (0) The record struct is 592 B, of which ~270 B are text
+3. **Syslog, remaining ideas.** (-) Scaling tunables are compile-time (`OUTPUT_GROW_NS` 2 ms,
+   `OUTPUT_SHRINK_NS` 20 ms, `OUTPUT_WINDOW_NS` 50 ms, 90/80 % thresholds, ring/8 backlog,
+   `OUTPUT_IDLE_EXIT_MS` 3 s). The emergency backlog rule creates helpers for bursts one thread
+   would have absorbed; a predictive rule (lag / spare rate vs. time-to-lap from the measured
+   arrival and service rates) would be quieter — measure before touching. (0) The record struct
+   is 592 B, of which ~270 B are text
    columns the syslog path never uses; a slimmer record would cut the lean ring's 38 MB and
    the copy per read. (a) Opt-in packing of several CSV lines per datagram would
    amortise the per-datagram kernel cost (~4 µs) — a wire-format change, so behind a flag; rsyslog
