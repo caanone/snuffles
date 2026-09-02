@@ -11,9 +11,9 @@
   `--syslog-min-threads` threads run (default 1). Workers claim records in
   32-record chunks from a shared cursor and keep a running busy fraction;
   when the unclaimed backlog exceeds an eighth of the ring, or the running
-  threads average 85% busy with records queued, a running thread wakes a
+  threads average 90% busy with records queued, a running thread wakes a
   parked one or creates a new one (at most one every 2 ms); a helper parks
-  when the others would average no more than 70% busy without it, and a
+  when the others would average no more than 80% busy without it, and a
   parked thread exits after 3 s without work. The record format is
   unchanged; the collector sees up to N source ports. With `-w` the stream
   runs on a worker of its own. `--stats` gains `stream_missed=` (records the

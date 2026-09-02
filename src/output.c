@@ -18,9 +18,11 @@
 #define OUTPUT_CHUNK        SYSLOG_BATCH    /* records claimed at a time: one sendmmsg batch */
 #define OUTPUT_GROW_NS      2000000LL       /* at most one thread woken or created per 2 ms */
 #define OUTPUT_SHRINK_NS    20000000LL      /* at most one thread parked per 20 ms */
-#define OUTPUT_WINDOW_NS    10000000LL      /* busy-fraction sampling window */
-#define OUTPUT_GROW_PM      850             /* grow: running workers average >= 85 % busy */
-#define OUTPUT_SHRINK_PM    700             /* park: the others would average <= 70 % busy */
+#define OUTPUT_WINDOW_NS    50000000LL      /* busy-fraction sampling window: several kernel
+                                               block bursts, so the duty cycle is measured,
+                                               not the burst */
+#define OUTPUT_GROW_PM      900             /* grow: running workers average >= 90 % busy */
+#define OUTPUT_SHRINK_PM    800             /* park: the others would average <= 80 % busy */
 #define OUTPUT_IDLE_EXIT_MS 3000            /* a parked thread exits after this without work */
 #define OUTPUT_WAIT_MS      100             /* longest sleep between looks at the ring; the wakeup
                                                usually ends it, this bounds how late stop is seen */
@@ -238,7 +240,7 @@ static void run_syslog(output_worker_t *w) {
             unsigned frac = (unsigned)(win_busy * 1000 / (now - win_start));
             if (frac > 1000) frac = 1000;
             unsigned pm = atomic_load_explicit(&w->busy_pm, memory_order_relaxed);
-            atomic_store_explicit(&w->busy_pm, (pm * 3 + frac) / 4, memory_order_relaxed);
+            atomic_store_explicit(&w->busy_pm, (pm + frac) / 2, memory_order_relaxed);
             win_start = now;
             win_busy  = 0;
         }
@@ -292,10 +294,9 @@ static void run_syslog(output_worker_t *w) {
 
         uint64_t n = total - c;
         if (n > OUTPUT_CHUNK) n = OUTPUT_CHUNK;
-        if (!atomic_compare_exchange_strong(&o->cursor, &c, c + n)) {
-            yield_cpu();
-            continue;
-        }
+        if (!atomic_compare_exchange_strong(&o->cursor, &c, c + n))
+            continue;   /* a peer took it: look again (never yield here — on a
+                           crowded CPU that hands the core away for milliseconds) */
         if (o->attached) ringbuf_waiter_publish(rb, w->waiter, c);
 
         long long t0 = mono_ns();

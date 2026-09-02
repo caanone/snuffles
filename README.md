@@ -485,9 +485,9 @@ thread is opened at start (by default one per CPU the process may run
 on, at most 16), but only one thread runs. Workers claim records in
 32-record chunks from a shared cursor and keep a running busy fraction.
 When the unclaimed backlog exceeds an eighth of the ring, or the running
-threads average 85 % busy with records queued, a running thread wakes a
+threads average 90 % busy with records queued, a running thread wakes a
 parked one or creates a new one (at most one every 2 ms); a helper parks
-when the others would average no more than 70 % busy without it, and a
+when the others would average no more than 80 % busy without it, and a
 parked thread exits after 3 s without work. `--stats` reports the most
 threads alive at once since the previous line as `syslog_threads` and the
 current count as `syslog_alive`. The lean

@@ -17,10 +17,10 @@
  * start. Workers claim records in 32-record chunks from a shared cursor,
  * so any number of them can share the stream, and each keeps a running
  * busy fraction. When the unclaimed backlog exceeds an eighth of the ring,
- * or the running workers average 85 % busy with records queued, a running
+ * or the running workers average 90 % busy with records queued, a running
  * worker wakes a parked thread or, failing that, creates a new one (at
  * most one every 2 ms, up to max_threads). A helper parks when the others
- * would average no more than 70 % busy without it, and a parked thread
+ * would average no more than 80 % busy without it, and a parked thread
  * exits after 3 s without work. The -w stream has a sequential worker of
  * its own, since a capture file must hold every record in order. */
 
