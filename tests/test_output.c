@@ -397,6 +397,9 @@ static void test_sharded_attached(void) {
     output_stop(o);
     output_stats_t st;
     output_get_stats(o, &st);
+    printf("scaled attached: sent=%llu fail=%llu missed=%llu threads=%d\n",
+           (unsigned long long)st.syslog_sent, (unsigned long long)st.syslog_failed,
+           (unsigned long long)st.missed, st.syslog_threads);
     CHECK(st.syslog_sent + st.syslog_failed == N);
     CHECK(st.missed == 0);
     output_destroy(o);

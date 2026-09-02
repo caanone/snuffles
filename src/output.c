@@ -147,7 +147,13 @@ static void run_syslog(output_worker_t *w) {
             /* nothing left to claim: the batch leaves now, so a record waits
              * at most one wake-up at low rates */
             syslog_out_flush(w->syslog);
-            if (atomic_load(&o->stop)) break;
+            if (atomic_load(&o->stop)) {
+                /* stop is set after the last commit, but total above was
+                 * read before the flush: look again under the flag, or the
+                 * tail committed meanwhile would be left behind */
+                if (atomic_load(&o->cursor) >= ringbuf_total(rb)) break;
+                continue;
+            }
             if (helper) {
                 /* a burst is committed over a few hundred microseconds:
                  * yield through a momentary gap rather than park/unpark */
@@ -221,7 +227,10 @@ static void run_stream(output_worker_t *w) {
     uint64_t last = 0;   /* next sequence to write */
     for (;;) {
         if (ringbuf_total(rb) <= last) {
-            if (atomic_load(&o->stop)) break;
+            /* stop is set after the last commit: re-read the total under
+             * the flag before leaving, the first read may predate that
+             * commit */
+            if (atomic_load(&o->stop) && ringbuf_total(rb) <= last) break;
             ringbuf_waiter_will_wait(rb, w->waiter);
             if (ringbuf_total(rb) <= last)
                 output_wait(rb, w->waiter);

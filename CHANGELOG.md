@@ -25,6 +25,14 @@
   on the rig's two SUT cores. A single thread topped out at ~58% of
   500 kpps.
 
+### Fixed
+- An output worker could exit on stop with the last committed records
+  unprocessed: it read the ring's total, flushed its batch, then saw the
+  stop flag, which is set only after the capture thread's final commit.
+  The window was a few nanoseconds for the single output thread of 1.4.0
+  and a whole syslog flush for the chunk-claiming workers, where Wine and
+  the macOS runner hit it. Workers now re-read the total under the flag.
+
 ### Changed
 - **The lean `-q --syslog` forwarder sizes its ring to the kernel buffer**
   (8192 slots per MB of `-B`, 4096-65536; 65536 slots, ~38 MB, for the
