@@ -8,8 +8,10 @@
   The record format is unchanged; the collector sees N source ports. A
   single thread is bounded at ~300k records/s by the kernel's per-datagram
   send path (formatting is under 10% of the cost), and the loopback
-  measurement scales almost linearly to four threads. With `-w` the stream
-  moves to a worker of its own. The `--stats` line gains `stream_missed=`,
+  measurement scales almost linearly to four threads. On the rig at
+  500 kpps offered, one thread delivered 49% of the records at 99% of a
+  core; four threads delivered 93% at about half a core each. With `-w`
+  the stream moves to a worker of its own. The `--stats` line gains `stream_missed=`,
   the records the `-w` path lost, next to `out_missed=` for the syslog path.
 
 ### Changed
