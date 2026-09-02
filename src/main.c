@@ -614,22 +614,35 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Warning: -q without --syslog captures packets "
                         "but produces no output anywhere\n");
 
-    /* Lean mode (small ring, no session table) applies only to the syslog
-       forwarding modes documented in the README: headless/quiet WITH
-       --syslog and no export file. Plain --no-ui keeps the full ring and
-       sessions, and explicit -b/-s always win. */
+    /* Lean mode (headers-only snaplen, small kernel buffer and payload
+       arena, no session table) applies only to the pure syslog forwarder
+       documented in the README: headless/quiet WITH --syslog and no export
+       or stream file (-w needs whole payloads). Plain --no-ui keeps the
+       full ring and sessions, and explicit -b/-s/-B/-A always win. */
     int headless_minimal = (cfg.no_ui && cfg.syslog_target[0] &&
-                            !cfg.output_file[0]);
+                            !cfg.output_file[0] && !cfg.stream_file[0]);
     if (headless_minimal) {
-        if (!ring_set)
-            cfg.ring_size = 4096;  /* ~4 ms of headroom at 1 M pps for the
-                                      output thread (64 slots lapped it on
-                                      every scheduling hiccup); ~3.4 MB */
         if (!snaplen_set && cfg.snaplen > 256)
             cfg.snaplen = 256;     /* syslog only needs headers */
         if (!buffer_set && cfg.buffer_mb > 8)
             cfg.buffer_mb = 8;     /* keep the forwarder's footprint small:
                                       8 MB still buffers ~30 ms at 1 M pps */
+        if (!ring_set) {
+            /* The output workers must never be lapped by a burst. The
+               reader walks every retired kernel block back-to-back, so one
+               wake-up can hand over the whole kernel buffer: ~128 B per
+               64-byte frame in TPACKET_V3, 8192 frames per MB. One slot per
+               such frame (600 B each: 2.4-39 MB for 4096-65536 slots). With
+               4096 slots (8 ms at 500 k pps) a descheduled worker lost 7 %
+               of the records the sockets had capacity for. */
+            long slots = (long)cfg.buffer_mb * 8192;
+            if (slots < 4096)  slots = 4096;
+            if (slots > 65536) slots = 65536;
+            cfg.ring_size = (int)slots;
+        }
+        if (!cfg.arena_mb)
+            cfg.arena_mb = 1;      /* the CSV record needs only the summary;
+                                      payloads may be reclaimed early */
     }
 
     /* Headless modes and -w default to a wire-sized snaplen: nothing there

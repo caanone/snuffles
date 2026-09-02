@@ -140,7 +140,9 @@ by
 .BR \-\-stats ;
 records the ring overwrote before the thread reached them are counted as
 .IR out_missed .
-Without \fB\-b\fR the headless/quiet syslog modes use a 4096\-slot ring.
+Without \fB\-b\fR the quiet/headless syslog forwarder sizes the ring to the
+kernel capture buffer (8192 slots per MB of \fB\-B\fR, 4096\-65536), so a
+burst the capture thread hands over in one go cannot lap the output threads.
 .TP
 .BI \-\-syslog\-iface " ip|dev"
 Source address or device for syslog datagrams.

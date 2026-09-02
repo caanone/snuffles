@@ -38,7 +38,7 @@ dependencies beyond (optional) libpcap.
 - Session/stream tracking `[S]` — bidirectional 5-tuple aggregation with TCP state machine
 - Protocol statistics `[V]` — live per-protocol breakdown with rates and drop counts
 - Syslog forwarding `--syslog` — real-time UDP CSV with full header details, feedback loop prevention
-- Silent mode `-q` — no packet output, minimal user-space memory (~3.4MB ring: 4096 records + a 1MB payload arena; the libpcap build adds a kernel capture buffer, `-B`), pure syslog forwarder
+- Silent mode `-q` — no packet output, pure syslog forwarder; its ring mirrors the kernel capture buffer (`-B`, 8 MB by default: 65536 records, ~38MB) so a burst can never lap the output threads, plus a 1MB payload arena
 - ANSI terminal UI with color-coded protocols, scrollable list, detail panel, hex dump, help overlay
 - Streaming write `-w` — tcpdump-style write-while-capturing (`-w -` pipes into Wireshark)
 - JSON Lines output `--jsonl` — one JSON object per packet on stdout, made for `jq`
@@ -473,8 +473,12 @@ The capture thread is never slowed by either sink: a collector or disk
 that cannot keep up lets the ring wrap past the output thread instead,
 and the records it never saw are counted as `out_missed` in `--stats`
 (so `syslog_sent + syslog_fail + out_missed == captured`). The lean
-`-q --syslog` ring is 4 096 slots (about 4 ms of headroom at 1 M pps;
-`-b` overrides it). Measured on `lo` at 150 kpps with `--syslog`: capture
+`-q --syslog` ring holds as many records as the kernel buffer holds
+minimum-size frames (8 192 slots per MB of `-B`, 4 096-65 536): the
+capture thread hands over every retired kernel block in one go, and a
+burst that size cannot lap the output threads. `-b` overrides it. With
+4 096 slots, four output threads at half a core each still lost 7 % of
+the records at 500 k pps to scheduling gaps. Measured on `lo` at 150 kpps with `--syslog`: capture
 thread 5.6-6.0 µs -> 0.8 µs per packet, the same as quiet mode; the
 output thread carries the ~5.4 µs per datagram the kernel charges for
 `sendmmsg` on a loopback path.
@@ -546,7 +550,7 @@ summary t=1.402 captured=4000 kdrop=0 ifdrop=0 kdrop_w=0,0,0,0 ring=4000 ...
 
 | Mode | Memory |
 |------|--------|
-| `-q --syslog` | ~3.4MB ring (4096 records x 592 bytes + a 4096 x 256-byte payload arena, no sessions) + 18KB syslog batch |
+| `-q --syslog` | ring of 8192 records x 600 bytes per MB of `-B` (default 8MB: 65536 records, ~38MB; `-B 1`: ~5MB) + a 1MB payload arena, no sessions + 18KB syslog batch per output thread |
 | `--no-ui --syslog` | same + stdout buffering |
 | TUI + syslog | Full ring buffer + sessions |
 
@@ -566,7 +570,8 @@ view.
 
 These figures cover snuffles' own buffers. Both builds also map the
 kernel capture buffer into the process (64 MB by default, so RSS shows
-~70 MB; the lean `-q --syslog` forwarder defaults to 8 MB, ~14 MB RSS);
+~70 MB; the lean `-q --syslog` forwarder defaults to 8 MB and, with its ring
+sized to match, shows ~51 MB RSS under load);
 shrink it further with `-B 1` or `buffer_mb` in the config file where
 memory matters more than burst tolerance. When the raw build has to fall
 back to a socket receive queue (no TPACKET_V3 ring available) that memory

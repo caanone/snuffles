@@ -7,7 +7,7 @@ anything; it is the record, not recall.
 
 | | |
 |---|---|
-| `main` | `8441f53` (CHANGELOG: rig numbers for --syslog-threads) plus this record's commit, pushed |
+| `main` | tip carries `--syslog-threads` (c6539c5) and the lean-ring sizing (branch `perf/lean-ring`, merged after CI), pushed |
 | Release | **v1.4.0** is the latest tag — https://github.com/caanone/snuffles/releases/tag/v1.4.0. `main` carries unreleased work (see CHANGELOG `[Unreleased]`): `--syslog-threads`, `stream_missed=`, stress-loop diagnostics |
 | Release assets (v1.4.0) | `snuffles-1.4.0-linux-x86_64`, `snuffles-1.4.0-windows-x64.exe`, `SHA256SUMS`; **macOS arm64 still missing** |
 | Working tree | clean; only `main` exists locally and remotely (stale branches deleted 2026-09-02) |
@@ -51,9 +51,21 @@ when N > 1; the self-check knows all N source ports (`syslog_out_link`); `RINGBU
 | rig B3h (500 kpps offered) | 1 thread | 244 kpps = 49 % delivered, 99 % of a core |
 | rig B3h | 4 threads | 476 kpps = 93 % delivered, ~50 % of a core each |
 
-The residual 7 % loss with 4 threads at 500 kpps is ring lapping during scheduling gaps on the
-starved cpuset, not send capacity (threads at 50 %); a larger `-b` ring absorbs it (the `-q
---syslog` lean mode defaults to 4096 slots = 8 ms at 500 kpps).
+**Full coverage.** The 7 % loss above was buffering, not capacity: the lean `-q --syslog` ring
+was 4096 slots (8 ms at 500 kpps) while the capture thread hands over every retired kernel block
+in one go. The ring now mirrors the kernel buffer (8192 slots per MB of `-B`, 4096-65536; 65536
+slots, ~38 MB, at the default 8 MB) and the arena stays 1 MB; `-w` no longer selects the lean
+defaults. Re-measured, same rig, 30 s:
+
+| offered | config | before (4096 slots) | after (65536 slots) |
+|---|---|---|---|
+| 500 kpps | 4 threads | 93 % delivered, ~50 % of a core each | **100 % delivered, 0 missed**, ~52 % each, 51 MB RSS |
+| 1 Mpps | 4 threads | 40 % (397 kpps) | 77 % (788 kpps), threads at 80-85 %: CPU-bound on the SUT's 2 cores |
+| 500 kpps | 1 thread | 49 % | 58 %, thread at 100 %: capacity-bound |
+
+Sanity check learned the hard way: with no collector listening, ICMP port-unreachable makes the
+connected socket's sends fail and the records land in `syslog_fail`, not `syslog_sent` — read all
+three counters (`syslog_sent + syslog_fail + out_missed == captured`) before suspecting a leak.
 
 ## Open lanes, in priority order
 
@@ -67,7 +79,9 @@ starved cpuset, not send capacity (threads at 50 %); a larger `-b` ring absorbs 
 2. **Release v1.5.0** when wanted: CHANGELOG `[Unreleased]` is written; binaries follow the
    v1.4.0 procedure (static linux-x86_64 via `make nopcap`, windows-x64 via
    `scripts/test-windows.sh`'s MinGW container, SHA256SUMS, macOS by the user).
-3. **Syslog, remaining ideas.** (a) Opt-in packing of several CSV lines per datagram would
+3. **Syslog, remaining ideas.** (0) The record struct is 592 B, of which ~270 B are text
+   columns the syslog path never uses; a slimmer record would cut the lean ring's 38 MB and
+   the copy per read. (a) Opt-in packing of several CSV lines per datagram would
    amortise the per-datagram kernel cost (~4 µs) — a wire-format change, so behind a flag; rsyslog
    `imudp` treats one datagram as one message. (b) `UDP_SEGMENT` (UDP GSO) does not fit:
    segments must be equal-sized and records are variable-length. (c) `analyze.py` parses
@@ -113,6 +127,8 @@ checked-out tree: `docker exec -e SNF_REPO=/repo/.claude/worktrees/<name> snf-su
 - **Timing assertions need platform guards.** Sanitized arm64 is ~20× slower and the shared
   macOS runner stalls for tens of ms; see the guards in `tests/test_ui.c` and
   `tests/test_session.c` (which uses `clock()`, CPU time, so stalls do not count against it).
+- **The lean ring is now ~38 MB (65536 slots) by default**; `-B 1` gives 8192 slots. README's
+  memory table and the man page describe the rule (8192 slots per MB of `-B`).
 - **Python UDP listeners drop most of a burst** unless `SO_RCVBUF` is raised (16 MB worked for a
   5000-datagram replay); a low receive count is the listener, not the sender — check
   `syslog_sent`/`syslog_fail` first.

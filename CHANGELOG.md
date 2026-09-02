@@ -15,6 +15,17 @@
   the records the `-w` path lost, next to `out_missed=` for the syslog path.
 
 ### Changed
+- **The lean `-q --syslog` forwarder sizes its ring to the kernel buffer**
+  (8192 slots per MB of `-B`, 4096-65536; 65536 slots, ~38 MB, for the
+  default 8 MB) instead of a fixed 4096. The capture thread hands over
+  every retired kernel block in one go, and with 4096 slots (8 ms at
+  500 kpps) four output threads at half a core each still lost 7% of the
+  records to scheduling gaps. Re-measured on the rig at 500 kpps with four
+  threads: 100% delivered, nothing missed, ~52% of a core per thread,
+  ~51 MB RSS; at 1 Mpps the same four threads deliver 77% (from 40%) and
+  are CPU-bound on the rig's two SUT cores. `-b` overrides the size; the
+  payload arena stays at 1 MB. `-w` no longer selects the lean defaults,
+  since the stream needs whole payloads.
 - The concurrency stress loop in CI (`make test-stress`) prints the output
   of every failing round and a manual workflow run can set the round count,
   after a 1-in-30 failure on the macOS arm64 runner left no trace of which
