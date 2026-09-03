@@ -7,12 +7,13 @@ anything; it is the record, not recall.
 
 | | |
 |---|---|
-| `main` | tip carries the syslog auto-scaling (branch `perf/syslog-autoscale`, merged after CI), the lean-ring sizing and `--syslog-threads`, pushed |
-| Release | **v1.4.0** is the latest tag — https://github.com/caanone/snuffles/releases/tag/v1.4.0. `main` carries unreleased work (see CHANGELOG `[Unreleased]`): syslog output threads that scale with the backlog, the lean ring sized to the kernel buffer, `stream_missed=`/`syslog_threads=` stats, stress-loop diagnostics and the flake fix |
-| Release assets (v1.4.0) | `snuffles-1.4.0-linux-x86_64`, `snuffles-1.4.0-windows-x64.exe`, `SHA256SUMS`; **macOS arm64 still missing** |
-| Working tree | clean; only `main` exists locally and remotely (stale branches deleted 2026-09-02) |
-| Load-test rig | **down**. No `snf-*` containers, host sysctls restored (`rmem_max` 33554432) |
-| Reports | `loadtest/REPORT.html` (v1.4.0 campaign) and https://claude.ai/code/artifact/d57768f9-db4d-46e0-9b5d-5d291c82cf49; this session's raw runs are in `loadtest/results/st1 st2 st4 st1h st4h` (untracked) |
+| `main` | `768cc90` (Release v1.5.0) plus this record's commit, pushed |
+| Release | **v1.5.0** — https://github.com/caanone/snuffles/releases/tag/v1.5.0 (2026-09-04) |
+| Release assets | `snuffles-1.5.0-linux-x86_64` (static, nopcap, 1.18 MB), `snuffles-1.5.0-windows-x64.exe` (MinGW static, -O2, stripped, 184 KB — v1.4.0's was unstripped), `SHA256SUMS`; checksums verified after upload. **macOS arm64: the user builds it** (`git checkout v1.5.0 && make nopcap && strip build/raw/snuffles`, name it `snuffles-1.5.0-macos-arm64`, append to SHA256SUMS, `gh release upload v1.5.0 ...`) |
+| Git identity | **Every commit is now `caanone <8386362+caanone@users.noreply.github.com>`**, no `Co-Authored-By` trailers; history was rewritten and force-pushed on 2026-09-04 at the user's request ("only keep caanone as contributor" — the old `mail@erkanbircan.com` commits were credited to the GitHub account `erkanbircan`). Repo-local git config sets this identity. **Never add co-author trailers again.** Local-only backups of the old history: branch `backup/pre-rewrite`, refs `refs/backup/tags/v1.*` (delete when no longer wanted) |
+| Working tree | clean; only `main` exists locally and remotely |
+| Load-test rig | **down**, host sysctls restored (`rmem_max` 33554432) |
+| Reports | `loadtest/REPORT.html` (v1.4.0 campaign); raw runs of this campaign in `loadtest/results/{st,bg,as,el,ab,pr}*` (untracked) |
 
 ## Preflight (run first, ~30 s)
 
@@ -110,16 +111,21 @@ with `pps` 25000 — add it to `loadtest/scenarios/` if it is wanted again).
 
 ## Open lanes, in priority order
 
-1. **macOS arm64 release asset for v1.4.0** — unchanged; build on a Mac from the tag:
+1. **macOS arm64 release asset for v1.5.0** — the user builds it on a Mac from the tag:
    ```bash
-   git checkout v1.4.0 && make nopcap && strip build/raw/snuffles
-   mv build/raw/snuffles snuffles-1.4.0-macos-arm64
-   shasum -a 256 snuffles-1.4.0-macos-arm64            # append to SHA256SUMS
-   gh release upload v1.4.0 snuffles-1.4.0-macos-arm64
+   git checkout v1.5.0 && make nopcap && strip build/raw/snuffles
+   mv build/raw/snuffles snuffles-1.5.0-macos-arm64
+   shasum -a 256 snuffles-1.5.0-macos-arm64            # append to SHA256SUMS
+   gh release upload v1.5.0 snuffles-1.5.0-macos-arm64
    ```
-2. **Release v1.5.0** when wanted: CHANGELOG `[Unreleased]` is written; binaries follow the
-   v1.4.0 procedure (static linux-x86_64 via `make nopcap`, windows-x64 via
-   `scripts/test-windows.sh`'s MinGW container, SHA256SUMS, macOS by the user).
+2. **Next release procedure** (as done for v1.5.0): bump `SNUFFLES_VERSION_*` in
+   `include/snuffles.h` and `project(... VERSION)` in CMakeLists.txt, retitle CHANGELOG, commit
+   "Release vX", annotated tag, push; `make clean && make nopcap LDFLAGS=-static && strip`;
+   Windows: `docker run --rm -v $PWD:/src -v OUT:/out snuffles-windows-test sh -c '...'` with the
+   source list from `scripts/test-windows.sh` and `-O2 -static -lws2_32 -liphlpapi -lpthread`, then
+   `x86_64-w64-mingw32-strip`; `sha256sum > SHA256SUMS`; `gh release create vX --verify-tag
+   --notes-file ...`; download and `sha256sum -c`. Keep the binaries out of the repo (the
+   `release/` dir is not gitignored; use the scratchpad).
 3. **Syslog, remaining ideas.** (-) Scaling tunables are compile-time (`OUTPUT_GROW_NS` 2 ms,
    `OUTPUT_SHRINK_NS` 20 ms, `OUTPUT_WINDOW_NS` 50 ms, `OUTPUT_MIN_SAMPLE` 64, the ½ drain
    margin, `OUTPUT_SHRINK_PCT` 80, `OUTPUT_IDLE_EXIT_MS` 3 s); no CLI for them by design.
