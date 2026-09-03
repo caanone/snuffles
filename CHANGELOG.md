@@ -1,6 +1,11 @@
 # Changelog
 
-## [Unreleased]
+## [1.5.0] - 2026-09-04
+
+The syslog release: the forwarder now keeps up with the traffic on its
+own. Output threads are created as the load grows and retired as it
+fades, the lean forwarder's ring is sized so a burst can never lap them,
+and a stop race that could drop the last records was found and fixed.
 
 ### Added
 - **Syslog output threads are created and retired with the traffic.** A

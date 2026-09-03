@@ -162,9 +162,9 @@
 /* ── Version ─────────────────────────────────────────────────── */
 
 #define SNUFFLES_VERSION_MAJOR 1
-#define SNUFFLES_VERSION_MINOR 4
+#define SNUFFLES_VERSION_MINOR 5
 #define SNUFFLES_VERSION_PATCH 0
-#define SNUFFLES_VERSION_STR   "1.4.0"
+#define SNUFFLES_VERSION_STR   "1.5.0"
 #define SNUFFLES_NAME          "Snuffles"
 
 /* ── Protocol IDs ────────────────────────────────────────────── */
