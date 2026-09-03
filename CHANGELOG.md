@@ -24,12 +24,13 @@
   `syslog_threads=` (most threads alive at once since the previous line)
   and `syslog_alive=` (alive now). Config keys `syslog_threads` (a number or
   `auto`) and `syslog_min_threads`. Measured on the rig with no flags (30 s,
-  four CPUs available): at 200 kpps one thread does the work (62% of a
-  core) and helpers created on the occasional kernel-block burst park and
-  exit again; at 500 kpps three to four threads deliver everything; at
-  1 Mpps four threads are CPU-bound on the rig's two SUT cores, where the
-  same build varies between 63% and 80% delivered from one run to the
-  next. A single thread topped out at ~58% of 500 kpps.
+  four CPUs available): at 200 kpps one thread does the work (76% of a
+  core) for the whole run, a second appearing only during the unmeasured
+  start-up ramp; at 500 kpps the pool grows to four threads and delivers
+  everything; at 1 Mpps four threads are CPU-bound on the rig's two SUT
+  cores at 80% delivered (the same build varies between 63% and 80% from
+  one run to the next there). A single thread topped out at ~58% of
+  500 kpps.
 
 ### Fixed
 - An output worker could exit on stop with the last committed records

@@ -68,30 +68,36 @@ Sanity check learned the hard way: with no collector listening, ICMP port-unreac
 connected socket's sends fail and the records land in `syslog_fail`, not `syslog_sent` — read all
 three counters (`syslog_sent + syslog_fail + out_missed == captured`) before suspecting a leak.
 
-**Elastic syslog threads (user request: "make dynamic scaling ... which creates new threads when
-load is heavy").** Only one syslog thread exists at start; sockets for every possible thread are
-opened at creation (they need privileges that are gone once capture is open). Workers claim
-32-record chunks from a shared cursor and keep a busy fraction (50 ms windows, half-life one
-window). A running worker grows the pool — wakes a parked thread, else joins an exited slot and
-creates a thread there — when the unclaimed backlog exceeds ring/8 or the engaged workers average
-≥ 90 % busy with records queued (one per 2 ms). A helper parks when the others would stay ≤ 80 %
-busy without it (one per 20 ms); an engaged helper that is momentarily idle sleeps on the ring like
-the primary; a parked thread exits after 3 s (`output_set_idle_exit_ms` for tests). `--stats`:
-`syslog_threads=` (most alive since the previous line), `syslog_alive=` (now). Cap 16 threads
-(`RINGBUF_MAX_WAITERS` 18); auto = CPUs the process may run on. Rig, no flags, 30 s (auto = 4):
+**Elastic syslog threads (user: "make dynamic scaling ... which creates new threads when load is
+heavy", then "Do it" for the predictive rule).** Only one syslog thread exists at start; sockets for
+every possible thread are opened at creation (they need privileges that are gone once capture is
+open). Workers claim 32-record chunks from a shared cursor. The primary meters the arrival rate R
+(50 ms windows, half-life one window); each thread meters its service rate S (records per second
+of busy time, windows of ≥ 64 records); C = Σ S over the engaged threads (an unmeasured one counts
+as average). Grow (wake a parked thread, else join an exited slot and create one; one per 2 ms)
+when lag > chunk and: C ≤ R, or 2·lag·R > slack·(C − R) (the backlog would not drain within half
+the time the ring's slack gives) — until R and C are measured, when lag > ring/8; lag > ring/2
+grows regardless. A helper parks (one per 20 ms) when R ≤ 0.8·C_others; a parked thread exits
+after 3 s (`output_set_idle_exit_ms` for tests). An engaged-but-idle helper sleeps on the ring like
+the primary. `--stats`: `syslog_threads=` (most alive since the previous line), `syslog_alive=`
+(now). Cap 16 threads (`RINGBUF_MAX_WAITERS` 18); auto = CPUs the process may run on. Rig, no
+flags, 30 s (auto = 4), predictive rule:
 
 | offered | delivered | threads alive | worker CPU |
 |---|---|---|---|
-| 200 kpps | 100 % | 1 most of the time; a kernel-block burst creates helpers that park and exit 3 s later | 62 % / ~0 |
-| 500 kpps | 100 % (one run had a single hiccup second, 0.15 %) | 4 | 52-57 % each |
-| 1 Mpps | 63-80 % | 4 | CPU-bound; the same build varied 19.4 M vs 24.4 M sent in consecutive runs |
+| 200 kpps | 100 % | 1 for the whole run (a 2nd for 4 s during the unmeasured start-up ramp, then it exited) | 76 % |
+| 500 kpps | 100 %, 0 missed | 4 (one parked and re-woken as the margin shifts) | 70 / 39 / 53 / 49 % |
+| 1 Mpps | 80 % | 4 | 81-85 %: CPU-bound on 2 cores |
 
-Lessons: (1) never `sched_yield()` on a lost claim CAS — on the crowded SUT cpuset it handed the
-core away for milliseconds and cost 14 % of the records at 500 kpps with the workers at half a
-core each and no ring sleeps; (2) 10 ms busy windows read each 256 KB kernel-block burst as
-saturation and grew the pool to four at 200 kpps — 50 ms windows measure the duty cycle;
-(3) A/B two builds in the same rig session back to back (worktree + `SNF_REPO`), or host variance
-(±25 % at saturation) will be read as a regression. Runs: `loadtest/results/el* abA* abB*`.
+Lessons that cost rig time: (1) never `sched_yield()` on a lost claim CAS — on the crowded SUT
+cpuset it handed the core away for milliseconds and cost 14 % of the records at 500 kpps with the
+workers at half a core each and no ring sleeps; (2) 10 ms busy windows read each 256 KB
+kernel-block burst as saturation and grew the pool to four at 200 kpps — 50 ms windows measure
+duty cycles; (3) a fixed backlog threshold (ring/8) created helpers for bursts one thread absorbs
+— the rate-based prediction does not; (4) an unmeasured thread must count as idle for growing and
+as average/needed for parking (Wine caught the first version creating a thread for a light load);
+(5) A/B two builds in the same rig session back to back (worktree + `SNF_REPO`), or host variance
+(±25 % at saturation) will be read as a regression. Runs: `loadtest/results/el* abA* abB* pr*`.
 
 Found on the way, by CI on Wine and macOS: a worker that had read the ring total, flushed, and
 then saw the stop flag could exit with the tail committed during the flush unclaimed (14 of 20000
@@ -115,11 +121,9 @@ with `pps` 25000 — add it to `loadtest/scenarios/` if it is wanted again).
    v1.4.0 procedure (static linux-x86_64 via `make nopcap`, windows-x64 via
    `scripts/test-windows.sh`'s MinGW container, SHA256SUMS, macOS by the user).
 3. **Syslog, remaining ideas.** (-) Scaling tunables are compile-time (`OUTPUT_GROW_NS` 2 ms,
-   `OUTPUT_SHRINK_NS` 20 ms, `OUTPUT_WINDOW_NS` 50 ms, 90/80 % thresholds, ring/8 backlog,
-   `OUTPUT_IDLE_EXIT_MS` 3 s). The emergency backlog rule creates helpers for bursts one thread
-   would have absorbed; a predictive rule (lag / spare rate vs. time-to-lap from the measured
-   arrival and service rates) would be quieter — measure before touching. (0) The record struct
-   is 592 B, of which ~270 B are text
+   `OUTPUT_SHRINK_NS` 20 ms, `OUTPUT_WINDOW_NS` 50 ms, `OUTPUT_MIN_SAMPLE` 64, the ½ drain
+   margin, `OUTPUT_SHRINK_PCT` 80, `OUTPUT_IDLE_EXIT_MS` 3 s); no CLI for them by design.
+   (0) The record struct is 592 B, of which ~270 B are text
    columns the syslog path never uses; a slimmer record would cut the lean ring's 38 MB and
    the copy per read. (a) Opt-in packing of several CSV lines per datagram would
    amortise the per-datagram kernel cost (~4 µs) — a wire-format change, so behind a flag; rsyslog
