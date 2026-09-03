@@ -9,12 +9,15 @@
   socket per possible thread is opened at start (`--syslog-threads N|auto`,
   auto = the CPUs the process may run on, at most 16), but only
   `--syslog-min-threads` threads run (default 1). Workers claim records in
-  32-record chunks from a shared cursor and keep a running busy fraction;
-  when the unclaimed backlog exceeds an eighth of the ring, or the running
-  threads average 90% busy with records queued, a running thread wakes a
-  parked one or creates a new one (at most one every 2 ms); a helper parks
-  when the others would average no more than 80% busy without it, and a
-  parked thread exits after 3 s without work. The record format is
+  32-record chunks from a shared cursor; the first thread meters the
+  arrival rate and each thread its service rate (records per second of
+  busy time). A running thread wakes a parked one or creates a new one (at
+  most one every 2 ms) when, at those rates, the backlog would not drain
+  within half the time the ring has left before it laps — until the rates
+  are measured, when the backlog exceeds an eighth of the ring; half a
+  ring grows the pool regardless. A helper parks when the others' capacity
+  covers the arrival at no more than 80% load, and a parked thread exits
+  after 3 s without work. The record format is
   unchanged; the collector sees up to N source ports. With `-w` the stream
   runs on a worker of its own. `--stats` gains `stream_missed=` (records the
   `-w` path lost, next to `out_missed=` for the syslog path),

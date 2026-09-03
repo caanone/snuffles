@@ -18,11 +18,11 @@
 #define OUTPUT_CHUNK        SYSLOG_BATCH    /* records claimed at a time: one sendmmsg batch */
 #define OUTPUT_GROW_NS      2000000LL       /* at most one thread woken or created per 2 ms */
 #define OUTPUT_SHRINK_NS    20000000LL      /* at most one thread parked per 20 ms */
-#define OUTPUT_WINDOW_NS    50000000LL      /* busy-fraction sampling window: several kernel
-                                               block bursts, so the duty cycle is measured,
-                                               not the burst */
-#define OUTPUT_GROW_PM      900             /* grow: running workers average >= 90 % busy */
-#define OUTPUT_SHRINK_PM    800             /* park: the others would average <= 80 % busy */
+#define OUTPUT_WINDOW_NS    50000000LL      /* rate sampling window: several kernel block
+                                               bursts, so duty cycles are measured, not bursts */
+#define OUTPUT_MIN_SAMPLE   64              /* records a window needs to yield a service rate */
+#define OUTPUT_SHRINK_PCT   80              /* park: the others' capacity covers the arrival
+                                               at no more than this load */
 #define OUTPUT_IDLE_EXIT_MS 3000            /* a parked thread exits after this without work */
 #define OUTPUT_WAIT_MS      100             /* longest sleep between looks at the ring; the wakeup
                                                usually ends it, this bounds how late stop is seen */
@@ -43,8 +43,9 @@ typedef struct {
     char                 name[16];
     ns_thread_t          thread;
     atomic_int           state;         /* W_* (syslog slots) */
-    atomic_uint          busy_pm;       /* busy fraction, per mille, running average */
-    atomic_int           measured;      /* busy_pm has seen a full window since the thread
+    atomic_uint_fast64_t service;       /* records/s this thread sends while busy, running
+                                           average over its windows */
+    atomic_int           measured;      /* service has been measured since the thread
                                            started or was woken */
     atomic_uint_fast64_t missed;        /* records this slot claimed/owned but could not read */
 } output_worker_t;
@@ -61,6 +62,9 @@ struct output {
     int                  idle_exit_ms;
     int                  attached;      /* positions published (offline replay) */
     int                  started;
+    atomic_uint_fast64_t arrival;       /* records/s committed to the ring, running average,
+                                           metered by the primary syslog thread */
+    atomic_int           arrival_measured;
     atomic_int           stop;
     atomic_int           growing;       /* a thread is being created */
     atomic_uint_fast64_t cursor;        /* next sequence no syslog worker has claimed */
@@ -112,29 +116,33 @@ static void *output_thread_fn(void *arg);
 
 /* ── the pool ────────────────────────────────────────────────── */
 
-/* Sum of the busy fractions of the engaged syslog threads, and how many.
- * A thread that has not completed a window yet counts as `unmeasured`:
- * idle for the grow rule (do not add threads on an assumption) and busy
- * for the park rule (do not retire one before it has been measured). */
-static unsigned busy_sum(output_t *o, int *engaged, unsigned unmeasured) {
-    unsigned sum = 0;
-    int n = 0;
+/* Records/s the engaged syslog threads could send if fully busy, from
+ * their measured service rates; a thread without a measurement yet (just
+ * started or woken) counts as an average one. `skip` leaves one slot out
+ * (the caller asking whether it is needed). 0 while nothing is measured. */
+static uint64_t capacity(output_t *o, int skip, int *engaged) {
+    uint64_t sum = 0;
+    int n = 0, counted = 0, measured = 0;
     for (int i = 0; i < o->nsyslog; i++) {
         output_worker_t *w = &o->w[i];
         if (atomic_load_explicit(&w->state, memory_order_relaxed) != W_ENGAGED)
             continue;
-        sum += atomic_load_explicit(&w->measured, memory_order_relaxed)
-             ? atomic_load_explicit(&w->busy_pm, memory_order_relaxed) : unmeasured;
         n++;
+        if (i == skip) continue;
+        counted++;
+        if (atomic_load_explicit(&w->measured, memory_order_relaxed)) {
+            sum += atomic_load_explicit(&w->service, memory_order_relaxed);
+            measured++;
+        }
     }
     *engaged = n;
-    return sum;
+    if (!measured) return 0;
+    return sum * (uint64_t)counted / (uint64_t)measured;
 }
 
 /* Start a thread in syslog slot i (state already ENGAGED). */
 static int slot_start(output_t *o, int i) {
     output_worker_t *w = &o->w[i];
-    atomic_store(&w->busy_pm, 1000);
     atomic_store(&w->measured, 0);
     if (ns_thread_create(&w->thread, output_thread_fn, w) != 0) return -1;
     int a = atomic_fetch_add(&o->alive, 1) + 1;
@@ -146,8 +154,15 @@ static int slot_start(output_t *o, int i) {
 
 /* One more syslog thread, if the pool says so: wake a parked one, else
  * create one in an empty slot. Called by a running worker after each
- * chunk and after each wake-up; rate-limited so a change gets to count
- * before the next is judged. */
+ * chunk; rate-limited so a change gets to count before the next is
+ * judged.
+ *
+ * The decision predicts a lap. With the measured arrival rate R and the
+ * engaged threads' capacity C, the backlog drains at C - R and the ring's
+ * remaining slack fills at R; grow when the drain would take more than
+ * half the time the slack gives, or when C <= R. Until both rates are
+ * measured the plain backlog rule (an eighth of the ring) decides, and
+ * half a ring grows the pool whatever the rates say. */
 static void maybe_grow(output_t *o, long long now) {
     long long last = atomic_load_explicit(&o->last_grow, memory_order_relaxed);
     if (now - last < OUTPUT_GROW_NS) return;
@@ -157,13 +172,19 @@ static void maybe_grow(output_t *o, long long now) {
     uint64_t total  = ringbuf_total(o->rb);
     uint64_t cursor = atomic_load_explicit(&o->cursor, memory_order_relaxed);
     uint64_t lag    = total > cursor ? total - cursor : 0;
-    if (lag <= o->up_lag) {
-        /* no emergency: grow only when everyone running is near saturation
-         * and there is a queue at all */
-        if (lag <= OUTPUT_CHUNK) return;
+    if (lag <= OUTPUT_CHUNK) return;                   /* nothing queued */
+    uint64_t ring = o->rb->capacity;
+    if (lag < ring / 2) {
+        uint64_t R = atomic_load_explicit(&o->arrival_measured, memory_order_relaxed)
+                   ? atomic_load_explicit(&o->arrival, memory_order_relaxed) : 0;
         int engaged;
-        unsigned sum = busy_sum(o, &engaged, 0);
-        if (engaged == 0 || sum < (unsigned)engaged * OUTPUT_GROW_PM) return;
+        uint64_t C = capacity(o, -1, &engaged);
+        if (!R || !C) {
+            if (lag <= o->up_lag) return;              /* not measured yet */
+        } else if (C > R) {
+            uint64_t drain = C - R, slack = ring - lag;
+            if (2 * lag * R <= slack * drain) return;  /* drains in time */
+        }
     }
     if (atomic_load(&o->stop)) return;
     if (!atomic_compare_exchange_strong(&o->last_grow, &last, now)) return;
@@ -199,14 +220,16 @@ static void maybe_grow(output_t *o, long long now) {
     atomic_store(&o->growing, 0);
 }
 
-/* Should this helper park? When the others would still average no more
- * than OUTPUT_SHRINK_PM busy without it. Rate-limited, so two helpers
- * looking at the same numbers do not both leave. */
-static int should_park(output_t *o, long long now) {
+/* Should this helper park? When the others' capacity covers the measured
+ * arrival at no more than OUTPUT_SHRINK_PCT of it. Rate-limited, so two
+ * helpers looking at the same numbers do not both leave. */
+static int should_park(output_t *o, const output_worker_t *w, long long now) {
     int engaged;
-    unsigned sum = busy_sum(o, &engaged, 1000);
+    uint64_t C = capacity(o, w->idx, &engaged);
     if (engaged <= o->min_active || engaged <= 1) return 0;
-    if (sum > (unsigned)(engaged - 1) * OUTPUT_SHRINK_PM) return 0;
+    if (!C || !atomic_load_explicit(&o->arrival_measured, memory_order_relaxed)) return 0;
+    uint64_t R = atomic_load_explicit(&o->arrival, memory_order_relaxed);
+    if (R * 100 > C * OUTPUT_SHRINK_PCT) return 0;
     long long last = atomic_load_explicit(&o->last_shrink, memory_order_relaxed);
     if (now - last < OUTPUT_SHRINK_NS) return 0;
     return atomic_compare_exchange_strong(&o->last_shrink, &last, now);
@@ -238,6 +261,7 @@ static void run_syslog(output_worker_t *w) {
     ringbuf_t *rb = o->rb;
     int helper = w->idx >= o->min_active;
     long long win_start = mono_ns(), win_busy = 0;
+    uint64_t  win_records = 0, last_total = ringbuf_total(rb);
 
     if (helper && o->attached)
         ringbuf_waiter_attach_at(rb, w->waiter, atomic_load(&o->cursor));
@@ -245,13 +269,30 @@ static void run_syslog(output_worker_t *w) {
     for (;;) {
         long long now = mono_ns();
         if (now - win_start >= OUTPUT_WINDOW_NS) {
-            unsigned frac = (unsigned)(win_busy * 1000 / (now - win_start));
-            if (frac > 1000) frac = 1000;
-            unsigned pm = atomic_load_explicit(&w->busy_pm, memory_order_relaxed);
-            atomic_store_explicit(&w->busy_pm, (pm + frac) / 2, memory_order_relaxed);
-            atomic_store_explicit(&w->measured, 1, memory_order_relaxed);
-            win_start = now;
-            win_busy  = 0;
+            /* service rate: records per second of busy time, from a window
+             * with enough records to mean something */
+            if (win_records >= OUTPUT_MIN_SAMPLE && win_busy > 0) {
+                uint64_t s = win_records * 1000000000ULL / (uint64_t)win_busy;
+                uint64_t prev = atomic_load_explicit(&w->service, memory_order_relaxed);
+                atomic_store_explicit(&w->service,
+                    atomic_load_explicit(&w->measured, memory_order_relaxed) ? (prev + s) / 2 : s,
+                    memory_order_relaxed);
+                atomic_store_explicit(&w->measured, 1, memory_order_relaxed);
+            }
+            /* the primary meters the arrival rate for everyone */
+            if (w->idx == 0) {
+                uint64_t t = ringbuf_total(rb);
+                uint64_t r = (t - last_total) * 1000000000ULL / (uint64_t)(now - win_start);
+                uint64_t prev = atomic_load_explicit(&o->arrival, memory_order_relaxed);
+                atomic_store_explicit(&o->arrival,
+                    atomic_load_explicit(&o->arrival_measured, memory_order_relaxed) ? (prev + r) / 2 : r,
+                    memory_order_relaxed);
+                atomic_store_explicit(&o->arrival_measured, 1, memory_order_relaxed);
+                last_total = t;
+            }
+            win_start   = now;
+            win_busy    = 0;
+            win_records = 0;
         }
 
         uint64_t c     = atomic_load(&o->cursor);
@@ -268,18 +309,17 @@ static void run_syslog(output_worker_t *w) {
                 if (atomic_load(&o->cursor) >= ringbuf_total(rb)) break;
                 continue;
             }
-            if (helper && should_park(o, now)) {
+            if (helper && should_park(o, w, now)) {
                 atomic_store(&w->state, W_PARKED);
                 atomic_fetch_sub(&o->active, 1);
                 if (o->attached) ringbuf_waiter_detach(rb, w->waiter);
                 if (!park_wait(w)) break;
-                /* woken: unmeasured until a window has passed, so we are
-                 * neither parked again on the numbers that preceded the
-                 * wake-up nor counted as saturated */
-                atomic_store(&w->busy_pm, 1000);
+                /* woken: unmeasured until a window has passed, so we count
+                 * as an average thread rather than by stale numbers */
                 atomic_store(&w->measured, 0);
-                win_start = mono_ns();
-                win_busy  = 0;
+                win_start   = mono_ns();
+                win_busy    = 0;
+                win_records = 0;
                 if (o->attached)
                     ringbuf_waiter_attach_at(rb, w->waiter, atomic_load(&o->cursor));
                 continue;
@@ -322,7 +362,8 @@ static void run_syslog(output_worker_t *w) {
             }
         }
         long long t1 = mono_ns();
-        win_busy += t1 - t0;
+        win_busy    += t1 - t0;
+        win_records += n;
         if (o->attached) ringbuf_waiter_publish(rb, w->waiter, c + n);
         maybe_grow(o, t1);
     }
@@ -425,6 +466,8 @@ output_t *output_create(ringbuf_t *rb, syslog_out_t *sl, int min_threads,
     atomic_store(&o->skipped, 0);
     atomic_store(&o->last_grow, 0);
     atomic_store(&o->last_shrink, 0);
+    atomic_store(&o->arrival, 0);
+    atomic_store(&o->arrival_measured, 0);
 
     /* Sockets: the one we were given plus clones, one per possible thread. */
     syslog_out_t *sls[OUTPUT_MAX_THREADS];
@@ -488,7 +531,8 @@ output_t *output_create(ringbuf_t *rb, syslog_out_t *sl, int min_threads,
         w->idx    = i;
         w->syslog = sls[i];
         atomic_store(&w->state, W_NONE);
-        atomic_store(&w->busy_pm, 1000);
+        atomic_store(&w->service, 0);
+        atomic_store(&w->measured, 0);
         if (ns == 1 && !pw) snprintf(w->name, sizeof(w->name), "snf-output");
         else                snprintf(w->name, sizeof(w->name), "snf-syslog%d", i);
     }

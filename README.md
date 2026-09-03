@@ -483,12 +483,15 @@ being the kernel's per-datagram send path rather than formatting, so the
 syslog threads come and go with the traffic. One socket per possible
 thread is opened at start (by default one per CPU the process may run
 on, at most 16), but only one thread runs. Workers claim records in
-32-record chunks from a shared cursor and keep a running busy fraction.
-When the unclaimed backlog exceeds an eighth of the ring, or the running
-threads average 90 % busy with records queued, a running thread wakes a
-parked one or creates a new one (at most one every 2 ms); a helper parks
-when the others would average no more than 80 % busy without it, and a
-parked thread exits after 3 s without work. `--stats` reports the most
+32-record chunks from a shared cursor; the first thread meters the
+arrival rate and each thread its own service rate (records per second of
+busy time). A running thread wakes a parked one or creates a new one (at
+most one every 2 ms) when, at those rates, the backlog would not drain
+within half the time the ring has left before it laps — until the rates
+are measured, when the backlog exceeds an eighth of the ring; half a ring
+grows the pool regardless. A helper parks when the others' capacity
+covers the arrival at no more than 80 % load, and a parked thread exits
+after 3 s without work. `--stats` reports the most
 threads alive at once since the previous line as `syslog_threads` and the
 current count as `syslog_alive`. The lean
 `-q --syslog` ring holds as many records as the kernel buffer holds
